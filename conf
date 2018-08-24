@@ -1,0 +1,12 @@
+{
+	"RottenDBConn": ["host=yourRottenServerGoesHere dbname=rotten user=rotten_client password=letmein sslmode=enable"],
+	"ObservedDBConn": ["host=yourObservedServerGoesHere dbname= user=rotten_observer password=letmein sslmode=enable"],
+	"StatusInterval": 60,
+	"ObservationInterval": 300,
+	"FQDN": "The FQDN of this host, to locate log sources"
+	"Project": "Logical project this worker belongs to"
+	"Environment": "Logical environment this worker belongs to"
+	"Cluster": "Logical cluster this worker belongs to"
+	"Role": "Logical role this worker has, usually something like master or slave"
+}
+
