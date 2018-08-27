@@ -82,7 +82,7 @@ var re_action,_ = regexp.Compile(`.+/\*controller:.+,action:(.+),hostname:.*,pid
 
 
 
-func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id uint32, event *QueryEvent) {
+func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id uint32, observation_interval uint32, event *QueryEvent) {
   var fingerprint_id uint64
   var controller_id uint32
   var action_id uint32
@@ -196,7 +196,7 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 
     // save the statistics to the db on a different schedule, which should reduce the writes to the rotten DB
     // (multiple updates in memory might get folded into a single update on disk)
-    go reportSamples(rottenDB, &newFingerprint, logical_source_id)
+    go reportSamples(rottenDB, &newFingerprint, logical_source_id, observation_interval)
 
     newFingerprint.samples <- &sample
   }
@@ -239,10 +239,10 @@ func normalized_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint64, err error
 
 
 
-func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32) {
+func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, observation_interval uint32) {
   lastReport := f.last
   for {
-    time.Sleep(60*time.Second)
+    time.Sleep(time.Duration(2*observation_interval)*time.Second)
     if f.last > lastReport {
       // do this report both for the logical source id and 0, which is the special logical source of "everywhere"
       for _,source_id := range [2]uint32{0,logical_source_id} {

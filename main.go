@@ -227,7 +227,7 @@ func main() {
 
       eventCount++
       lastEventAt = newEvent.observationTimeEnd
-      go processEvent(rottenDB, logical_id, physical_id, &newEvent)
+      go processEvent(rottenDB, logical_id, physical_id, observation_interval, &newEvent)
     }
     queries.Close()
   }
