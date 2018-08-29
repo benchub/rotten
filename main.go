@@ -200,7 +200,7 @@ func main() {
     var windowEnd PoorMansTime
 
     // first things first, reset pg_stat_statement data so that we might have a clean observation window
-    if _, err := observedDB.Exec(`select pg_stat_statements_reset()`); err != nil {
+    if _, err := observedDB.Exec(`select dba.pg_stat_statements_user_reset()`); err != nil {
       log.Fatalln("couldn't reset pg_stat_statements", err)
       // will now exit because Fatal
     }
@@ -211,7 +211,7 @@ func main() {
 
     windowEnd.sec = time.Now().Unix()
 
-    queries, err := observedDB.Query(`select query,calls,total_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from pg_stat_statements`)
+    queries, err := observedDB.Query(`select query,calls,total_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from dba.pg_stat_statements()`)
     if err != nil {
       log.Fatalln("couldn't select from pg_stat_statements", err)
       // will now exit because Fatal
@@ -243,7 +243,7 @@ func reportProgress(noIdleHands bool, interval uint32) {
 
   for {
 //    log.Println(time.Now(),":",flying,"in flight,",eventCount,"processed so far,",warpTo.Offset,"seek, currently at:",lastEventAt)
-    log.Println(eventCount,"processed so far, currently",time.Now().Unix()-lastEventAt.sec,"seconds behind")
+    log.Println(eventCount,"events processed so far, currently",time.Now().Unix()-lastEventAt.sec,"seconds behind")
     if (noIdleHands && lastProcessed == eventCount ) {
       if almostDead {
         var m map[string]int

@@ -140,8 +140,8 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
     return
   }
 
-  newQuerySQL := fmt.Sprintf("insert into events (fingerprint_id,logical_source_id,physical_source_id,observed_window%s%s) values ($1,$2,$3,tstzrange(to_timestamp($4), to_timestamp($5)%s%s)", controller_description, action_description, controller_qid, action_qid) 
-  if _, err := rottenDB.Exec(newQuerySQL,fingerprint_id,logical_source_id,physical_source_id,event.observationTimeStart,event.observationTimeEnd); err != nil {
+  newQuerySQL := fmt.Sprintf("insert into events (fingerprint_id,logical_source_id,physical_source_id,observed_window,calls,time%s%s) values (%d,%d,%d,tstzrange(to_timestamp(%d), to_timestamp(%d)),%f,%f%s%s)", controller_description, action_description, fingerprint_id, logical_source_id, physical_source_id, event.observationTimeStart.sec,event.observationTimeEnd.sec, event.calls, event.total_time, controller_qid, action_qid) 
+  if _, err := rottenDB.Exec(newQuerySQL); err != nil {
     log.Fatalln("couldn't insert into events", err)
     // will now exit because Fatal
   }
@@ -176,12 +176,9 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
   } else {
   newFingerprint := Fingerprint{}
   newFingerprint.stats = make(map[string]*RunningStat)
-  newFingerprint.allTimeStats = make(map[string]*RunningStat)
   for _,stats_domain := range knownStatsDomains {
     newStats := RunningStat{}
-    newAllTimeStats := RunningStat{}
     newFingerprint.stats[stats_domain] = &newStats
-    newFingerprint.allTimeStats[stats_domain] = &newAllTimeStats
   }
   newFingerprint.db_id = fingerprint_id
 
@@ -211,12 +208,12 @@ func normalized_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint64, err error
 
   normalized, err := pg_query.Normalize(event.query)
   if err != nil {
-    log.Printf("couldn't normalize %s because %s", event.query, err)
+    log.Printf("couldn't normalize query", event.query, err)
     return 0, errors.New("failed to normalize")
   }
   fingerprint, err := pg_query.FastFingerprint(event.query)
   if err != nil {
-    log.Printf("couldn't fingerprint %s because %s", event.query, err)
+    log.Printf("couldn't fingerprint query", event.query, err)
     return 0, errors.New("failed to fingerprint")
   }
   
@@ -226,8 +223,13 @@ func normalized_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint64, err error
     if err := rottenDB.QueryRow(`insert into fingerprints(fingerprint,normalized) values ($1,$2) returning id`,fingerprint,normalized).Scan(&fingerprint_id); err == nil {
       // yay, we have our ID
     } else {
-      log.Fatalln("couldn't insert fingerprint", err)
-      // will now exit because Fatal
+      // we couldn't insert, probably because another session got here first. See what id it got
+      if err := rottenDB.QueryRow(`select id from fingerprints where fingerprint=$1`,fingerprint).Scan(&fingerprint_id); err == nil {
+        // yay, we have our ID
+      } else {
+         log.Fatalln("couldn't select newly inserted fingerprint", err)
+         // will now exit because Fatal            
+      }
     }
   } else {
     log.Fatalln("couldn't select fingerprint", err)
@@ -244,112 +246,121 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
   for {
     time.Sleep(time.Duration(2*observation_interval)*time.Second)
     if f.last > lastReport {
+      // Let's record these stats we've been collecting for this fingerprint.
+      // As we walk through all of them for both this logical_source_id and logical_source_id=0, we
+      // *could* try to only hold a lock on the fingerprint stats block as little as possible.
+      // However, with all the looping and rolling back potential, not only is that prone to errors and fragile
+      // for code change, but it's unclear what we should should do if there is an error. Keep the stats around
+      // for the next pass? Or just jettison them and start over?
+      // We're going to just take a simple write lock for this entire loop, and reset the stats when we're done
+      // with the loop. That's stronger than is necessary, but it keeps things clean and simple.
+
+      f.statsLock.Lock()
       // do this report both for the logical source id and 0, which is the special logical source of "everywhere"
+      LogicalLoop:
       for _,source_id := range [2]uint32{0,logical_source_id} {
+        var dbStats map[string]RunningStat
+
+        dbStats = make(map[string]RunningStat)
+
         tx, err := rottenDB.Begin();
         if err != nil {
           log.Println("couldn't start transaction for (fingerprint_id,logical_source_id)", f.db_id, source_id, err)
           continue
         }
 
-        // lock the stats block for reading
-        f.statsLock.RLock()
-        queryResults, err := rottenDB.Query(`select type,count,mean,deviation from fingerprint_stats where fingerprint_id=$1 and logical_source_id=$2 for update`, f.db_id,source_id)
+        queryResults, err := tx.Query(`select type,count,mean,deviation from fingerprint_stats where fingerprint_id=$1 and logical_source_id=$2 for update`, f.db_id,source_id)
         if err != nil {
           log.Println("couldn't select from dbstats using fingerprint_id,logical_source_id", f.db_id,source_id,err)
-          f.statsLock.RUnlock()
           tx.Rollback()
-          continue
+          continue LogicalLoop
         }
         statsFound := 0
         for queryResults.Next() {
           statsFound++
-          var dbStats RunningStat
-          var combined RunningStat
+          var theseStats RunningStat
           var query_stats_domain string
 
-          if err := queryResults.Scan(&query_stats_domain,&dbStats.m_n,&dbStats.m_oldM,&dbStats.m_oldS); err != nil {
+          if err := queryResults.Scan(&query_stats_domain,&theseStats.m_n,&theseStats.m_oldM,&theseStats.m_newS); err != nil {
             log.Println("couldn't parse dbstats row using fingerprint_id,logical_source_id", f.db_id,source_id,err)
-            f.statsLock.RUnlock()
             tx.Rollback()
-            continue
+            continue LogicalLoop
           }
 
-          // verify query_stats_domain is a domain we know about
-          _, present := f.stats[query_stats_domain]
-          if present {
-             // we had stats before; merge them with what we have now, then zero out what we have so we only merge in new data
-            // https://gist.github.com/turnersr/11390535
-            dbStats.m_newM = dbStats.m_oldM
-            dbStats.m_newS = dbStats.m_oldS
-
-            delta := dbStats.m_oldM - f.stats[query_stats_domain].m_oldM
-            delta2 := delta*delta 
-            combined.m_n = f.stats[query_stats_domain].m_n + dbStats.m_n
-            combined.m_oldM = f.stats[query_stats_domain].m_newM + float64(dbStats.m_n)*delta/float64(combined.m_n)
-            combined.m_newM = combined.m_oldM
-
-            q := float64(f.stats[query_stats_domain].m_n * dbStats.m_n) * delta2 / float64(combined.m_n)
-            combined.m_oldS = f.stats[query_stats_domain].m_newS + dbStats.m_newS + q
-            combined.m_newS = combined.m_oldS
-
-            // lock the stats block for writing
-            f.statsLock.RUnlock()
-            f.statsLock.Lock()
-            f.allTimeStats[query_stats_domain] = &combined
-            RunningStatReset(f.stats[query_stats_domain])
-            f.statsLock.Unlock()
-
-            r, err := rottenDB.Query(`update fingerprint_stats set last=$1,count=$2,mean=$3,deviation=$4 where fingerprint_id=$5 and logical_source_id=$6 and type=$7`,f.last,combined.m_n,combined.m_oldM,combined.m_oldS,f.db_id,source_id,query_stats_domain)
-            if err != nil {
-              log.Println("couldn't update fingerprint stats for fingerprint_id=%d,logical_source_id=%d,type=%s", f.db_id, source_id, query_stats_domain, err)
-              tx.Rollback()
-              continue
-            }
-            r.Close()
-            //log.Printf("fingerprint %d has seen %d calls; last at %d, sum at %f (%f), mean %f, deviation %f", f.db_id, combined.m_n, f.last, f.sum, float64(combined.m_n)*combined.m_oldM, RunningStatMean(combined), RunningStatDeviation(combined))
-          } else {
-            log.Println("dbstats row for fingerprint_id=%d,logical_source_id=%d gave unknown type of %s", f.db_id,source_id,query_stats_domain)
-            f.statsLock.RUnlock()
-            tx.Rollback()
-            continue
-          }
+          // we've retried the deviation from the db, but the RunningStats structure doesn't keep that number internally
+          if theseStats.m_n > 1 {
+            theseStats.m_oldS = theseStats.m_newS * theseStats.m_newS * float64(theseStats.m_n) - theseStats.m_newS * theseStats.m_newS
+            theseStats.m_newS = theseStats.m_oldS
+          } 
+          dbStats[query_stats_domain] = theseStats
         }
         queryResults.Close()
         if statsFound == 0 {
           for _,stats_domain := range knownStatsDomains {
-              r, err := rottenDB.Query(`INSERT INTO fingerprint_stats(fingerprint_id, logical_source_id, type, last, count, mean, deviation) VALUES ($1, $2, $3, $4, $5, $6, $7)`, f.db_id, source_id, stats_domain, f.last, f.stats[stats_domain].m_n, f.stats[stats_domain].m_oldM, RunningStatDeviation(*f.stats[stats_domain]))
+              r, err := tx.Query(`INSERT INTO fingerprint_stats(fingerprint_id, logical_source_id, type, last, count, mean, deviation) VALUES ($1, $2, $3, $4, $5, $6, $7)`, f.db_id, source_id, stats_domain, f.last, f.stats[stats_domain].m_n, f.stats[stats_domain].m_oldM, RunningStatDeviation(*(f.stats[stats_domain])))
               if err != nil {
-                log.Println("couldn't insert new fingerprint stats for fingerprint=%d, logical_source_id=%d, type=%s", f.db_id, source_id, stats_domain, err)
+                log.Println("couldn't insert new fingerprint stats for fingerprint, logical_source_id, type", f.db_id, source_id, stats_domain, err)
                 tx.Rollback()
-                // don't unlock the read lock here; it will be unlocked when we leave the loop
-                break
+                continue LogicalLoop
               }
               r.Close()
-            // lock the stats block for writing; these stats are in the db; we don't need to keep counting them.
-            f.statsLock.RUnlock()
-            f.statsLock.Lock()
-            
-            f.allTimeStats[stats_domain] = f.stats[stats_domain]
-
-            RunningStatReset(f.stats[stats_domain])
-
-            f.statsLock.Unlock()
-            f.statsLock.RLock()
           }
-          f.statsLock.RUnlock()
         } else if statsFound != 15 {
-          log.Printf("Only found %d stats to update, not all 15, for fingerprint_id=%d, logical_source_id=%d", statsFound, f.db_id, source_id)
+          log.Printf("Only found", statsFound, "stats to update, not all 15, for fingerprint_id, logical_source_id", statsFound, f.db_id, source_id)
           tx.Rollback()
-          continue
+          continue LogicalLoop
+        } else {
+          // we found all our stats; iterate over them and update them all for this source_id
+          var combined RunningStat
+
+          for _,stats_domain := range knownStatsDomains {
+            // verify query_stats_domain is a domain we know about
+            _, present := f.stats[stats_domain]
+            if present {
+               // we had stats before; merge them with what we have now, then zero out what we have so we only merge in new data
+              // https://gist.github.com/turnersr/11390535
+              oldStats := dbStats[stats_domain]
+
+              oldStats.m_newM = oldStats.m_oldM
+              oldStats.m_newS = oldStats.m_oldS
+
+              delta := oldStats.m_oldM - f.stats[stats_domain].m_oldM
+              delta2 := delta*delta 
+              combined.m_n = f.stats[stats_domain].m_n + oldStats.m_n
+              combined.m_oldM = f.stats[stats_domain].m_newM + float64(oldStats.m_n)*delta/float64(combined.m_n)
+              combined.m_newM = combined.m_oldM
+
+              q := float64(f.stats[stats_domain].m_n * oldStats.m_n) * delta2 / float64(combined.m_n)
+              combined.m_oldS = f.stats[stats_domain].m_newS + oldStats.m_newS + q
+              combined.m_newS = combined.m_oldS
+
+              r, err := tx.Query(`update fingerprint_stats set last=$1,count=$2,mean=$3,deviation=$4 where fingerprint_id=$5 and logical_source_id=$6 and type=$7`,f.last,combined.m_n,combined.m_oldM,RunningStatDeviation(combined),f.db_id,source_id,stats_domain)
+              if err != nil {
+                log.Println("couldn't update fingerprint stats for fingerprint_id,logical_source_id,type", f.db_id, source_id, stats_domain, err)
+                tx.Rollback()
+                continue LogicalLoop
+              }
+              r.Close()
+              //log.Printf("fingerprint %d has seen %d calls; last at %d, sum at %f (%f), mean %f, deviation %f", f.db_id, combined.m_n, f.last, f.sum, float64(combined.m_n)*combined.m_oldM, RunningStatMean(combined), RunningStatDeviation(combined))
+            } else {
+              log.Println("dbstats row for fingerprint_id,logical_source_id gave unknown type", f.db_id,source_id,stats_domain)
+              tx.Rollback()
+              continue LogicalLoop
+            }
+          }
         }
 
         err = tx.Commit()
         if err != nil {
-          log.Printf("Couldn't commit fingerprint stats update for fingerprint_id=%d, logical_source_id=%d",f.db_id,source_id)
+          log.Printf("Couldn't commit fingerprint stats update for fingerprint_id, logical_source_id",f.db_id,source_id)
         }
         lastReport = f.last
       }
+
+      for _,stats_domain := range knownStatsDomains {
+        RunningStatReset(f.stats[stats_domain])
+      }
+      f.statsLock.Unlock()
     }
     // it would be slick if we got rid of this fingerprint if it didn't happen again for a while
   }
@@ -368,19 +379,11 @@ func consumeSamples(f *Fingerprint) {
     f.time_since_start += sample.metrics["time"]
 
     for _,stats_domain := range knownStatsDomains {
-      mergedStat := Push(sample.metrics[stats_domain],*f.stats[stats_domain])
+      mergedStat := Push(sample.metrics[stats_domain],*(f.stats[stats_domain]))
       f.stats[stats_domain] = &mergedStat
     }
     f.statsLock.Unlock()
 
-    // now compare our update against the allTimeStats if there are enough there to make a difference
-//    f.statsLock.RLock()
-//    if f.allTimeStats.m_n > 32 {
-//      if sample.duration > (RunningStatMean(f.allTimeStats) + 3*RunningStatDeviation(f.allTimeStats)) {
-//        log.Printf("fingerprint %d (seen %d times) took %f ms but normally takes %f +/- %f", f.db_id, f.allTimeStats.m_n, sample.duration, RunningStatMean(f.allTimeStats), RunningStatDeviation(f.allTimeStats))
-//      }
-//    }
-//    f.statsLock.RUnlock()
   }
 }
 
@@ -427,5 +430,6 @@ func RunningStatVariance(rs RunningStat) float64 {
 }
 
 func RunningStatDeviation(rs RunningStat) float64 {
+
   return math.Sqrt(RunningStatVariance(rs))
 }
