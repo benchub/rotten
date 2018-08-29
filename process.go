@@ -94,18 +94,25 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 
   if re_controller.MatchString(event.query) {
     matches := re_controller.FindStringSubmatch(event.query)
-    if err := rottenDB.QueryRow(`select id from controllers where controller=$1`,matches[0]).Scan(&controller_id); err == nil {
+    if err := rottenDB.QueryRow(`select id from controllers where controller=$1`,matches[1]).Scan(&controller_id); err == nil {
       // yay, we have our ID
       controller_qid = fmt.Sprintf(",%d",controller_id)
       controller_description = ",controller_id"
     } else if err == sql.ErrNoRows {
-      if err := rottenDB.QueryRow(`insert into controllers(controller) values ($1) returning id`,matches[0]).Scan(&controller_id); err == nil {
+      if err := rottenDB.QueryRow(`insert into controllers(controller) values ($1) returning id`,matches[1]).Scan(&controller_id); err == nil {
         // yay, we have our ID
-      controller_qid = fmt.Sprintf(",%d",controller_id)
-      controller_description = ",controller_id"
+        controller_qid = fmt.Sprintf(",%d",controller_id)
+        controller_description = ",controller_id"
       } else {
-        log.Fatalln("couldn't insert into controllers", err)
-        // will now exit because Fatal
+        // we couldn't insert, probably because another session got here first. See what id it got
+        if err := rottenDB.QueryRow(`select id from controllers where controller=$1`,matches[1]).Scan(&controller_id); err == nil {
+          // yay, we have our ID
+          controller_qid = fmt.Sprintf(",%d",controller_id)
+          controller_description = ",controller_id"
+        } else {
+           log.Fatalln("couldn't select newly inserted controller", err)
+           // will now exit because Fatal
+        }
       }
     } else {
       log.Fatalln("couldn't select from controllers", err)
@@ -115,18 +122,25 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 
   if re_action.MatchString(event.query) {
     matches := re_action.FindStringSubmatch(event.query)
-    if err := rottenDB.QueryRow(`select id from actions where action=$1`,matches[0]).Scan(&action_id); err == nil {
+    if err := rottenDB.QueryRow(`select id from actions where action=$1`,matches[1]).Scan(&action_id); err == nil {
       // yay, we have our ID
       action_qid = fmt.Sprintf(",%d",action_id)
       action_description = ",action_id"
     } else if err == sql.ErrNoRows {
-      if err := rottenDB.QueryRow(`insert into actions(action) values ($1) returning id`,matches[0]).Scan(&action_id); err == nil {
+      if err := rottenDB.QueryRow(`insert into actions(action) values ($1) returning id`,matches[1]).Scan(&action_id); err == nil {
         // yay, we have our ID
         action_qid = fmt.Sprintf(",%d",action_id)
         action_description = ",action_id"
       } else {
-        log.Fatalln("couldn't insert into actions", err)
-        // will now exit because Fatal
+        // we couldn't insert, probably because another session got here first. See what id it got
+        if err := rottenDB.QueryRow(`select id from actions where action=$1`,matches[1]).Scan(&action_id); err == nil {
+          // yay, we have our ID
+          action_qid = fmt.Sprintf(",%d",action_id)
+          action_description = ",action_id"
+        } else {
+           log.Fatalln("couldn't select newly inserted action", err)
+           // will now exit because Fatal
+        }
       }
     } else {
       log.Fatalln("couldn't select from actions", err)
@@ -216,8 +230,9 @@ func normalized_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint64, err error
     log.Printf("couldn't fingerprint query", event.query, err)
     return 0, errors.New("failed to fingerprint")
   }
-  
-  if err := rottenDB.QueryRow(`select id from fingerprints where fingerprint=$1`,fingerprint).Scan(&fingerprint_id); err == nil {
+
+  row := rottenDB.QueryRow(`select id from fingerprints where fingerprint=$1`,fingerprint)
+  if err := row.Scan(&fingerprint_id); err == nil {
     // yay, we have our ID
   } else if err == sql.ErrNoRows {
     if err := rottenDB.QueryRow(`insert into fingerprints(fingerprint,normalized) values ($1,$2) returning id`,fingerprint,normalized).Scan(&fingerprint_id); err == nil {
@@ -232,7 +247,7 @@ func normalized_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint64, err error
       }
     }
   } else {
-    log.Fatalln("couldn't select fingerprint", err)
+    log.Fatalln("couldn't select fingerprint", fingerprint, err)
     // will now exit because Fatal
   }
 

@@ -146,6 +146,8 @@ func main() {
       // will now exit because Fatal
     }
 
+    rottenDB.SetMaxOpenConns(5)
+
     observedDB, err = sql.Open("postgres", configuration.ObservedDBConn[0])
     if err != nil {
       log.Fatalln("couldn't connect to observed db", err)

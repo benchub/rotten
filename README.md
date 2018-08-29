@@ -32,14 +32,14 @@ As a young project rotten makes a lot of assumptions. Among them:
 2. You are ok with how pg_stat_statments records queries. For example, the buckets
    it groups queries by is based on the parse tree of the query, not the query itself.
    While the query the module shows includes comments, those are just the comments that
-   the first query for that bucket had - subsequent queries the the same parse tree but
-   different comments will count towards the totals of the bucket, but their comments
+   the first query for that bucket had - subsequent queries having the same parse tree 
+   but different comments will count towards the totals of the bucket, but their comments
    are lost.
 3. You are ok with a SQL prompt as a UI for now.
 4. You will have a role on your monitored dbs called "rotten-observer" and it will call
-   some security definer functions in a "dba" schema.
+   some security definer functions (to query and reset pg_stat_statments in a "dba" schema.
 5. Your monitored databases have distinct identifiers of some kind (fqdn, IP, etc) as well
-   as some logical identification.
+   as some logical identification ("the master production server").
 
 How to use it
 =============
@@ -53,7 +53,10 @@ How to use it
    in the "dba" schema on those databases. 
 6. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
 7. Modify the conf to fit your environment.
-   1. RottenDBConn and ObservedDBConn are hopefully self-explanitory
+   1. RottenDBConn and ObservedDBConn are hopefully self-explanitory, BUT note that if you
+      are using pgbouncer in transaction pooling between rotten and your rotten db, you are
+      going to need to use the nifty undocumented binary_parameters=yes parameter in order
+      to keep go's pg library from using named queries for a single one-liner. 
    2. StatusInterval is how often to report status (in seconds) to stdout.
    3. ObservationInterval is how long (in seconds) to let pg_stat_statements gather info 
       for. This is the most granular you can make your reports, and the lower you set this,
