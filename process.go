@@ -1,16 +1,12 @@
 package main
 
 import (
-  "errors"
   "fmt"
   "log"
   "time"
   "sync"
   "math"
   "database/sql"
-  "regexp"
-
-  "github.com/lfittl/pg_query_go"
 )
 
 // runningstat is adapted from https://gist.github.com/turnersr/11390535, which in turn credits:
@@ -76,79 +72,36 @@ var protectedFingerprints = struct{
   m map[uint64]*Fingerprint
 } {m: make(map[uint64]*Fingerprint)}
 
-var re_controller,_ = regexp.Compile(`.+/\*controller:(.+),action:.+,hostname:.*,pid:\d+,context_id:[\-0-9a-f]+\*/`)
-var re_action,_ = regexp.Compile(`.+/\*controller:.+,action:(.+),hostname:.*,pid:\d+,context_id:[\-0-9a-f]+\*/`)
+var protectedProcessingCounter = struct{
+  sync.RWMutex
+  v uint32
+} {v: 0}
 
+func fingerprintCount() int {
+  protectedFingerprints.RLock()
+  known := len(protectedFingerprints.m)
+  protectedFingerprints.RUnlock()
 
+  return known
+}
 
+func stillProcessing() uint32 {
+  protectedProcessingCounter.RLock()
+  v := protectedProcessingCounter.v
+  protectedProcessingCounter.RUnlock()
 
-func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id uint32, observation_interval uint32, event *QueryEvent) {
-  var fingerprint_id uint64
-  var controller_id uint32
-  var action_id uint32
+  return v
+}
 
-  controller_qid := ""
-  controller_description := ""
-  action_qid := ""
-  action_description := ""
+func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id uint32, observation_interval uint32, fingerprint string, event *QueryEvent) {
+  protectedProcessingCounter.Lock()
+  protectedProcessingCounter.v++
+  protectedProcessingCounter.Unlock()
 
-  if re_controller.MatchString(event.query) {
-    matches := re_controller.FindStringSubmatch(event.query)
-    if err := rottenDB.QueryRow(`select id from controllers where controller=$1`,matches[1]).Scan(&controller_id); err == nil {
-      // yay, we have our ID
-      controller_qid = fmt.Sprintf(",%d",controller_id)
-      controller_description = ",controller_id"
-    } else if err == sql.ErrNoRows {
-      if err := rottenDB.QueryRow(`insert into controllers(controller) values ($1) returning id`,matches[1]).Scan(&controller_id); err == nil {
-        // yay, we have our ID
-        controller_qid = fmt.Sprintf(",%d",controller_id)
-        controller_description = ",controller_id"
-      } else {
-        // we couldn't insert, probably because another session got here first. See what id it got
-        if err := rottenDB.QueryRow(`select id from controllers where controller=$1`,matches[1]).Scan(&controller_id); err == nil {
-          // yay, we have our ID
-          controller_qid = fmt.Sprintf(",%d",controller_id)
-          controller_description = ",controller_id"
-        } else {
-           log.Fatalln("couldn't select newly inserted controller", err)
-           // will now exit because Fatal
-        }
-      }
-    } else {
-      log.Fatalln("couldn't select from controllers", err)
-      // will now exit because Fatal
-    }
-  }
+  controller_qid, controller_description := find_controller_id(rottenDB, event)
+  action_qid, action_description := find_action_id(rottenDB, event)
 
-  if re_action.MatchString(event.query) {
-    matches := re_action.FindStringSubmatch(event.query)
-    if err := rottenDB.QueryRow(`select id from actions where action=$1`,matches[1]).Scan(&action_id); err == nil {
-      // yay, we have our ID
-      action_qid = fmt.Sprintf(",%d",action_id)
-      action_description = ",action_id"
-    } else if err == sql.ErrNoRows {
-      if err := rottenDB.QueryRow(`insert into actions(action) values ($1) returning id`,matches[1]).Scan(&action_id); err == nil {
-        // yay, we have our ID
-        action_qid = fmt.Sprintf(",%d",action_id)
-        action_description = ",action_id"
-      } else {
-        // we couldn't insert, probably because another session got here first. See what id it got
-        if err := rottenDB.QueryRow(`select id from actions where action=$1`,matches[1]).Scan(&action_id); err == nil {
-          // yay, we have our ID
-          action_qid = fmt.Sprintf(",%d",action_id)
-          action_description = ",action_id"
-        } else {
-           log.Fatalln("couldn't select newly inserted action", err)
-           // will now exit because Fatal
-        }
-      }
-    } else {
-      log.Fatalln("couldn't select from actions", err)
-      // will now exit because Fatal
-    }
-  }
-
-  fingerprint_id, err := normalized_id(rottenDB, event)
+  fingerprint_id, err := normalized_fingerprint_id(rottenDB, fingerprint, event)
   if err != nil {
     log.Printf("failed to get fingerprint for event, so ignoring it")
     return
@@ -188,15 +141,15 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
   if present {
     existingFingerprint.samples <- &sample
   } else {
-  newFingerprint := Fingerprint{}
-  newFingerprint.stats = make(map[string]*RunningStat)
-  for _,stats_domain := range knownStatsDomains {
-    newStats := RunningStat{}
-    newFingerprint.stats[stats_domain] = &newStats
-  }
-  newFingerprint.db_id = fingerprint_id
+    newFingerprint := Fingerprint{}
+    newFingerprint.stats = make(map[string]*RunningStat)
+    for _,stats_domain := range knownStatsDomains {
+      newStats := RunningStat{}
+      newFingerprint.stats[stats_domain] = &newStats
+    }
+    newFingerprint.db_id = fingerprint_id
 
-  newFingerprint.samples = make(chan *Samples)
+    newFingerprint.samples = make(chan *Samples)
     
     protectedFingerprints.Lock()
     protectedFingerprints.m[fingerprint_id] = &newFingerprint
@@ -213,47 +166,10 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
   }
 
   // now that the event has been recorded and the stats updated, our work is done and this goroutine can end.
+  protectedProcessingCounter.Lock()
+  protectedProcessingCounter.v--
+  protectedProcessingCounter.Unlock()
 }
-
-
-
-func normalized_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint64, err error) {
-  var fingerprint_id uint64
-
-  normalized, err := pg_query.Normalize(event.query)
-  if err != nil {
-    log.Printf("couldn't normalize query", event.query, err)
-    return 0, errors.New("failed to normalize")
-  }
-  fingerprint, err := pg_query.FastFingerprint(event.query)
-  if err != nil {
-    log.Printf("couldn't fingerprint query", event.query, err)
-    return 0, errors.New("failed to fingerprint")
-  }
-
-  row := rottenDB.QueryRow(`select id from fingerprints where fingerprint=$1`,fingerprint)
-  if err := row.Scan(&fingerprint_id); err == nil {
-    // yay, we have our ID
-  } else if err == sql.ErrNoRows {
-    if err := rottenDB.QueryRow(`insert into fingerprints(fingerprint,normalized) values ($1,$2) returning id`,fingerprint,normalized).Scan(&fingerprint_id); err == nil {
-      // yay, we have our ID
-    } else {
-      // we couldn't insert, probably because another session got here first. See what id it got
-      if err := rottenDB.QueryRow(`select id from fingerprints where fingerprint=$1`,fingerprint).Scan(&fingerprint_id); err == nil {
-        // yay, we have our ID
-      } else {
-         log.Fatalln("couldn't select newly inserted fingerprint", err)
-         // will now exit because Fatal            
-      }
-    }
-  } else {
-    log.Fatalln("couldn't select fingerprint", fingerprint, err)
-    // will now exit because Fatal
-  }
-
-  return fingerprint_id, nil
-}
-
 
 
 func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, observation_interval uint32) {

@@ -53,6 +53,9 @@ create table events (
     controller_id integer REFERENCES controllers(id),
     action_id integer REFERENCES actions(id)
 );
+create index events_logical_calls on events (logical_source_id, calls);
+create index events_logical_time on events (logical_source_id, time);
+create index events_observed_window on events(logical_source_id);
 
 create type fingerprint_stats_domain as enum (
     'calls',

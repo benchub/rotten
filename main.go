@@ -200,6 +200,9 @@ func main() {
   for {
     var windowStart PoorMansTime
     var windowEnd PoorMansTime
+    var eventHash map[string]QueryEvent
+
+    eventHash = make(map[string]QueryEvent)
 
     // first things first, reset pg_stat_statement data so that we might have a clean observation window
     if _, err := observedDB.Exec(`select dba.pg_stat_statements_user_reset()`); err != nil {
@@ -229,9 +232,45 @@ func main() {
 
       eventCount++
       lastEventAt = newEvent.observationTimeEnd
-      go processEvent(rottenDB, logical_id, physical_id, observation_interval, &newEvent)
+
+      fingerprint, err := normalized_fingerprint(&newEvent)
+      if err != nil {
+        log.Printf("failed to get fingerprint for event, so ignoring it")
+        continue
+      }
+
+      existingEvent, present := eventHash[fingerprint]
+      if present {
+        existingEvent.calls += newEvent.calls
+        existingEvent.total_time += newEvent.total_time
+        existingEvent.rows += newEvent.rows
+        existingEvent.shared_blks_hit += newEvent.shared_blks_hit
+        existingEvent.shared_blks_read += newEvent.shared_blks_read
+        existingEvent.shared_blks_written += newEvent.shared_blks_written
+        existingEvent.shared_blks_dirtied += newEvent.shared_blks_dirtied
+        existingEvent.local_blks_written += newEvent.local_blks_written
+        existingEvent.local_blks_dirtied += newEvent.local_blks_dirtied
+        existingEvent.local_blks_read += newEvent.local_blks_read
+        existingEvent.local_blks_hit += newEvent.local_blks_hit
+        existingEvent.temp_blks_read += newEvent.temp_blks_read
+        existingEvent.temp_blks_written += newEvent.temp_blks_written
+        existingEvent.blk_read_time += newEvent.blk_read_time
+        existingEvent.blk_write_time += newEvent.blk_write_time
+
+        eventHash[fingerprint] = existingEvent
+      } else {
+        eventHash[fingerprint] = newEvent
+      }
     }
     queries.Close()
+
+    // now that we've hashed all the events by query id, process each one
+    for fingerprint, event := range eventHash {
+      var eventToBeGCedLater = event
+      go processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
+    }
+
+
   }
 
   // until we implement graceful exiting, we'll never get here
@@ -244,8 +283,7 @@ func reportProgress(noIdleHands bool, interval uint32) {
   lastProcessed := eventCount
 
   for {
-//    log.Println(time.Now(),":",flying,"in flight,",eventCount,"processed so far,",warpTo.Offset,"seek, currently at:",lastEventAt)
-    log.Println(eventCount,"events processed so far, currently",time.Now().Unix()-lastEventAt.sec,"seconds behind")
+    log.Println(eventCount,"events processed,", fingerprintCount(), "fingerprints seen,", stillProcessing(), "still processing,", time.Now().Unix()-lastEventAt.sec,"seconds since last event")
     if (noIdleHands && lastProcessed == eventCount ) {
       if almostDead {
         var m map[string]int
