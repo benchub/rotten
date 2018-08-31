@@ -15,6 +15,12 @@ create table actions (
 );
 create unique index actions_unique on actions (action);
 
+create table job_tags (
+    id serial primary key,
+    job_tag text not null
+);
+create unique index job_tags_unique on job_tags (job_tag);
+
 create table logical_sources (
     id serial primary key,
     project text not null,
@@ -42,20 +48,27 @@ create unique index fingerprints_unique on fingerprints(fingerprint);
 
 
 create table events (
-    id serial primary key,
+    id bigserial primary key,
     fingerprint_id int not null REFERENCES fingerprints(id),
     logical_source_id int not null REFERENCES logical_sources(id),
     physical_source_id int not null REFERENCES physical_sources(id),
     observed_window tstzrange not null,
     recorded_at timestamptz not null default clock_timestamp(),
     calls float not null,
-    time float not null,
-    controller_id integer REFERENCES controllers(id),
-    action_id integer REFERENCES actions(id)
+    time float not null
 );
 create index events_logical_calls on events (logical_source_id, calls);
 create index events_logical_time on events (logical_source_id, time);
 create index events_observed_window on events(logical_source_id);
+
+create table event_context (
+    event_id bigint not null REFERENCES events(id),
+    controller_id integer REFERENCES controllers(id),
+    action_id integer REFERENCES actions(id),
+    job_tag_id integer REFERENCES job_tags(id),
+    c integer not null check(c > 0)
+);
+create index event_context_event on event_context(event_id);
 
 create type fingerprint_stats_domain as enum (
     'calls',

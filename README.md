@@ -45,6 +45,7 @@ How to use it
 =============
 1. Get and install Go. http://www.golang.org
 2. After setting up your $GOPATH, get the code:
+  go get github.com/tj/go-pg-escape
   go get github.com/benchub/rotten
 3. go build github.com/benchub/rotten
 4. Import schema/tables.sql into the rotten db. Also create a "rotten-client" role that 

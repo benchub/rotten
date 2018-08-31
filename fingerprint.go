@@ -2,28 +2,61 @@ package main
 
 import (
   "log"
-  "fmt"
+  "strings"
+  "bytes"
   "errors"
   "regexp"
-  "crypto/sha1"
   "database/sql"
+  "os/exec"
+
   "github.com/lfittl/pg_query_go"
 )
 
+// replace all schemas in the parse tree with a constant
 var schmeaRE,_ = regexp.Compile(`"schemaname": "[^"]+"`)
 
+// schema-qaulified columns do not get a schemaname parse object, which is dumb.
+// However, they do get 3 columns, so we can at least work with that.
+var qualifiedColumnsRE,_ = regexp.Compile(`{"ColumnRef": {"fields": \[{"String": {"str": "([^"]+)"}}, {"String": {"str": "([^"]+)"}}, {"String": {"str": "([^"]+)"}}\]`)
+
 func normalized_fingerprint(event *QueryEvent) (fingerprint string, err error) {
+
   tree, err := pg_query.ParseToJSON(event.query)
   if err != nil {
-    log.Printf("couldn't parse query to JSON", event.query, err)
+    log.Println("couldn't parse query to JSON", event.query, err)
     return "", errors.New("failed to JSONify")
   }
 
-  h := sha1.New()
-  h.Write([]byte(schmeaRE.ReplaceAllString(tree,"\"schemaname\": \"x\"")))
-  bs := h.Sum(nil)
+  cmd := exec.Command("/usr/local/bin/deparse.rb")
+  cmd.Stdin = strings.NewReader(schmeaRE.ReplaceAllString(qualifiedColumnsRE.ReplaceAllString(tree,"{\"ColumnRef\": {\"fields\": [{\"String\": {\"str\": \"x\"}}, {\"String\": {\"str\": \"$2\"}}, {\"String\": {\"str\": \"$3\"}}]"),"\"schemaname\": \"x\""))
+  var out bytes.Buffer
+  cmd.Stdout = &out
+  err = cmd.Run()
+  if err != nil {
+    // we can't seem to use our json parse tree, so let's just see if we can't fingerprint it straight
+    // This might end up in a lot of fingerprints that are only different based on their schema name,
+    // but it's the best we can do.
+    fingerprint, err = pg_query.FastFingerprint(event.query)
+    if err != nil {
+        log.Println("couldn't fingerprint non-deparsable query: ", event.query, err)
+        return "", errors.New("failed to deparse or fingerprint")
+    } else {
+      return fingerprint, nil
+    }
+  }
 
-  fingerprint = fmt.Sprintf("%x", bs)
+  _ = cmd.Wait()
+
+  output := out.String()
+
+  fingerprint, err = pg_query.FastFingerprint(output)
+  if err != nil {
+    // because pg_query has a bug in its deparsing code, if we have an update for multiple columns, they
+    // are now missing a comma between them.
+    // https://github.com/lfittl/pg_query/issues/86
+//    log.Println("couldn't fingerprint query: ", event.query, "reparsed as:", output, ", because", err)
+    return "", errors.New("failed to fingerprint")
+  }
 
   return fingerprint, nil
 }
@@ -34,7 +67,7 @@ func normalized_fingerprint_id(rottenDB *sql.DB, fingerprint string, event *Quer
 
   normalized, err := pg_query.Normalize(event.query)
   if err != nil {
-    log.Printf("couldn't normalize query", event.query, err)
+    log.Println("couldn't normalize query", event.query, err)
     return 0, errors.New("failed to normalize")
   }
 

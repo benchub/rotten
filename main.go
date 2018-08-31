@@ -10,6 +10,7 @@ import (
   "flag"
   "runtime/pprof"
   "runtime"
+  "fmt"
 )
 
 import (
@@ -50,6 +51,9 @@ type QueryEvent struct
   blk_read_time float64
   blk_write_time float64
 
+  // the marginalia context
+  context map[string]uint32
+
   // the syslog time of the first line
   observationTimeStart PoorMansTime
   
@@ -65,8 +69,9 @@ var eventsToProcess = make(chan *QueryEvent,1000)
 // Some stats that we won't bother to make concurrency-safe.
 // They're never decremented anyway.
 var eventCount uint64
-var lastEventAt PoorMansTime
-
+var lastWindowEnd PoorMansTime
+var parseFailures uint32
+var eventsPending uint32
 
 var configFileFlag = flag.String("config", "", "the config file")
 var noIdleHandsFlag = flag.Bool("noIdleHands", false, "when set to true, kill us (ungracefully) if we seem to be doing nothing")
@@ -147,6 +152,7 @@ func main() {
     }
 
     rottenDB.SetMaxOpenConns(5)
+    rottenDB.SetConnMaxLifetime(time.Second * 10)
 
     observedDB, err = sql.Open("postgres", configuration.ObservedDBConn[0])
     if err != nil {
@@ -195,7 +201,7 @@ func main() {
   }
   
   // We like stats
-  go reportProgress(*noIdleHandsFlag, status_interval)
+  go reportProgress(*noIdleHandsFlag, status_interval, observation_interval)
 
   for {
     var windowStart PoorMansTime
@@ -215,6 +221,8 @@ func main() {
     time.Sleep(time.Duration(observation_interval) * time.Second)
 
     windowEnd.sec = time.Now().Unix()
+    parseFailures = 0
+    eventsPending = 0
 
     queries, err := observedDB.Query(`select query,calls,total_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from dba.pg_stat_statements()`)
     if err != nil {
@@ -231,13 +239,29 @@ func main() {
       newEvent.observationTimeEnd = windowEnd
 
       eventCount++
-      lastEventAt = newEvent.observationTimeEnd
+      lastWindowEnd = newEvent.observationTimeEnd
 
       fingerprint, err := normalized_fingerprint(&newEvent)
       if err != nil {
-        log.Printf("failed to get fingerprint for event, so ignoring it")
+//        log.Println("failed to get fingerprint for event, so ignoring it")
+        parseFailures++
         continue
       }
+
+      controller_id := find_controller_id(rottenDB, &newEvent)
+      action_id := find_action_id(rottenDB, &newEvent)
+      job_tag_id := find_job_tag_id(rottenDB, &newEvent)
+
+      context_hash := ""
+      if controller_id > 0 {
+        context_hash = fmt.Sprintf("%scontroller:%d", context_hash, controller_id)
+      } 
+      if action_id > 0 {
+        context_hash = fmt.Sprintf("%saction:%d", context_hash, action_id)
+      } 
+      if job_tag_id > 0 {
+        context_hash = fmt.Sprintf("%sjob_tag:%d", context_hash, job_tag_id)
+      } 
 
       existingEvent, present := eventHash[fingerprint]
       if present {
@@ -257,9 +281,20 @@ func main() {
         existingEvent.blk_read_time += newEvent.blk_read_time
         existingEvent.blk_write_time += newEvent.blk_write_time
 
+        existingContext, present := existingEvent.context[context_hash]
+        if present {
+          existingEvent.context[context_hash] = existingContext+uint32(newEvent.calls)
+        } else {
+          existingEvent.context[context_hash] = uint32(newEvent.calls)
+        }
+
         eventHash[fingerprint] = existingEvent
       } else {
+        newEvent.context = make(map[string]uint32)
+        newEvent.context[context_hash] = uint32(newEvent.calls)
+
         eventHash[fingerprint] = newEvent
+        eventsPending++
       }
     }
     queries.Close()
@@ -268,6 +303,7 @@ func main() {
     for fingerprint, event := range eventHash {
       var eventToBeGCedLater = event
       go processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
+      eventsPending--
     }
 
 
@@ -278,12 +314,15 @@ func main() {
 }
 
 
-func reportProgress(noIdleHands bool, interval uint32) {
+func reportProgress(noIdleHands bool, interval uint32, observation_interval uint32) {
   almostDead := false
   lastProcessed := eventCount
+  lastWindowEnd.sec = time.Now().Unix()
 
   for {
-    log.Println(eventCount,"events processed,", fingerprintCount(), "fingerprints seen,", stillProcessing(), "still processing,", time.Now().Unix()-lastEventAt.sec,"seconds since last event")
+    closed := time.Now().Unix()-lastWindowEnd.sec
+
+    log.Println("Current window closed", closed,"seconds ago,", int64(observation_interval) - closed,"seconds till new window,", eventsPending, "unique events queued,", parseFailures, "fingerprints failed,", stillProcessing(), "still being recorded. Overall,", eventCount,"processed,", fingerprintCount(), "fingerprints seen")
     if (noIdleHands && lastProcessed == eventCount ) {
       if almostDead {
         var m map[string]int
