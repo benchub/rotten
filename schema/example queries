@@ -1,0 +1,243 @@
+-- 20 most frequent queries in the last 3 hours, top 5 context sources
+with sources as (
+  select id from logical_sources where
+    project = 'bridge' and
+    environment = 'production' and
+    cluster = '13'
+), aggregated as (
+  select
+    array_agg(events.id) as event_id_array,
+    sum(calls) as calls,
+    sum(time) as total_ms,
+    sum(time)/sum(calls) as avg_ms_per_call,
+    fingerprint_id
+  from
+    events,sources
+  where
+    logical_source_id = sources.id and
+    tstzrange(now()-interval '3 hours',now()) @> observed_window
+  group by fingerprint_id
+  order by calls desc
+  limit 20
+), contexts as (
+  select
+    fingerprint_id, sum(c) as times, controller,  action,  job_tag,
+    row_number() over (partition by fingerprint_id order by sum(c) desc) as r
+  from 
+    event_context join aggregated on event_id = ANY(event_id_array)
+    left join controllers on controller_id = controllers.id
+    left join actions on action_id = actions.id
+    left join job_tags on job_tag_id = job_tags.id
+  group by controller,action,job_tag,fingerprint_id
+  order by sum(c) desc
+), context_agg as (
+  select fingerprint_id,json_agg((select x from (select times,controller,action,job_tag) as x)) as data from contexts
+  where r <= 5
+  group by fingerprint_id
+)
+select
+  calls,
+  total_ms,
+  avg_ms_per_call::numeric(6,1),
+  left(regexp_replace(fingerprints.normalized, '\n', ' ', 'g'),250) as example,
+  context_agg.data as context
+from
+  fingerprints,aggregated,context_agg
+where
+  fingerprints.id = aggregated.fingerprint_id and
+  context_agg.fingerprint_id = aggregated.fingerprint_id
+order by calls desc;
+
+
+-- 20 most time consuming queries in the last 3 hours, top 5 context sources
+with sources as (
+  select id from logical_sources where
+    project = 'canvas' and
+    environment = 'production' and
+    cluster = '13'
+), aggregated as (
+  select
+    array_agg(events.id) as event_id_array,
+    sum(calls) as calls,
+    sum(time) as total_ms,
+    sum(time)/sum(calls) as avg_ms_per_call,
+    fingerprint_id
+  from
+    events,sources
+  where
+    logical_source_id = sources.id and
+    tstzrange(now()-interval '3 hours',now()) @> observed_window
+  group by fingerprint_id
+  order by total_ms desc
+  limit 20
+), contexts as (
+  select
+    fingerprint_id, sum(c) as times, controller,  action,  job_tag,
+    row_number() over (partition by fingerprint_id order by sum(c) desc) as r
+  from 
+    event_context join aggregated on event_id = ANY(event_id_array)
+    left join controllers on controller_id = controllers.id
+    left join actions on action_id = actions.id
+    left join job_tags on job_tag_id = job_tags.id
+  group by controller,action,job_tag,fingerprint_id
+  order by sum(c) desc
+), context_agg as (
+  select fingerprint_id,json_agg((select x from (select times,controller,action,job_tag) as x)) as data from contexts
+  where r <= 5
+  group by fingerprint_id
+)
+select
+  calls,
+  total_ms,
+  avg_ms_per_call,
+  left(regexp_replace(fingerprints.normalized, '\n', ' ', 'g'),250) as example,
+  context_agg.data as context
+from
+  fingerprints,aggregated,context_agg
+where
+  fingerprints.id = aggregated.fingerprint_id and
+  context_agg.fingerprint_id = aggregated.fingerprint_id
+order by total_ms desc;
+
+
+-- 20 most expensive queries, observed in the last 3 hours, top 5 context sources
+with sources as (
+  select id from logical_sources where
+    project = 'arc' and
+    environment = 'production' and
+    cluster = '7'
+), aggregated as (
+  select
+    avg(time) as avg_ms,
+    array_agg(events.id) as event_id_array,
+    fingerprint_id
+  from
+    events,sources
+  where
+    logical_source_id = sources.id and
+    tstzrange(now()-interval '3 hours',now()) @> observed_window
+  group by fingerprint_id
+  limit 20
+), contexts as (
+  select
+    fingerprint_id, sum(c) as times, controller,  action,  job_tag,
+    row_number() over (partition by fingerprint_id order by sum(c) desc) as r
+  from 
+    event_context join aggregated on event_id = ANY(event_id_array)
+    left join controllers on controller_id = controllers.id
+    left join actions on action_id = actions.id
+    left join job_tags on job_tag_id = job_tags.id
+  group by controller,action,job_tag,fingerprint_id
+  order by sum(c) desc
+), context_agg as (
+  select fingerprint_id,json_agg((select x from (select times,controller,action,job_tag) as x)) as data from contexts
+  where r <= 5
+  group by fingerprint_id
+), stats as (
+  select 
+    distinct mean,deviation,logical_source_id,aggregated.fingerprint_id
+  from 
+    fingerprint_stats join aggregated on 
+      (fingerprint_stats.fingerprint_id = aggregated.fingerprint_id)
+    join sources on 
+      (fingerprint_stats.logical_source_id = 0 or fingerprint_stats.logical_source_id=sources.id)
+  where
+    fingerprint_stats.type='time'
+)
+select
+  avg_ms as avg_ms_this_window,
+  mean as avg_ms_overall,
+  deviation as deviation_ms_overall,
+  project,environment,cluster,role,
+  left(regexp_replace(fingerprints.normalized, '\n', ' ', 'g'),150) as example,
+  context_agg.data as context
+from
+  fingerprints,stats,aggregated,context_agg,logical_sources
+where
+  logical_sources.id=logical_source_id and
+  fingerprints.id = aggregated.fingerprint_id and
+  context_agg.fingerprint_id = aggregated.fingerprint_id and
+  stats.fingerprint_id = aggregated.fingerprint_id
+order by fingerprints.id,logical_source_id desc;
+
+
+
+-- slave utilization for job tags, for those jobs observed over the last 3 hours
+with sources as (
+  select id,cluster,role from logical_sources where
+    project = 'canvas' and
+    environment = 'production'
+), aggregated_events as (
+  select 
+    sources.cluster,
+    sources.role,
+    job_tag_id,
+    sum(calls) as calls
+  from 
+    events,sources,event_context
+  where 
+    logical_source_id = sources.id and 
+    tstzrange(now()-interval '3 hours',now()) @> observed_window and
+    events.id = event_context.event_id and
+    event_context.job_tag_id is not null
+  group by cluster,role,job_tag_id
+), master_events as (
+  select * from aggregated_events where role = 'master'
+), slave_events as (
+  select * from aggregated_events where role = 'slave'
+)
+select 
+  job_tag,
+  master_events.cluster,
+  master_events.calls + slave_events.calls as total_calls,
+  master_events.calls / (master_events.calls + slave_events.calls)*100 as master_percentage,
+  slave_events.calls / (master_events.calls + slave_events.calls)*100 as slave_percentage
+from
+  job_tags,master_events,slave_events
+where
+  job_tags.id = master_events.job_tag_id and
+  master_events.cluster = slave_events.cluster and
+  master_events.job_tag_id = slave_events.job_tag_id
+order by job_tag,cluster;
+
+
+-- slave utilization for {controller,action} pairs, for those {controller,action} pairs observed over the last 3 hours
+with sources as (
+  select id,cluster,role from logical_sources where
+    project = 'canvas' and
+    environment = 'production'
+), aggregated_events as (
+  select 
+    sources.cluster,
+    sources.role,
+    controller_id,
+    action_id,
+    sum(calls) as calls
+  from 
+    events,sources,event_context
+  where 
+    logical_source_id = sources.id and 
+    tstzrange(now()-interval '3 hours',now()) @> observed_window and
+    events.id = event_context.event_id and
+    (event_context.controller_id is not null or event_context.action_id is not null)
+  group by cluster,role,controller_id,action_id
+), master_events as (
+  select * from aggregated_events where role = 'master'
+), slave_events as (
+  select * from aggregated_events where role = 'slave'
+)
+select 
+  controller,action,
+  master_events.cluster,
+  master_events.calls + slave_events.calls as total_calls,
+  master_events.calls / (master_events.calls + slave_events.calls)*100 as master_percentage,
+  slave_events.calls / (master_events.calls + slave_events.calls)*100 as slave_percentage
+from
+  master_events,slave_events 
+  left join controllers on controllers.id = slave_events.controller_id
+  left join actions on actions.id = slave_events.action_id
+where
+  master_events.cluster = slave_events.cluster and
+  master_events.controller_id = slave_events.controller_id and
+  master_events.action_id = slave_events.action_id
+order by controller,action,cluster;

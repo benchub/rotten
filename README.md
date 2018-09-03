@@ -54,22 +54,29 @@ How to use it
    in the "dba" schema on those databases. 
 6. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
 7. Modify the conf to fit your environment.
-   1. RottenDBConn and ObservedDBConn are hopefully self-explanitory, BUT note that if you
-      are using pgbouncer in transaction pooling between rotten and your rotten db, you are
-      going to need to use the nifty undocumented binary_parameters=yes parameter in order
-      to keep go's pg library from using named queries for a single one-liner. 
-   2. StatusInterval is how often to report status (in seconds) to stdout.
-   3. ObservationInterval is how long (in seconds) to let pg_stat_statements gather info 
-      for. This is the most granular you can make your reports, and the lower you set this,
-      the more data you will need to store in your rotten db.
-   4. FQDN is some unique string (typically the FQDN of the observed db) to help find a 
-      physical log if more information is desired other than the fingerprint.
-   5. Project, Environment, Cluster, and Role are logical identifiers for where the samples
-      of data are coming from. 
+  1. RottenDBConn and ObservedDBConn are hopefully self-explanitory, BUT note that if you
+     are using pgbouncer in transaction pooling between rotten and your rotten db, you are
+     going to need to use the nifty undocumented binary_parameters=yes parameter in order
+     to keep go's pg library from using named queries for a single one-liner. 
+  2. StatusInterval is how often to report status (in seconds) to stdout.
+  3. ObservationInterval is how long (in seconds) to let pg_stat_statements gather info 
+     for. This is the most granular you can make your reports, and the lower you set this,
+     the more data you will need to store in your rotten db.
+  4. FQDN is some unique string (typically the FQDN of the observed db) to help find a 
+     physical log if more information is desired other than the fingerprint.
+  5. Project, Environment, Cluster, and Role are logical identifiers for where the samples
+     of data are coming from. 
+8. Install the awful deparse.rb
+  1. Put it into /usr/local/bin (or change the code if you want it elsewhere)
+  2. Install the pg_query gem to let it work
 
 Known Issues
 ============
-It's just getting started. The code is ugly.
+- The code is ugly.
+- pg_query, which we use to normalize queries, has a bug that keeps us from being able to parse
+  some things: https://github.com/lfittl/pg_query/issues/86
+- pg_query's go library doesn't let us reconstitute a parse tree into a query like the ruby one
+  does, so we have a horibly non-performant work around.
 
 TODO
 ====
@@ -80,3 +87,8 @@ Um yeah quite a bit.
 - allow for arbitrary logical source descriptions, not just Project/Environment/Cluster/Role
 - allow for arbitrary locations of the functions in the observed db
 - allow for an arbitrary observer role name other than "rotten-observer"
+- allow the observation window to adjust size as needed for processing
+- allow for a worker pool of reparse executions to speed things up in wall time
+- extend pg_query's go library to include deparse natively, so we don't have to use the ugly depase.rb script.
+- configurable context, instead of the hardcoded controller/action/job_tag, with their hard-coded regexes
+- keep a log of the queries we can't parse

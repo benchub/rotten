@@ -203,32 +203,47 @@ func main() {
   // We like stats
   go reportProgress(*noIdleHandsFlag, status_interval, observation_interval)
 
+
+  // first things first, reset pg_stat_statement data so that we might have a clean observation window
+  var windowStart PoorMansTime
+
+  log.Println("stats window inital reset")
+  if _, err := observedDB.Exec(`select dba.pg_stat_statements_user_reset()`); err != nil {
+    log.Fatalln("couldn't reset pg_stat_statements", err)
+    // will now exit because Fatal
+  }
+  windowStart.sec = time.Now().Unix()
+
+  time.Sleep(time.Duration(observation_interval) * time.Second)
+
   for {
-    var windowStart PoorMansTime
     var windowEnd PoorMansTime
+    var nextWindowStart PoorMansTime
     var eventHash map[string]QueryEvent
 
     eventHash = make(map[string]QueryEvent)
 
-    // first things first, reset pg_stat_statement data so that we might have a clean observation window
-    if _, err := observedDB.Exec(`select dba.pg_stat_statements_user_reset()`); err != nil {
-      log.Fatalln("couldn't reset pg_stat_statements", err)
-      // will now exit because Fatal
-    }
-
-    windowStart.sec = time.Now().Unix()
-
-    time.Sleep(time.Duration(observation_interval) * time.Second)
 
     windowEnd.sec = time.Now().Unix()
     parseFailures = 0
     eventsPending = 0
+
+    log.Println("retrieving stats results")
 
     queries, err := observedDB.Query(`select query,calls,total_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from dba.pg_stat_statements()`)
     if err != nil {
       log.Fatalln("couldn't select from pg_stat_statements", err)
       // will now exit because Fatal
     }
+    // Now, while we process the results of what we saw, start a new window in the observed db
+    log.Println("stats window reset")
+    if _, err := observedDB.Exec(`select dba.pg_stat_statements_user_reset()`); err != nil {
+      log.Fatalln("couldn't reset pg_stat_statements", err)
+      // will now exit because Fatal
+    }
+    nextWindowStart.sec = time.Now().Unix()
+
+    log.Println("walking stats results")
     for queries.Next() {
       newEvent := QueryEvent{}
       if err := queries.Scan(&newEvent.query, &newEvent.calls, &newEvent.total_time, &newEvent.rows, &newEvent.shared_blks_hit, &newEvent.shared_blks_read, &newEvent.shared_blks_dirtied, &newEvent.shared_blks_written, &newEvent.local_blks_hit, &newEvent.local_blks_read, &newEvent.local_blks_dirtied, &newEvent.local_blks_written, &newEvent.temp_blks_written, &newEvent.temp_blks_read, &newEvent.blk_write_time, &newEvent.blk_read_time); err != nil {
@@ -299,6 +314,8 @@ func main() {
     }
     queries.Close()
 
+    log.Println("processing unique events")
+
     // now that we've hashed all the events by query id, process each one
     for fingerprint, event := range eventHash {
       var eventToBeGCedLater = event
@@ -306,7 +323,17 @@ func main() {
       eventsPending--
     }
 
+    if int64(observation_interval) > (time.Now().Unix()-windowEnd.sec) {
+      log.Println("doing nothing for", int64(observation_interval) - (time.Now().Unix()-windowEnd.sec), "more seconds")
 
+      // sleep for the remaining time of the observation window
+      time.Sleep(time.Duration(int64(observation_interval) - (time.Now().Unix()-windowEnd.sec)) * time.Second)      
+    } else {
+      log.Println("ruh oh, our observation window was", (time.Now().Unix()-windowEnd.sec) - int64(observation_interval),"seconds too short to deal with what we saw")
+    }
+
+    log.Println("main loop complete")
+    windowStart = nextWindowStart
   }
 
   // until we implement graceful exiting, we'll never get here
