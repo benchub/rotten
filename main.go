@@ -230,7 +230,25 @@ func main() {
 
     log.Println("retrieving stats results")
 
-    queries, err := observedDB.Query(`select query,calls,total_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from dba.pg_stat_statements()`)
+    // instead of getting all of pg_stat_statements, we get the top 100 queries for each metric
+    // (getting everything can take several minutes; this only takes a few seconds)
+    queries, err := observedDB.Query(`select query,calls,total_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from (
+                                        with raw as (select * from dba.pg_stat_statements())
+                                        select * from (select * from raw order by calls desc limit 100) calls union distinct 
+                                        select * from (select * from raw order by total_time desc limit 100) time union distinct 
+                                        select * from (select * from raw order by rows desc limit 100) rows union distinct 
+                                        select * from (select * from raw order by shared_blks_hit desc limit 100) shared_blks_hit union distinct 
+                                        select * from (select * from raw order by shared_blks_read desc limit 100) shared_blks_read union distinct 
+                                        select * from (select * from raw order by shared_blks_written desc limit 100) shared_blks_written union distinct 
+                                        select * from (select * from raw order by shared_blks_dirtied desc limit 100) shared_blks_dirtied union distinct 
+                                        select * from (select * from raw order by local_blks_hit desc limit 100) local_blks_hit union distinct 
+                                        select * from (select * from raw order by local_blks_read desc limit 100) local_blks_read union distinct 
+                                        select * from (select * from raw order by local_blks_written desc limit 100) local_blks_written union distinct 
+                                        select * from (select * from raw order by local_blks_dirtied desc limit 100) local_blks_dirtied union distinct 
+                                        select * from (select * from raw order by temp_blks_read desc limit 100) temp_blks_read union distinct 
+                                        select * from (select * from raw order by temp_blks_written desc limit 100) temp_blks_written union distinct
+                                        select * from (select * from raw order by blk_write_time desc limit 100) blk_write_time union distinct 
+                                        select * from (select * from raw order by blk_read_time desc limit 100) blk_read_time) foo`)
     if err != nil {
       log.Fatalln("couldn't select from pg_stat_statements", err)
       // will now exit because Fatal

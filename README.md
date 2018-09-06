@@ -29,12 +29,10 @@ Assumptions
 As a young project rotten makes a lot of assumptions. Among them:
 
 1. You are using pg_stat_statements and have no qualms frequently resetting them.
-2. You are ok with how pg_stat_statments records queries. For example, the buckets
-   it groups queries by is based on the parse tree of the query, not the query itself.
-   While the query the module shows includes comments, those are just the comments that
-   the first query for that bucket had - subsequent queries having the same parse tree 
-   but different comments will count towards the totals of the bucket, but their comments
-   are lost.
+2. You are ok with not getting everything from pg_stat_statements, but rather the "most"
+   interesting queries. Getting *everything* is orders of magnitude too expensive to be
+   useful on busy systems, and this project is only trying to find the worst offenders, 
+   anyway.
 3. You are ok with a SQL prompt as a UI for now.
 4. You will have a role on your monitored dbs called "rotten-observer" and it will call
    some security definer functions (to query and reset pg_stat_statments in a "dba" schema.
