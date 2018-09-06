@@ -1,0 +1,6 @@
+github.com/lfittl/pg_query_go v0.0.0-20180518170915-169e80957094 h1:iS3dzpXGhrWkJ27wOxZyJtCNn9XSIlIhXxdS6ryIUm8=
+github.com/lfittl/pg_query_go v0.0.0-20180518170915-169e80957094/go.mod h1:ukRSNHGFZcSb9/WLyuUvSqrPzS09BScEYL5nbIovKqA=
+github.com/lib/pq v1.0.0 h1:X5PMW56eZitiTeO7tKzZxFCSpbFZJtkMMooicw2us9A=
+github.com/lib/pq v1.0.0/go.mod h1:5WUZQaWbwv1U+lTReE5YruASi9Al49XbQIvNi/34Woo=
+github.com/tj/go-pg-escape v1.1.0 h1:cobabZ0E/H8V7q/TmfxC0Zym1Xvg1KdAX1M4PwwnSF8=
+github.com/tj/go-pg-escape v1.1.0/go.mod h1:QwOGNf/gBKJqfmjaYFblbPOAYF2pvB6EZBDpAFeN5aQ=
