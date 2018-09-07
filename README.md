@@ -90,3 +90,4 @@ Um yeah quite a bit.
 - extend pg_query's go library to include deparse natively, so we don't have to use the ugly depase.rb script.
 - configurable context, instead of the hardcoded controller/action/job_tag, with their hard-coded regexes
 - keep a log of the queries we can't parse
+- While we make an effort to normalize cursors and temp tables, those regexs should probably not be hardcoded.
