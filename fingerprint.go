@@ -13,11 +13,19 @@ import (
 )
 
 // replace all schemas in the parse tree with a constant
-var schmeaRE,_ = regexp.Compile(`"schemaname": "[^"]+"`)
+var schemaRE,_ = regexp.Compile(`"schemaname": "[^"]+"`)
+
+// replace all cursors in the parse tree with a constant cursor
+var cursorRE,_ = regexp.Compile(`([^\s]+)_cursor_[0-9a-z]{12}([^\s]*)`)
+
+// replace all temp tables in the parse tree with a constant temp table name
+var tempTableRE,_ = regexp.Compile(`([^\s]+)_temp_table_[0-9a-z]{12}([^\s]*)`)
+
 
 // schema-qaulified columns do not get a schemaname parse object, which is dumb.
 // However, they do get 3 columns, so we can at least work with that.
 var qualifiedColumnsRE,_ = regexp.Compile(`{"ColumnRef": {"fields": \[{"String": {"str": "([^"]+)"}}, {"String": {"str": "([^"]+)"}}, {"String": {"str": "([^"]+)"}}\]`)
+
 
 func normalized_fingerprint(event *QueryEvent) (fingerprint string, err error) {
 
@@ -28,7 +36,15 @@ func normalized_fingerprint(event *QueryEvent) (fingerprint string, err error) {
   }
 
   cmd := exec.Command("/usr/local/bin/deparse.rb")
-  cmd.Stdin = strings.NewReader(schmeaRE.ReplaceAllString(qualifiedColumnsRE.ReplaceAllString(tree,"{\"ColumnRef\": {\"fields\": [{\"String\": {\"str\": \"x\"}}, {\"String\": {\"str\": \"$2\"}}, {\"String\": {\"str\": \"$3\"}}]"),"\"schemaname\": \"x\""))
+  cmd.Stdin = strings.NewReader(cursorRE.ReplaceAllString(
+                                  tempTableRE.ReplaceAllString(
+                                    schemaRE.ReplaceAllString(
+                                      qualifiedColumnsRE.ReplaceAllString(
+                                        tree,
+                                        "{\"ColumnRef\": {\"fields\": [{\"String\": {\"str\": \"x\"}}, {\"String\": {\"str\": \"$2\"}}, {\"String\": {\"str\": \"$3\"}}]"),
+                                      "\"schemaname\": \"x\""),
+                                    "${1}_temp_table_${2}"),
+                                  "${1}_cursor_x${2}"))
   var out bytes.Buffer
   cmd.Stdout = &out
   err = cmd.Run()
