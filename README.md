@@ -72,8 +72,15 @@ How to use it
 Known Issues
 ============
 - The code is ugly.
-- pg_query, which we use to normalize queries, has a bug that keeps us from being able to parse
-  some things: https://github.com/lfittl/pg_query/issues/86
+- pg_query, which we use to normalize queries, has a few bugs that keep us from being able to parse
+  some things:
+    https://github.com/lfittl/pg_query/issues/86
+    https://github.com/lfittl/pg_query/issues/88
+    https://github.com/lfittl/pg_query/issues/89
+    https://github.com/lfittl/pg_query/issues/90
+    https://github.com/lfittl/pg_query/issues/91
+    https://github.com/lfittl/pg_query/issues/92
+    https://github.com/lfittl/pg_query/issues/93
 - pg_query's go library doesn't let us reconstitute a parse tree into a query like the ruby one
   does, so we have a horibly non-performant work around.
 

@@ -16,11 +16,10 @@ import (
 var schemaRE,_ = regexp.Compile(`"schemaname": "[^"]+"`)
 
 // replace all cursors in the parse tree with a constant cursor
-var cursorRE,_ = regexp.Compile(`([^\s]+)_cursor_[0-9a-z]{12}([^\s]*)`)
+var cursorRE,_ = regexp.Compile(`([^\s]+)_cursor_[0-9a-z]{6}[0-9a-z]*([^\s]*)`)
 
 // replace all temp tables in the parse tree with a constant temp table name
-var tempTableRE,_ = regexp.Compile(`([^\s]+)_temp_table_[0-9a-z]{12}([^\s]*)`)
-
+var tempTableRE,_ = regexp.Compile(`([^\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\s]*)`)
 
 // schema-qaulified columns do not get a schemaname parse object, which is dumb.
 // However, they do get 3 columns, so we can at least work with that.
@@ -52,12 +51,17 @@ func normalized_fingerprint(event *QueryEvent) (fingerprint string, err error) {
     // we can't seem to use our json parse tree, so let's just see if we can't fingerprint it straight
     // This might end up in a lot of fingerprints that are only different based on their schema name,
     // but it's the best we can do.
-    fingerprint, err = pg_query.FastFingerprint(event.query)
-    if err != nil {
-        log.Println("couldn't fingerprint non-deparsable query: ", event.query, err)
-        return "", errors.New("failed to deparse or fingerprint")
+    if cursorRE.MatchString(event.query) || tempTableRE.MatchString(event.query) {
+      // EXCEPT - if the query matches our cursor or temp table RE, that's just going to grow as a function of usage, not of schema count.
+      // So actually _don't_ fastfingerprint something that matches either of those regexes.
     } else {
-      return fingerprint, nil
+      fingerprint, err = pg_query.FastFingerprint(event.query)
+      if err != nil {
+          log.Println("couldn't fingerprint non-deparsable query: ", event.query, err)
+          return "", errors.New("failed to deparse or fingerprint")
+      } else {
+        return fingerprint, nil
+      }
     }
   }
 
