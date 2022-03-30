@@ -72,7 +72,7 @@ alter table events_partition_template add primary key (id);
 
 
 SELECT public.create_parent('rotten.events', 'observed_window_start', 'native', 'daily', p_template_table := 'rotten.events_partition_template');
-update public.part_config set retention=21,retention_schema=false where parent_table='rotten.events';
+update public.part_config set retention='21 days',retention_keep_table=false where parent_table='rotten.events';
 
 
 create table event_context (
@@ -89,7 +89,7 @@ create index event_context_event on event_context (event_id);
 create table event_context_partition_template (like event_context);
 
 SELECT public.create_parent('rotten.event_context', 'observed_window_start', 'native', 'daily', p_template_table := 'rotten.event_context_partition_template');
-update public.part_config set retention=21,retention_schema=false where parent_table='rotten.event_context';
+update public.part_config set retention='21 days',retention_keep_table=false where parent_table='rotten.event_context';
 
 
 create type fingerprint_stats_domain as enum (
