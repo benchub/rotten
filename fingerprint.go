@@ -20,7 +20,7 @@ var inRE, _ = regexp.Compile(`(?i)in\W*\([\d'][^)]*\)`)
 var valuesRE, _ = regexp.Compile(`(?i)values\W*(\([^,\)]+(,[^,\)]+)*\))(,(\([^,\)]+(,[^,\)]+)*\)))*`)
 
 // replace all cursors in the parse tree with a constant cursor
-var cursorRE, _ = regexp.Compile(`([^\s]+)_cursor_[0-9a-z]{6}[0-9a-z]*([^\s]*)`)
+var cursorRE, _ = regexp.Compile(`^([^\s]+)[_\-]cursor_[0-9a-z]+([^\s]*)$`)
 
 // replace all temp tables in the parse tree with a constant temp table name
 var tempTableRE, _ = regexp.Compile(`([^\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\s]*)`)
@@ -126,7 +126,7 @@ func normalized_fingerprint(event *QueryEvent) (fingerprint string, err error) {
 
 	fingerprint, err = pg_query.Fingerprint(deparsed)
 	if err != nil {
-		log.Println("couldn't fingerprint deparsed query: ", modified_query, deparsed, err)
+		log.Println("couldn't fingerprint deparsed query:", modified_query, ", deparsed:", deparsed, ", error:", err)
 		return "", errors.New("failed to fingerprint depared query")
 	}
 

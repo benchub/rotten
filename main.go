@@ -15,6 +15,7 @@ import (
 
 import (
 	"database/sql"
+	runningstat "github.com/benchub/runningstat"
 	_ "github.com/lib/pq"
 )
 
@@ -310,7 +311,15 @@ func main() {
 					existingEvent.max_time = newEvent.max_time
 				}
 
-				// deal with mean and stddev time still
+				rs1 := runningstat.RunningStat{}
+				rs2 := runningstat.RunningStat{}
+
+				rs1.Init(int64(existingEvent.calls), existingEvent.mean_time, existingEvent.stddev_time)
+				rs2.Init(int64(newEvent.calls), newEvent.mean_time, newEvent.stddev_time)
+				rs1.Merge(rs2)
+
+				existingEvent.mean_time = rs1.RunningStatMean()
+				existingEvent.stddev_time = rs1.RunningStatDeviation()
 
 				existingEvent.rows += newEvent.rows
 				existingEvent.shared_blks_hit += newEvent.shared_blks_hit
@@ -368,7 +377,7 @@ func main() {
 	}
 
 	// until we implement graceful exiting, we'll never get here
-	AppCleanup()
+	// AppCleanup()
 }
 
 func reportProgress(noIdleHands bool, interval uint32, observation_interval uint32) {

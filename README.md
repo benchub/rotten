@@ -80,7 +80,6 @@ TODO
 ====
 Um yeah quite a bit.
 
-- pull out all the stats stuff to a module
 - make a UI
 - allow for arbitrary logical source descriptions, not just Project/Environment/Cluster/Role
 - allow for arbitrary locations of the functions in the observed db

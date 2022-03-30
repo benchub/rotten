@@ -1,3 +1,5 @@
+github.com/benchub/runningstat v0.2.0 h1:w8ShUzQRVhIUj9toChidq1gFKiB/Hm72kyupfHxZb0k=
+github.com/benchub/runningstat v0.2.0/go.mod h1:jInwHJCfwGQZaCD5SVbRWXj/D4wO0T8ksjscO/jdJSo=
 github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 h1:DDGfHa7BWjL4YnC6+E63dPcxHo2sUxDIu8g3QgEJdRY=
 github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869/go.mod h1:Ekp36dRnpXw/yCqJaO+ZrUyxD+3VXMFFr56k5XYrpB4=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=

@@ -4,22 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"math"
 	"regexp"
 	"sync"
 	"time"
-)
 
-// runningstat is adapted from https://gist.github.com/turnersr/11390535, which in turn credits:
-//     1. Numerically Stable, Single-Pass, Parallel Statistics Algorithms - http://www.janinebennett.org/index_files/ParallelStatisticsAlgorithms.pdf
-//     2. Accurately computing running variance - http://www.johndcook.com/standard_deviation.html
-type RunningStat struct {
-	m_n    int64
-	m_oldM float64
-	m_newM float64
-	m_oldS float64
-	m_newS float64
-}
+	runningstat "github.com/benchub/runningstat"
+)
 
 var knownStatsDomains = [19]string{"calls",
 	"total_time",
@@ -63,8 +53,8 @@ type Fingerprint struct {
 	time_since_start  float64
 
 	// running statistics for the various metrics we track
-	stats        map[string]*RunningStat
-	allTimeStats map[string]*RunningStat
+	stats        map[string]*runningstat.RunningStat
+	allTimeStats map[string]*runningstat.RunningStat
 
 	// for inserts
 	db_id uint64
@@ -200,9 +190,9 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 		existingFingerprint.samples <- &sample
 	} else {
 		newFingerprint := Fingerprint{}
-		newFingerprint.stats = make(map[string]*RunningStat)
+		newFingerprint.stats = make(map[string]*runningstat.RunningStat)
 		for _, stats_domain := range knownStatsDomains {
-			newStats := RunningStat{}
+			newStats := runningstat.RunningStat{}
 			newFingerprint.stats[stats_domain] = &newStats
 		}
 		newFingerprint.db_id = fingerprint_id
@@ -247,9 +237,9 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
 			// do this report both for the logical source id and 0, which is the special logical source of "everywhere"
 		LogicalLoop:
 			for _, source_id := range [2]uint32{0, logical_source_id} {
-				var dbStats map[string]RunningStat
+				var dbStats map[string]runningstat.RunningStat
 
-				dbStats = make(map[string]RunningStat)
+				dbStats = make(map[string]runningstat.RunningStat)
 
 				tx, err := rottenDB.Begin()
 				if err != nil {
@@ -266,26 +256,26 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
 				statsFound := 0
 				for queryResults.Next() {
 					statsFound++
-					var theseStats RunningStat
+					var theseStats runningstat.RunningStat
 					var query_stats_domain string
+					var oldCount int64
+					var oldMean float64
+					var oldDeviation float64
 
-					if err := queryResults.Scan(&query_stats_domain, &theseStats.m_n, &theseStats.m_oldM, &theseStats.m_newS); err != nil {
+					if err := queryResults.Scan(&query_stats_domain, &oldCount, &oldMean, &oldDeviation); err != nil {
 						log.Println("couldn't parse dbstats row using fingerprint_id,logical_source_id", f.db_id, source_id, err)
 						tx.Rollback()
 						continue LogicalLoop
 					}
 
-					// we've retried the deviation from the db, but the RunningStats structure doesn't keep that number internally
-					if theseStats.m_n > 1 {
-						theseStats.m_oldS = theseStats.m_newS*theseStats.m_newS*float64(theseStats.m_n) - theseStats.m_newS*theseStats.m_newS
-						theseStats.m_newS = theseStats.m_oldS
-					}
+					theseStats.Init(oldCount, oldMean, oldDeviation)
+
 					dbStats[query_stats_domain] = theseStats
 				}
 				queryResults.Close()
 				if statsFound == 0 {
 					for _, stats_domain := range knownStatsDomains {
-						r, err := tx.Query(`INSERT INTO fingerprint_stats(fingerprint_id, logical_source_id, type, last, count, mean, deviation) VALUES ($1, $2, $3, $4, $5, $6, $7)`, f.db_id, source_id, stats_domain, f.last, f.stats[stats_domain].m_n, f.stats[stats_domain].m_oldM, RunningStatDeviation(*(f.stats[stats_domain])))
+						r, err := tx.Query(`INSERT INTO fingerprint_stats(fingerprint_id, logical_source_id, type, last, count, mean, deviation) VALUES ($1, $2, $3, $4, $5, $6, $7)`, f.db_id, source_id, stats_domain, f.last, f.stats[stats_domain].RunningStatCount(), f.stats[stats_domain].RunningStatMean(), f.stats[stats_domain].RunningStatDeviation())
 						if err != nil {
 							log.Println("couldn't insert new fingerprint stats for fingerprint, logical_source_id, type", f.db_id, source_id, stats_domain, err)
 							tx.Rollback()
@@ -299,30 +289,16 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
 					continue LogicalLoop
 				} else {
 					// we found all our stats; iterate over them and update them all for this source_id
-					var combined RunningStat
+					var combined runningstat.RunningStat
 
 					for _, stats_domain := range knownStatsDomains {
 						// verify query_stats_domain is a domain we know about
 						_, present := f.stats[stats_domain]
 						if present {
-							// we had stats before; merge them with what we have now, then zero out what we have so we only merge in new data
-							// https://gist.github.com/turnersr/11390535
-							oldStats := dbStats[stats_domain]
+							combined.Init(f.stats[stats_domain].RunningStatCount(), f.stats[stats_domain].RunningStatMean(), f.stats[stats_domain].RunningStatDeviation())
+							combined.Merge(dbStats[stats_domain])
 
-							oldStats.m_newM = oldStats.m_oldM
-							oldStats.m_newS = oldStats.m_oldS
-
-							delta := oldStats.m_oldM - f.stats[stats_domain].m_oldM
-							delta2 := delta * delta
-							combined.m_n = f.stats[stats_domain].m_n + oldStats.m_n
-							combined.m_oldM = f.stats[stats_domain].m_newM + float64(oldStats.m_n)*delta/float64(combined.m_n)
-							combined.m_newM = combined.m_oldM
-
-							q := float64(f.stats[stats_domain].m_n*oldStats.m_n) * delta2 / float64(combined.m_n)
-							combined.m_oldS = f.stats[stats_domain].m_newS + oldStats.m_newS + q
-							combined.m_newS = combined.m_oldS
-
-							r, err := tx.Query(`update fingerprint_stats set last=$1,count=$2,mean=$3,deviation=$4 where fingerprint_id=$5 and logical_source_id=$6 and type=$7`, f.last, combined.m_n, combined.m_oldM, RunningStatDeviation(combined), f.db_id, source_id, stats_domain)
+							r, err := tx.Query(`update fingerprint_stats set last=$1,count=$2,mean=$3,deviation=$4 where fingerprint_id=$5 and logical_source_id=$6 and type=$7`, f.last, combined.RunningStatCount(), combined.RunningStatMean(), combined.RunningStatDeviation(), f.db_id, source_id, stats_domain)
 							if err != nil {
 								log.Println("couldn't update fingerprint stats for fingerprint_id,logical_source_id,type", f.db_id, source_id, stats_domain, err)
 								tx.Rollback()
@@ -346,7 +322,7 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
 			}
 
 			for _, stats_domain := range knownStatsDomains {
-				RunningStatReset(f.stats[stats_domain])
+				f.stats[stats_domain].Reset()
 			}
 			f.statsLock.Unlock()
 		}
@@ -367,57 +343,9 @@ func consumeSamples(f *Fingerprint) {
 		f.time_since_start += sample.metrics["total_time"]
 
 		for _, stats_domain := range knownStatsDomains {
-			mergedStat := Push(sample.metrics[stats_domain], *(f.stats[stats_domain]))
-			f.stats[stats_domain] = &mergedStat
+			f.stats[stats_domain].Push(sample.metrics[stats_domain])
 		}
 		f.statsLock.Unlock()
 
 	}
-}
-
-// https://www.johndcook.com/blog/standard_deviation/
-func Push(x float64, oldRS RunningStat) RunningStat {
-	rs := oldRS
-	rs.m_n += 1
-	if rs.m_n == 1 {
-		rs.m_oldM = x
-		rs.m_newM = x
-		rs.m_oldS = 0
-	} else {
-		rs.m_newM = rs.m_oldM + (x-rs.m_oldM)/float64(rs.m_n)
-		rs.m_newS = rs.m_oldS + (x-rs.m_oldM)*(x-rs.m_newM)
-
-		rs.m_oldM = rs.m_newM
-		rs.m_oldS = rs.m_newS
-	}
-	return rs
-}
-
-func RunningStatReset(rs *RunningStat) {
-	rs.m_n = 0
-	rs.m_oldM = 0
-	rs.m_newM = 0
-	rs.m_oldS = 0
-	rs.m_newS = 0
-}
-
-func RunningStatMean(rs RunningStat) float64 {
-	if rs.m_n > 0 {
-		return rs.m_newM
-	}
-
-	return 0
-}
-
-func RunningStatVariance(rs RunningStat) float64 {
-	if rs.m_n > 1 {
-		return rs.m_newS / float64(rs.m_n-1)
-	}
-
-	return 0
-}
-
-func RunningStatDeviation(rs RunningStat) float64 {
-
-	return math.Sqrt(RunningStatVariance(rs))
 }
