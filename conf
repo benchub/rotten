@@ -1,6 +1,6 @@
 {
-	"RottenDBConn": ["host=yourRottenServerGoesHere dbname=rotten user=rotten_client password=letmein sslmode=require binary_parameters=yes"],
-	"ObservedDBConn": ["host=yourObservedServerGoesHere dbname= user=rotten_observer password=letmein sslmode=require"],
+	"RottenDBConn": ["host=yourRottenServerGoesHere dbname=rotten user=rotten-client password=letmein sslmode=require binary_parameters=yes"],
+	"ObservedDBConn": ["host=yourObservedServerGoesHere dbname= user=rotten-observer password=letmein sslmode=require"],
 	"StatusInterval": 60,
 	"ObservationInterval": 300,
 	"FQDN": "The FQDN of this host, to locate log sources",

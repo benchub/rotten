@@ -53,13 +53,20 @@ How to use it
   modvendor -copy="**/*.c **/*.h **/*.proto" -v
   go build github.com/benchub/rotten
   ```
-4. Import `schema/tables.sql` into the rotten db. Also create a `rotten-client` role that
+4. Install pg_partman in the rotten db. See https://github.com/pgpartman/pg_partman. tldr:
+ - download pg_partman and `make install`
+ - add `pg_partman_bgw` to `shared_preload_libraries` in postgresql.conf
+ - run `CREATE EXTENSION pg_partman` in the rotten db
+5. Import `schema/tables.sql` into the rotten db. Also create a `rotten-client` role that
    will use these tables.
-5. Install the `rotten-observer` role in your monitored databases and the `sql/function.sql`
-   in the `dba` schema on those databases.
-6. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
-7. Modify the conf to fit your environment.
-  1. `RottenDBConn` and `ObservedDBConn` are hopefully self-explanitory, BUT note that if you
+6. Install `pg_stat_statements` in the monitored database:
+ - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
+ - run `CREATE EXTENSION pg_stat_statements` in the monitored database
+7. Install the `rotten-observer` role in your monitored databases and the `schema/function.sql`
+   in the `dba` schema on those databases. Use `schema/function-pg13.sql` if you're on PG 13 or newer. 
+8. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
+9. Modify the conf to fit your environment.
+  1. `RottenDBConn` and `ObservedDBConn` are hopefully self-explanatory, BUT note that if you
      are using pgbouncer in transaction pooling between rotten and your rotten db, you are
      going to need to use the nifty undocumented binary_parameters=yes parameter in order
      to keep go's pg library from using named queries for a single one-liner.
