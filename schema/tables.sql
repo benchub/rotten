@@ -135,4 +135,11 @@ grant SELECT,UPDATE on all sequences in schema rotten to "readwrite";
 
 grant usage on schema rotten to readwrite,readonly,"rotten-client";
 
+grant select on all tables in schema rotten to "rotten-interface";
+grant select on all sequences in schema rotten to "rotten-interface";
+grant usage on schema rotten to "rotten-interface";
+
+alter default privileges in schema rotten grant select ON tables TO "rotten-interface" ;
+
 alter database rotten set search_path to "$user", rotten, public;
+
