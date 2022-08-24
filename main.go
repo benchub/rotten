@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"regexp"
 	"runtime"
 	"runtime/pprof"
 	"syscall"
@@ -85,11 +86,15 @@ type Configuration struct {
 	RottenDBConn        []string
 	StatusInterval      uint32
 	ObservationInterval uint32
+	SanityCheck         string
 	FQDN                string
 	Project             string
 	Environment         string
 	Cluster             string
 	Role                string
+	ContextController   string
+	ContextAction       string
+	ContextJob          string
 }
 
 func main() {
@@ -97,6 +102,7 @@ func main() {
 	var observedDB *sql.DB
 	var status_interval uint32
 	var observation_interval uint32
+	var sanity_check string
 	var fqdn string
 	var project string
 	var environment string
@@ -104,6 +110,9 @@ func main() {
 	var role string
 	var logical_id uint32
 	var physical_id uint32
+	var re_controller *regexp.Regexp
+	var re_action *regexp.Regexp
+	var re_job_tag *regexp.Regexp
 
 	flag.Parse()
 	if *cpuprofile != "" {
@@ -161,11 +170,15 @@ func main() {
 
 		status_interval = configuration.StatusInterval
 		observation_interval = configuration.ObservationInterval
+		sanity_check = configuration.SanityCheck
 		fqdn = configuration.FQDN
 		project = configuration.Project
 		environment = configuration.Environment
 		cluster = configuration.Cluster
 		role = configuration.Role
+		re_controller, _ = regexp.Compile(configuration.ContextController)
+		re_action, _ = regexp.Compile(configuration.ContextAction)
+		re_job_tag, _ = regexp.Compile(configuration.ContextJob)
 
 		// find out the logical source ID we will be using
 		if err := rottenDB.QueryRow(`select id from logical_sources where project=$1 and environment=$2 and cluster=$3 and role=$4`, project, environment, cluster, role).Scan(&logical_id); err == nil {
@@ -217,12 +230,25 @@ func main() {
 		var windowEnd PoorMansTime
 		var nextWindowStart PoorMansTime
 		var eventHash map[string]QueryEvent
+		var doIt bool
 
 		eventHash = make(map[string]QueryEvent)
 
 		windowEnd.sec = time.Now().Unix()
 		parseFailures = 0
 		eventsPending = 0
+		doIt = true
+
+		log.Println("Performing sanity check")
+		err := observedDB.QueryRow(sanity_check).Scan(&doIt)
+		if err != nil {
+			log.Fatalln("couldn't run sanity check test", err)
+		}
+
+		if doIt == false {
+			log.Fatalln("sanity check fails; exiting")
+			// will now exit because Fatal
+		}
 
 		log.Println("retrieving stats results")
 
@@ -282,9 +308,9 @@ func main() {
 			}
 
 			// If we have a context for this query, build out a hash for it
-			controller_id := find_controller_id(rottenDB, &newEvent)
-			action_id := find_action_id(rottenDB, &newEvent)
-			job_tag_id := find_job_tag_id(rottenDB, &newEvent)
+			controller_id := find_controller_id(rottenDB, &newEvent, re_controller)
+			action_id := find_action_id(rottenDB, &newEvent, re_action)
+			job_tag_id := find_job_tag_id(rottenDB, &newEvent, re_job_tag)
 
 			context_hash := ""
 			if controller_id > 0 {

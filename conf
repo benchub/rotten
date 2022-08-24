@@ -1,12 +1,16 @@
 {
-	"RottenDBConn": ["host=yourRottenServerGoesHere dbname=rotten user=rotten-client password=letmein sslmode=require binary_parameters=yes"],
-	"ObservedDBConn": ["host=yourObservedServerGoesHere dbname= user=rotten-observer password=letmein sslmode=require"],
+	"RottenDBConn": ["host=yourRottenServerGoesHere dbname=rotten user=rotten_client password=letmein sslmode=require binary_parameters=yes"],
+	"ObservedDBConn": ["host=yourObservedServerGoesHere dbname= user=rotten_observer password=letmein sslmode=require"],
+	"SanityCheck": "select true",
 	"StatusInterval": 60,
 	"ObservationInterval": 300,
 	"FQDN": "The FQDN of this host, to locate log sources",
 	"Project": "Logical project this worker belongs to",
 	"Environment": "Logical environment this worker belongs to",
 	"Cluster": "Logical cluster this worker belongs to",
-	"Role": "Logical role this worker has, usually something like master or slave"
+	"Role": "Logical role this worker has, usually something like primary or secondary",
+	"ContextController": "A regex to find the controller in a maginalia comment, such as: /\\*.*controller(_with_namespace)?:([^,]+).*\\*/",
+	"ContextAction": "A regex to find the action in a maginalia comment, such as: /\\*.*action:([^,]+).*\\*/",
+	"ContextJob": "A regex to find the job in a maginalia comment, such as: /\\*.*job(_tag)?:([^,]+).*\\*/"
 }
 

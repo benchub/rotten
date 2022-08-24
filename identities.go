@@ -20,20 +20,16 @@ var protectedActions = ProtectedHash{m: make(map[string]uint32)}
 
 var protectedControllers = ProtectedHash{m: make(map[string]uint32)}
 
-var re_controller, _ = regexp.Compile(`.+/\*.*controller(_with_namespace)?:([^,]+).*\*/`)
-var re_action, _ = regexp.Compile(`.+/\*.*action:([^,]+).*\*/`)
-var re_job_tag, _ = regexp.Compile(`.+/\*.*job_tag:([^,]+).*\*/`)
-
-func find_job_tag_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint32) {
-	return find_identity(rottenDB, event, re_job_tag, &protectedJobTags, "job_tag")
+func find_job_tag_id(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
+	return find_identity(rottenDB, event, re, &protectedJobTags, "job_tag")
 }
 
-func find_action_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint32) {
-	return find_identity(rottenDB, event, re_action, &protectedActions, "action")
+func find_action_id(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
+	return find_identity(rottenDB, event, re, &protectedActions, "action")
 }
 
-func find_controller_id(rottenDB *sql.DB, event *QueryEvent) (db_id uint32) {
-	return find_identity(rottenDB, event, re_controller, &protectedControllers, "controller")
+func find_controller_id(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
+	return find_identity(rottenDB, event, re, &protectedControllers, "controller")
 }
 
 func find_identity(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp, list *ProtectedHash, object string) (db_id uint32) {

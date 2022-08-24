@@ -70,13 +70,25 @@ How to use it
      are using pgbouncer in transaction pooling between rotten and your rotten db, you are
      going to need to use the nifty undocumented binary_parameters=yes parameter in order
      to keep go's pg library from using named queries for a single one-liner.
-  2. `StatusInterval` is how often to report status (in seconds) to its log.
-  3. `ObservationInterval` is how long (in seconds) to let pg_stat_statements gather info
+  2. `SanityCheck` is a query that will be run against the Observed DB before each window.
+     Returning a boolean True value will tell rotten to proceed; a False will cause rotten
+     to quit. The assumption is that systemd will keep restarting rotten until SanityCheck
+     returns True, and also that you have a function you might call which tells you what the
+     database you have connected to thinks it is.
+     This is useful in environments where the host rotten is connecting to might not be what
+     rotten intends. For example, you might want to be gathering statistics from a secondary
+     database, but the secondary hostname might currently point to the primary server, while
+     the secondary undergoes maintenance. While that might be exactly what most database
+     clients would want, it's not helpful for rotten's purposes. Potentially worse, rotten
+     would not know when to reconnect once maintenance is done, and so would stay connected to
+     the primary until it dies or is manually restarted.
+  3. `StatusInterval` is how often to report status (in seconds) to its log.
+  4. `ObservationInterval` is how long (in seconds) to let pg_stat_statements gather info
      for. This is the most granular you can make your reports, and the lower you set this,
      the more data you will need to store in your rotten db.
-  4. `FQDN` is some unique string (typically the FQDN of the observed db) to help find a
+  5. `FQDN` is some unique string (typically the FQDN of the observed db) to help find a
      physical log if more information is desired other than the fingerprint.
-  5. `Project`, `Environment`, `Cluster`, and `Role` are logical identifiers for where the samples
+  6. `Project`, `Environment`, `Cluster`, and `Role` are logical identifiers for where the samples
      of data are coming from.
 
 Known Issues
