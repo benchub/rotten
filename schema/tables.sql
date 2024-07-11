@@ -40,7 +40,7 @@ create table physical_sources (
 create unique index physical_sources_unique on physical_sources (fqdn);
 
 CREATE TABLE fingerprints (
-    id serial primary key,
+    id bigserial primary key,
     fingerprint text NOT NULL,
     normalized text NOT NULL
 );
@@ -53,7 +53,7 @@ comment on column fingerprints.normalized is 'The fingerprint with placeholders 
 create sequence event_id_seq owned by none;
 create table events (
     id bigint not null default nextval('rotten.event_id_seq'),
-    fingerprint_id int not null REFERENCES fingerprints(id),
+    fingerprint_id bigint not null REFERENCES fingerprints(id),
     logical_source_id int not null REFERENCES logical_sources(id),
     physical_source_id int not null REFERENCES physical_sources(id),
     observed_window_start timestamptz not null,
@@ -115,7 +115,7 @@ create type fingerprint_stats_domain as enum (
 );
 
 CREATE TABLE fingerprint_stats (
-    fingerprint_id int not null REFERENCES fingerprints(id),
+    fingerprint_id bigint not null REFERENCES fingerprints(id),
     logical_source_id int not null REFERENCES logical_sources(id),
     type fingerprint_stats_domain not NULL,
     count bigint,

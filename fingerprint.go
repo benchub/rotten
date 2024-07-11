@@ -11,6 +11,8 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v2"
 )
 
+
+
 // replace all IN clauses with a single entry
 // e.g. IN (1,2,3) becomes IN (1)
 var inRE, _ = regexp.Compile(`(?i)in\W*\([\d'][^)]*\)`)
@@ -18,6 +20,12 @@ var inRE, _ = regexp.Compile(`(?i)in\W*\([\d'][^)]*\)`)
 // replace all VALUES clauses with a VALUES statement only having the first tuple value
 // e.g. VALUES (1,2),(3,4),(5,6) becomes VALUES (1,2)
 var valuesRE, _ = regexp.Compile(`(?i)values\W*(\([^,\)]+(,[^,\)]+)*\))(,(\([^,\)]+(,[^,\)]+)*\)))*`)
+
+// replace random index names that repack might generate with a constant name
+var randomIndexRE, _ = regexp.Compile(`^index_\d+$`)
+
+// replace random table names that repack might generate with a constant name
+var randomTableRE, _ = regexp.Compile(`^table_\d+$`)
 
 // replace all cursors in the parse tree with a constant cursor
 var cursorRE, _ = regexp.Compile(`^([^\s]+)[_\-]cursor_[0-9a-z]+([^\s]*)$`)
@@ -52,22 +60,33 @@ func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 		skipIt = true
 	case "NoUnkeyedLiterals":
 		skipIt = true
+	case "Rolename":
+		v.SetString("some_role")
+	case "HowMany":
+		v.SetInt(0)
+	case "Idxname":
+		v.SetString(randomIndexRE.ReplaceAllString(v.String(), "some_index"))
+	case "Relname":
+		v.SetString(randomTableRE.ReplaceAllString(v.String(), "some_table"))
+		v.SetString(tempTableRE.ReplaceAllString(v.String(), "${1}_temp_table_x${2}"))
+	case "Portalname":
+		v.SetString(cursorRE.ReplaceAllString(v.String(), "${1}_cursor_x${2}"))
 	case "Schemaname":
 		if len(v.String()) > 0 {
 			v.SetString("some_schema")
+		}
+	default:
+		// Most fields aren't going to hold cursor or temp table identifiers, but
+		// we don't have the energy to make an exhaustive list of where they might show up,
+		// and it's not *terrible* (at least in our case) to just try everywhere we can.
+		if v.CanSet() && v.Kind() == reflect.String {
+			v.SetString(cursorRE.ReplaceAllString(v.String(), "${1}_cursor_x${2}"))
+			v.SetString(tempTableRE.ReplaceAllString(v.String(), "${1}_temp_table_x${2}"))
 		}
 	}
 
 	if skipIt {
 		return reflectwalk.SkipEntry
-	}
-
-	// Most fields aren't going to hold cursor or temp table identifiers, but
-	// we don't have the energy to make an exhaustive list of where they might show up,
-	// and it's not *terrible* (at least in our case) to just try everywhere we can.
-	if v.CanSet() && v.Kind() == reflect.String {
-		v.SetString(cursorRE.ReplaceAllString(v.String(), "${1}_cursor_x${2}"))
-		v.SetString(tempTableRE.ReplaceAllString(v.String(), "${1}_temp_table_x${2}"))
 	}
 
 	return nil

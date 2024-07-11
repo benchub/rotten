@@ -108,7 +108,7 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 		return
 	}
 
-	var event_id uint32
+	var event_id uint64
 	newQuerySQL := fmt.Sprintf("insert into events (fingerprint_id,logical_source_id,physical_source_id,observed_window_start,observed_window_end,calls,time) values (%d,%d,%d,to_timestamp(%d),to_timestamp(%d),%f,%f) returning id", fingerprint_id, logical_source_id, physical_source_id, event.observationTimeStart.sec, event.observationTimeEnd.sec, event.calls, event.total_time)
 	if err := tx.QueryRow(newQuerySQL).Scan(&event_id); err != nil {
 		log.Fatalln("couldn't insert into events", newQuerySQL, err)
