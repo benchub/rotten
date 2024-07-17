@@ -66,10 +66,9 @@ How to use it
    in the `dba` schema on those databases. Use `schema/function-pg13.sql` if you're on PG 13 or newer. 
 8. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
 9. Modify the conf to fit your environment.
-  1. `RottenDBConn` and `ObservedDBConn` are hopefully self-explanatory, BUT note that if you
-     are using pgbouncer in transaction pooling between rotten and your rotten db, you are
-     going to need to use the nifty undocumented binary_parameters=yes parameter in order
-     to keep go's pg library from using named queries for a single one-liner.
+  1. `RottenDBConn` and `ObservedDBConn` are hopefully self-explanatory. Extra care has been
+     given in rotten to make sure that rotten will correct send a root ca with all the needed
+     intermediate certs, if you are working with such an environment.
   2. `SanityCheck` is a query that will be run against the Observed DB before each window.
      Returning a boolean True value will tell rotten to proceed; a False will cause rotten
      to quit. The assumption is that systemd will keep restarting rotten until SanityCheck
