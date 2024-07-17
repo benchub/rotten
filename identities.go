@@ -1,11 +1,13 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"log"
 	"regexp"
 	"sync"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tj/go-pg-escape"
 )
 
@@ -20,19 +22,19 @@ var protectedActions = ProtectedHash{m: make(map[string]uint32)}
 
 var protectedControllers = ProtectedHash{m: make(map[string]uint32)}
 
-func find_job_tag_id(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
+func find_job_tag_id(rottenDB *pgxpool.Pool, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
 	return find_identity(rottenDB, event, re, &protectedJobTags, "job_tag")
 }
 
-func find_action_id(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
+func find_action_id(rottenDB *pgxpool.Pool, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
 	return find_identity(rottenDB, event, re, &protectedActions, "action")
 }
 
-func find_controller_id(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
+func find_controller_id(rottenDB *pgxpool.Pool, event *QueryEvent, re *regexp.Regexp) (db_id uint32) {
 	return find_identity(rottenDB, event, re, &protectedControllers, "controller")
 }
 
-func find_identity(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp, list *ProtectedHash, object string) (db_id uint32) {
+func find_identity(rottenDB *pgxpool.Pool, event *QueryEvent, re *regexp.Regexp, list *ProtectedHash, object string) (db_id uint32) {
 	if re.MatchString(event.query) {
 		matches := re.FindStringSubmatch(event.query)
 		if len(matches) > 1 {
@@ -46,16 +48,16 @@ func find_identity(rottenDB *sql.DB, event *QueryEvent, re *regexp.Regexp, list 
 				db_id = existing
 			} else {
 				s := escape.Escape("select id from %Is where %I=%L", object, object, matches[len(matches)-1])
-				if err := rottenDB.QueryRow(s).Scan(&db_id); err == nil {
+				if err := rottenDB.QueryRow(context.Background(), s).Scan(&db_id); err == nil {
 					// yay, we have our ID
 
-				} else if err == sql.ErrNoRows {
+				} else if err == pgx.ErrNoRows {
 					i := escape.Escape("insert into %Is(%I) values (%L) returning id", object, object, matches[len(matches)-1])
-					if err := rottenDB.QueryRow(i).Scan(&db_id); err == nil {
+					if err := rottenDB.QueryRow(context.Background(), i).Scan(&db_id); err == nil {
 						// yay, we have our ID
 					} else {
 						// we couldn't insert, probably because another session got here first. See what id it got
-						if err := rottenDB.QueryRow(s).Scan(&db_id); err == nil {
+						if err := rottenDB.QueryRow(context.Background(), s).Scan(&db_id); err == nil {
 							// yay, we have our ID
 						} else {
 							log.Fatalln("couldn't select newly inserted", object, err)

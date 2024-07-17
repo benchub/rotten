@@ -44,13 +44,13 @@ How to use it
 1. Get and install Go. http://www.golang.org
 2. Make sure you have modvendor installed:
   ```bash
-  go install github.com/goware/modvendor@latest
+  go get -u github.com/goware/modvendor
   ```
 3. After setting up your $GOPATH and $GOBIN, build it:
   ```bash
   go mod tidy
   go mod vendor
-  modvendor -copy="**/*.c **/*.h **/*.proto" -v
+  ~/go/bin/modvendor -copy="**/*.c **/*.h **/*.proto" -v
   go build github.com/benchub/rotten
   ```
 4. Install pg_partman in the rotten db. See https://github.com/pgpartman/pg_partman. tldr:

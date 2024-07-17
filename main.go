@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"log"
@@ -10,14 +14,15 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"syscall"
 	"time"
 )
 
 import (
-	"database/sql"
 	runningstat "github.com/benchub/runningstat"
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type PoorMansTime struct {
@@ -78,6 +83,7 @@ var eventsPending uint32
 
 var configFileFlag = flag.String("config", "", "the config file")
 var noIdleHandsFlag = flag.Bool("noIdleHands", false, "when set to true, kill us (ungracefully) if we seem to be doing nothing")
+var debugFlag = flag.Bool("debug", false, "when set to true, turn on debugging")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write mem profile to file")
 
@@ -97,9 +103,107 @@ type Configuration struct {
 	ContextJob          string
 }
 
+func remakeSSLCertConfig(connectionString string) *tls.Config {
+	// hacky hack solution to get the rootca files, as well as the client certs, so that we can build up a cert chain with all the intermediate certs.
+	connectionStringSettings := make(map[string]string)
+
+	// Split the string by spaces to get each key-value pair
+	pairs := strings.Split(connectionString, " ")
+
+	for _, pair := range pairs {
+		// Split each pair by the equals sign to separate the key from the value
+		kv := strings.Split(pair, "=")
+		if len(kv) == 2 {
+			// Insert the key and value into the map
+			connectionStringSettings[kv[0]] = kv[1]
+		}
+	}
+
+	// Load root CA cert
+	rootCertPool := x509.NewCertPool()
+	rootCert, err := os.ReadFile(connectionStringSettings["sslrootcert"])
+	if err != nil {
+		log.Fatalln("Error loading root certificate: %v\n", err)
+	}
+
+	// Load client cert & key
+	clientCert, err := os.ReadFile(connectionStringSettings["sslcert"])
+	if err != nil {
+		log.Fatalf("Failed to read client certificate file: %v", err)
+	}
+	clientKey, err := os.ReadFile(connectionStringSettings["sslkey"])
+	if err != nil {
+		log.Fatalf("Failed to read client key file: %v", err)
+	}
+
+	ok := rootCertPool.AppendCertsFromPEM(rootCert)
+	if !ok {
+		log.Fatalln("Failed to append root certificate to pool\n")
+	}
+
+	if *debugFlag {
+		log.Println("Loaded Root CA Certificates:")
+		rootsPEM := rootCert
+		for {
+			var block *pem.Block
+			block, rootsPEM = pem.Decode(rootsPEM)
+			if block == nil {
+				break
+			}
+			if block.Type == "CERTIFICATE" {
+				caCert, err := x509.ParseCertificate(block.Bytes)
+				if err != nil {
+					log.Printf("Error parsing certificate: %v\n", err)
+					os.Exit(1)
+				}
+				log.Printf("\tSubject: %s\n", caCert.Subject)
+			}
+		}
+	}
+
+	// Append the client cert and CA chain to get a full certificate chain
+	clientChain := append(clientCert, []byte("\n")...)
+	clientChain = append(clientChain, rootCert...)
+	clientCerts, err := tls.X509KeyPair(clientChain, clientKey)
+	if err != nil {
+		log.Fatalln("Error loading client key pair: %v\n", err)
+	}
+
+	if *debugFlag {
+		log.Println("Client Certificate and Chain:")
+		for _, cert := range clientCerts.Certificate {
+			parsedCert, err := x509.ParseCertificate(cert)
+			if err != nil {
+				log.Printf("Error parsing client certificate: %v\n", err)
+				os.Exit(1)
+			}
+			log.Printf("\tSubject: %s\n", parsedCert.Subject)
+		}
+	}
+
+	// Create a custom TLS config with specific versions and cipher suites
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{clientCerts},
+		ClientCAs:    rootCertPool,
+		RootCAs:      rootCertPool,
+		ServerName:   connectionStringSettings["host"], // Set the ServerName to the host you are connecting to
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS13,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		},
+	}
+
+	return tlsConfig
+}
+
 func main() {
-	var rottenDB *sql.DB
-	var observedDB *sql.DB
+	var rottenDB *pgxpool.Pool
+	var observedDB *pgx.Conn
+	var observedDBReset *pgx.Conn
 	var status_interval uint32
 	var observation_interval uint32
 	var sanity_check string
@@ -153,20 +257,59 @@ func main() {
 		configuration := &Configuration{}
 		decoder.Decode(&configuration)
 
-		rottenDB, err = sql.Open("postgres", configuration.RottenDBConn[0])
+		// build up our connection to the rotten DB
+		rottenDBConfig, err := pgxpool.ParseConfig(configuration.RottenDBConn[0])
+		if err != nil {
+			log.Fatalln("couldn't create rottenDBConfig", err)
+			// will now exit because Fatal
+		}
+		rottenDBConfig.MaxConnLifetime = time.Second * 10
+		rottenDBConfig.MaxConns = 5
+		rottenDBConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+
+		if rottenDBConfig.ConnConfig.TLSConfig != nil {
+			if rottenDBConfig.ConnConfig.TLSConfig.RootCAs != nil {
+				// golang libraries don't seem to send intermediate certs, so we have to manually make sure that happens.
+				log.Printf("We seem to have a root CA for rotten DB; remaking the chain to be sure to capture any intermediate certs.")
+
+				rottenDBConfig.ConnConfig.TLSConfig = remakeSSLCertConfig(configuration.RottenDBConn[0])
+			}
+		}
+
+		rottenDB, err = pgxpool.NewWithConfig(context.Background(), rottenDBConfig)
 		if err != nil {
 			log.Fatalln("couldn't connect to rotten db", err)
 			// will now exit because Fatal
 		}
 
-		rottenDB.SetMaxOpenConns(5)
-		rottenDB.SetConnMaxLifetime(time.Second * 10)
+		// Now build up the two connections we're going to use for the observed db
+		observedDBConfig, err := pgx.ParseConfig(configuration.ObservedDBConn[0])
+		if err != nil {
+			log.Fatalln("couldn't create observedDBConfig", err)
+			// will now exit because Fatal
+		}
+		if observedDBConfig.TLSConfig != nil {
+			if observedDBConfig.TLSConfig.RootCAs != nil {
+				// golang libraries don't seem to send intermediate certs, so we have to manually make sure that happens.
+				log.Printf("We seem to have a root CA for observed DB; remaking the chain to be sure to capture any intermediate certs.")
 
-		observedDB, err = sql.Open("postgres", configuration.ObservedDBConn[0])
+				observedDBConfig.TLSConfig = remakeSSLCertConfig(configuration.ObservedDBConn[0])
+			}
+		}
+
+		observedDB, err = pgx.ConnectConfig(context.Background(), observedDBConfig)
 		if err != nil {
 			log.Fatalln("couldn't connect to observed db", err)
 			// will now exit because Fatal
 		}
+		defer observedDB.Close(context.Background())
+
+		observedDBReset, err = pgx.ConnectConfig(context.Background(), observedDBConfig)
+		if err != nil {
+			log.Fatalln("couldn't connect to observed db for resets", err)
+			// will now exit because Fatal
+		}
+		defer observedDBReset.Close(context.Background())
 
 		status_interval = configuration.StatusInterval
 		observation_interval = configuration.ObservationInterval
@@ -181,10 +324,10 @@ func main() {
 		re_job_tag, _ = regexp.Compile(configuration.ContextJob)
 
 		// find out the logical source ID we will be using
-		if err := rottenDB.QueryRow(`select id from logical_sources where project=$1 and environment=$2 and cluster=$3 and role=$4`, project, environment, cluster, role).Scan(&logical_id); err == nil {
+		if err := rottenDB.QueryRow(context.Background(), `select id from logical_sources where project=$1 and environment=$2 and cluster=$3 and role=$4`, project, environment, cluster, role).Scan(&logical_id); err == nil {
 			// yay, we have our ID
-		} else if err == sql.ErrNoRows {
-			if err := rottenDB.QueryRow(`insert into logical_sources(project,environment,cluster,role) values ($1,$2,$3,$4) returning id`, project, environment, cluster, role).Scan(&logical_id); err == nil {
+		} else if err == pgx.ErrNoRows {
+			if err := rottenDB.QueryRow(context.Background(), `insert into logical_sources(project,environment,cluster,role) values ($1,$2,$3,$4) returning id`, project, environment, cluster, role).Scan(&logical_id); err == nil {
 				// yay, we have our ID
 			} else {
 				log.Fatalln("couldn't insert into logical_sources", err)
@@ -196,10 +339,10 @@ func main() {
 		}
 
 		// find out the physical source ID we will be using
-		if err := rottenDB.QueryRow(`select id from physical_sources where fqdn=$1`, fqdn).Scan(&physical_id); err == nil {
+		if err := rottenDB.QueryRow(context.Background(), `select id from physical_sources where fqdn=$1`, fqdn).Scan(&physical_id); err == nil {
 			// yay, we have our ID
-		} else if err == sql.ErrNoRows {
-			if err := rottenDB.QueryRow(`insert into physical_sources(fqdn) values ($1) returning id`, fqdn).Scan(&physical_id); err == nil {
+		} else if err == pgx.ErrNoRows {
+			if err := rottenDB.QueryRow(context.Background(), `insert into physical_sources(fqdn) values ($1) returning id`, fqdn).Scan(&physical_id); err == nil {
 				// yay, we have our ID
 			} else {
 				log.Fatalln("couldn't insert into physical_sources", err)
@@ -218,7 +361,7 @@ func main() {
 	var windowStart PoorMansTime
 
 	log.Println("Doing stats window inital reset")
-	if _, err := observedDB.Exec(`select dba.pg_stat_statements_user_reset()`); err != nil {
+	if _, err := observedDBReset.Exec(context.Background(), `select dba.pg_stat_statements_user_reset()`); err != nil {
 		log.Fatalln("couldn't reset pg_stat_statements", err)
 		// will now exit because Fatal
 	}
@@ -240,7 +383,7 @@ func main() {
 		doIt = true
 
 		log.Println("Performing sanity check")
-		err := observedDB.QueryRow(sanity_check).Scan(&doIt)
+		err := observedDB.QueryRow(context.Background(), sanity_check).Scan(&doIt)
 		if err != nil {
 			log.Fatalln("couldn't run sanity check test", err)
 		}
@@ -254,7 +397,7 @@ func main() {
 
 		// instead of getting all of pg_stat_statements, we get the top 100 queries for each metric
 		// (getting everything can take several minutes; this only takes a few seconds)
-		queries, err := observedDB.Query(`select query,calls,total_time,min_time,max_time,mean_time,stddev_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from (
+		queries, err := observedDB.Query(context.Background(), `select query,calls,total_time,min_time,max_time,mean_time,stddev_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from (
                                         with raw as (select * from dba.pg_stat_statements())
                                         select * from (select * from raw order by calls desc limit 100) calls union distinct 
                                         select * from (select * from raw order by total_time desc limit 100) total_time union distinct 
@@ -281,7 +424,7 @@ func main() {
 		}
 		// Now, while we process the results of what we saw, start a new window in the observed db
 		log.Println("stats window reset")
-		if _, err := observedDB.Exec(`select dba.pg_stat_statements_user_reset()`); err != nil {
+		if _, err := observedDBReset.Exec(context.Background(), `select dba.pg_stat_statements_user_reset()`); err != nil {
 			log.Fatalln("couldn't reset pg_stat_statements", err)
 			// will now exit because Fatal
 		}
@@ -381,10 +524,11 @@ func main() {
 
 		log.Printf("processing %d unique events", eventsPending)
 
-		// now that we've hashed all the events by fingerprint, process each one
+		// now that we've hashed all the events by fingerprint, process each one in a goroutine
 		for fingerprint, event := range eventHash {
 			var eventToBeGCedLater = event
-			go processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
+			//go processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
+			processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
 			eventsPending--
 		}
 

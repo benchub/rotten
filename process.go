@@ -1,7 +1,7 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
 	"log"
 	"regexp"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	runningstat "github.com/benchub/runningstat"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var knownStatsDomains = [19]string{"calls",
@@ -91,7 +92,7 @@ func stillProcessing() uint32 {
 	return v
 }
 
-func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id uint32, observation_interval uint32, fingerprint string, event *QueryEvent) {
+func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_source_id uint32, observation_interval uint32, fingerprint string, event *QueryEvent) {
 	protectedProcessingCounter.Lock()
 	protectedProcessingCounter.v++
 	protectedProcessingCounter.Unlock()
@@ -102,7 +103,8 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 		return
 	}
 
-	tx, err := rottenDB.Begin()
+	ctx := context.Background()
+	tx, err := rottenDB.Begin(ctx)
 	if err != nil {
 		log.Println("couldn't start transaction for new event (fingerprint_id", fingerprint_id, "logical_source_id", logical_source_id, ")", err)
 		return
@@ -110,7 +112,7 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 
 	var event_id uint64
 	newQuerySQL := fmt.Sprintf("insert into events (fingerprint_id,logical_source_id,physical_source_id,observed_window_start,observed_window_end,calls,time) values (%d,%d,%d,to_timestamp(%d),to_timestamp(%d),%f,%f) returning id", fingerprint_id, logical_source_id, physical_source_id, event.observationTimeStart.sec, event.observationTimeEnd.sec, event.calls, event.total_time)
-	if err := tx.QueryRow(newQuerySQL).Scan(&event_id); err != nil {
+	if err := tx.QueryRow(ctx, newQuerySQL).Scan(&event_id); err != nil {
 		log.Fatalln("couldn't insert into events", newQuerySQL, err)
 		// will now exit because Fatal
 	}
@@ -145,14 +147,17 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 			}
 		}
 
-		newQuerySQL := fmt.Sprintf("insert into event_context (event_id,observed_window_start,observed_window_end,c%s) values (%d,to_timestamp(%d),to_timestamp(%d),%d%s)", columns, event_id, event.observationTimeStart.sec, event.observationTimeEnd.sec, count, values)
-		if _, err := tx.Exec(newQuerySQL); err != nil {
-			log.Fatalln("couldn't insert into event_context", err)
-			// will now exit because Fatal
+		// fixme - it is unclear how we could have an event with no context.
+		if count > 0 {
+			newQuerySQL := fmt.Sprintf("insert into event_context (event_id,observed_window_start,observed_window_end,c%s) values (%d,to_timestamp(%d),to_timestamp(%d),%d%s)", columns, event_id, event.observationTimeStart.sec, event.observationTimeEnd.sec, count, values)
+			if _, err := tx.Exec(ctx, newQuerySQL); err != nil {
+				log.Fatalln("couldn't insert into event_context for", fingerprint, newQuerySQL, err)
+				// will now exit because Fatal
+			}
 		}
 	}
 
-	err = tx.Commit()
+	err = tx.Commit(ctx)
 	if err != nil {
 		log.Println("couldn't commit transaction for new event (fingerprint_id", fingerprint_id, "logical_source_id", logical_source_id, ")", err)
 	}
@@ -219,7 +224,7 @@ func processEvent(rottenDB *sql.DB, logical_source_id uint32, physical_source_id
 	protectedProcessingCounter.Unlock()
 }
 
-func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, observation_interval uint32) {
+func reportSamples(rottenDB *pgxpool.Pool, f *Fingerprint, logical_source_id uint32, observation_interval uint32) {
 	lastReport := f.last
 	for {
 		time.Sleep(time.Duration(2*observation_interval) * time.Second)
@@ -241,16 +246,16 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
 
 				dbStats = make(map[string]runningstat.RunningStat)
 
-				tx, err := rottenDB.Begin()
+				tx, err := rottenDB.Begin(context.Background())
 				if err != nil {
 					log.Println("couldn't start transaction for (fingerprint_id,logical_source_id)", f.db_id, source_id, err)
 					continue
 				}
 
-				queryResults, err := tx.Query(`select type,count,mean,deviation from fingerprint_stats where fingerprint_id=$1 and logical_source_id=$2 for update`, f.db_id, source_id)
+				queryResults, err := tx.Query(context.Background(), `select type,count,mean,deviation from fingerprint_stats where fingerprint_id=$1 and logical_source_id=$2 for update`, f.db_id, source_id)
 				if err != nil {
 					log.Println("couldn't select from dbstats using fingerprint_id,logical_source_id", f.db_id, source_id, err)
-					tx.Rollback()
+					tx.Rollback(context.Background())
 					continue LogicalLoop
 				}
 				statsFound := 0
@@ -264,7 +269,7 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
 
 					if err := queryResults.Scan(&query_stats_domain, &oldCount, &oldMean, &oldDeviation); err != nil {
 						log.Println("couldn't parse dbstats row using fingerprint_id,logical_source_id", f.db_id, source_id, err)
-						tx.Rollback()
+						tx.Rollback(context.Background())
 						continue LogicalLoop
 					}
 
@@ -275,17 +280,17 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
 				queryResults.Close()
 				if statsFound == 0 {
 					for _, stats_domain := range knownStatsDomains {
-						r, err := tx.Query(`INSERT INTO fingerprint_stats(fingerprint_id, logical_source_id, type, last, count, mean, deviation) VALUES ($1, $2, $3, $4, $5, $6, $7)`, f.db_id, source_id, stats_domain, f.last, f.stats[stats_domain].RunningStatCount(), f.stats[stats_domain].RunningStatMean(), f.stats[stats_domain].RunningStatDeviation())
+						r, err := tx.Query(context.Background(), `INSERT INTO fingerprint_stats(fingerprint_id, logical_source_id, type, last, count, mean, deviation) VALUES ($1, $2, $3, $4, $5, $6, $7)`, f.db_id, source_id, stats_domain, f.last, f.stats[stats_domain].RunningStatCount(), f.stats[stats_domain].RunningStatMean(), f.stats[stats_domain].RunningStatDeviation())
 						if err != nil {
 							log.Println("couldn't insert new fingerprint stats for fingerprint, logical_source_id, type", f.db_id, source_id, stats_domain, err)
-							tx.Rollback()
+							tx.Rollback(context.Background())
 							continue LogicalLoop
 						}
 						r.Close()
 					}
 				} else if statsFound != len(knownStatsDomains) {
 					log.Println("Only found", statsFound, "stats to update, not all", len(knownStatsDomains), " for fingerprint_id", f.db_id, ", logical_source_id", logical_source_id)
-					tx.Rollback()
+					tx.Rollback(context.Background())
 					continue LogicalLoop
 				} else {
 					// we found all our stats; iterate over them and update them all for this source_id
@@ -298,23 +303,23 @@ func reportSamples(rottenDB *sql.DB, f *Fingerprint, logical_source_id uint32, o
 							combined.Init(f.stats[stats_domain].RunningStatCount(), f.stats[stats_domain].RunningStatMean(), f.stats[stats_domain].RunningStatDeviation())
 							combined.Merge(dbStats[stats_domain])
 
-							r, err := tx.Query(`update fingerprint_stats set last=$1,count=$2,mean=$3,deviation=$4 where fingerprint_id=$5 and logical_source_id=$6 and type=$7`, f.last, combined.RunningStatCount(), combined.RunningStatMean(), combined.RunningStatDeviation(), f.db_id, source_id, stats_domain)
+							r, err := tx.Query(context.Background(), `update fingerprint_stats set last=$1,count=$2,mean=$3,deviation=$4 where fingerprint_id=$5 and logical_source_id=$6 and type=$7`, f.last, combined.RunningStatCount(), combined.RunningStatMean(), combined.RunningStatDeviation(), f.db_id, source_id, stats_domain)
 							if err != nil {
 								log.Println("couldn't update fingerprint stats for fingerprint_id,logical_source_id,type", f.db_id, source_id, stats_domain, err)
-								tx.Rollback()
+								tx.Rollback(context.Background())
 								continue LogicalLoop
 							}
 							r.Close()
 							//log.Println("fingerprint %d has seen %d calls; last at %d, sum at %f (%f), mean %f, deviation %f", f.db_id, combined.m_n, f.last, f.sum, float64(combined.m_n)*combined.m_oldM, RunningStatMean(combined), RunningStatDeviation(combined))
 						} else {
 							log.Println("dbstats row for fingerprint_id,logical_source_id gave unknown type", f.db_id, source_id, stats_domain)
-							tx.Rollback()
+							tx.Rollback(context.Background())
 							continue LogicalLoop
 						}
 					}
 				}
 
-				err = tx.Commit()
+				err = tx.Commit(context.Background())
 				if err != nil {
 					log.Println("Couldn't commit fingerprint stats update for fingerprint_id, logical_source_id", f.db_id, source_id)
 				}
