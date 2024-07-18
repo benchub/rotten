@@ -123,7 +123,7 @@ func remakeSSLCertConfig(connectionString string) *tls.Config {
 	rootCertPool := x509.NewCertPool()
 	rootCert, err := os.ReadFile(connectionStringSettings["sslrootcert"])
 	if err != nil {
-		log.Fatalln("Error loading root certificate: %v\n", err)
+		log.Fatalln("Error loading root certificate: ", err)
 	}
 
 	// Load client cert & key
@@ -138,7 +138,7 @@ func remakeSSLCertConfig(connectionString string) *tls.Config {
 
 	ok := rootCertPool.AppendCertsFromPEM(rootCert)
 	if !ok {
-		log.Fatalln("Failed to append root certificate to pool\n")
+		log.Fatalln("Failed to append root certificate to pool")
 	}
 
 	if *debugFlag {
@@ -153,7 +153,7 @@ func remakeSSLCertConfig(connectionString string) *tls.Config {
 			if block.Type == "CERTIFICATE" {
 				caCert, err := x509.ParseCertificate(block.Bytes)
 				if err != nil {
-					log.Printf("Error parsing certificate: %v\n", err)
+					log.Println("Error parsing certificate: ", err)
 					os.Exit(1)
 				}
 				log.Printf("\tSubject: %s\n", caCert.Subject)
@@ -166,7 +166,7 @@ func remakeSSLCertConfig(connectionString string) *tls.Config {
 	clientChain = append(clientChain, rootCert...)
 	clientCerts, err := tls.X509KeyPair(clientChain, clientKey)
 	if err != nil {
-		log.Fatalln("Error loading client key pair: %v\n", err)
+		log.Fatalln("Error loading client key pair: ", err)
 	}
 
 	if *debugFlag {
@@ -273,6 +273,11 @@ func main() {
 				log.Printf("We seem to have a root CA for rotten DB; remaking the chain to be sure to capture any intermediate certs.")
 
 				rottenDBConfig.ConnConfig.TLSConfig = remakeSSLCertConfig(configuration.RottenDBConn[0])
+
+				for i := 0; i < len(rottenDBConfig.ConnConfig.Fallbacks); i++ {
+					rottenDBConfig.ConnConfig.Fallbacks[i].TLSConfig = rottenDBConfig.ConnConfig.TLSConfig
+					rottenDBConfig.ConnConfig.Fallbacks[i].TLSConfig.ServerName = rottenDBConfig.ConnConfig.Fallbacks[i].Host
+				}
 			}
 		}
 

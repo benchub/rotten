@@ -1,5 +1,5 @@
 {
-	"RottenDBConn": ["host=yourRottenServerGoesHere dbname=rotten user=rotten_client password=letmein sslmode=require binary_parameters=yes"],
+	"RottenDBConn": ["host=yourRottenServerGoesHere,FallbackServer1,FallbackServer2 dbname=rotten user=rotten_client password=letmein sslmode=verify-ca sslcert=rotten-client.crt sslkey=rotten-client.key sslrootcert=root.crt"],
 	"ObservedDBConn": ["host=yourObservedServerGoesHere dbname= user=rotten_observer password=letmein sslmode=require"],
 	"SanityCheck": "select true",
 	"StatusInterval": 60,
