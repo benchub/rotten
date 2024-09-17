@@ -103,7 +103,7 @@ type Configuration struct {
 	ContextJob          string
 }
 
-func remakeSSLCertConfig(connectionString string) *tls.Config {
+func remakeSSLCertConfig(connectionString string, host string) *tls.Config {
 	// hacky hack solution to get the rootca files, as well as the client certs, so that we can build up a cert chain with all the intermediate certs.
 	connectionStringSettings := make(map[string]string)
 
@@ -117,6 +117,12 @@ func remakeSSLCertConfig(connectionString string) *tls.Config {
 			// Insert the key and value into the map
 			connectionStringSettings[kv[0]] = kv[1]
 		}
+	}
+
+	// If we didn't pass in a host we want to explicitly use, just
+	// use the first host in our list of hosts (i.e. host=host1[,host2[,host3]])
+	if host == "" {
+		host = strings.Split(connectionStringSettings["host"], ",")[0]
 	}
 
 	// Load root CA cert
@@ -142,19 +148,15 @@ func remakeSSLCertConfig(connectionString string) *tls.Config {
 	}
 
 	if *debugFlag {
+		var block *pem.Block
 		log.Println("Loaded Root CA Certificates:")
 		rootsPEM := rootCert
-		for {
-			var block *pem.Block
-			block, rootsPEM = pem.Decode(rootsPEM)
-			if block == nil {
-				break
-			}
+		block, rootsPEM = pem.Decode(rootsPEM)
+		if block != nil {
 			if block.Type == "CERTIFICATE" {
 				caCert, err := x509.ParseCertificate(block.Bytes)
 				if err != nil {
-					log.Println("Error parsing certificate: ", err)
-					os.Exit(1)
+					log.Fatalln("Error parsing certificate: ", err)
 				}
 				log.Printf("\tSubject: %s\n", caCert.Subject)
 			}
@@ -174,19 +176,21 @@ func remakeSSLCertConfig(connectionString string) *tls.Config {
 		for _, cert := range clientCerts.Certificate {
 			parsedCert, err := x509.ParseCertificate(cert)
 			if err != nil {
-				log.Printf("Error parsing client certificate: %v\n", err)
-				os.Exit(1)
+				log.Fatalf("Error parsing client certificate: %v\n", err)
 			}
 			log.Printf("\tSubject: %s\n", parsedCert.Subject)
 		}
 	}
 
+	if *debugFlag {
+		log.Println("Making tls config for", host)
+	}
 	// Create a custom TLS config with specific versions and cipher suites
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{clientCerts},
 		ClientCAs:    rootCertPool,
 		RootCAs:      rootCertPool,
-		ServerName:   connectionStringSettings["host"], // Set the ServerName to the host you are connecting to
+		ServerName:   host, // Set the ServerName to the host you are connecting to
 		MinVersion:   tls.VersionTLS12,
 		MaxVersion:   tls.VersionTLS13,
 		CipherSuites: []uint16{
@@ -270,13 +274,14 @@ func main() {
 		if rottenDBConfig.ConnConfig.TLSConfig != nil {
 			if rottenDBConfig.ConnConfig.TLSConfig.RootCAs != nil {
 				// golang libraries don't seem to send intermediate certs, so we have to manually make sure that happens.
-				log.Printf("We seem to have a root CA for rotten DB; remaking the chain to be sure to capture any intermediate certs.")
+				if *debugFlag {
+					log.Println("We seem to have a root CA for rotten DB; remaking the chain to be sure to capture any intermediate certs.", configuration.RottenDBConn[0])
+				}
 
-				rottenDBConfig.ConnConfig.TLSConfig = remakeSSLCertConfig(configuration.RottenDBConn[0])
+				rottenDBConfig.ConnConfig.TLSConfig = remakeSSLCertConfig(configuration.RottenDBConn[0], "")
 
 				for i := 0; i < len(rottenDBConfig.ConnConfig.Fallbacks); i++ {
-					rottenDBConfig.ConnConfig.Fallbacks[i].TLSConfig = rottenDBConfig.ConnConfig.TLSConfig
-					rottenDBConfig.ConnConfig.Fallbacks[i].TLSConfig.ServerName = rottenDBConfig.ConnConfig.Fallbacks[i].Host
+					rottenDBConfig.ConnConfig.Fallbacks[i].TLSConfig = remakeSSLCertConfig(configuration.RottenDBConn[0], rottenDBConfig.ConnConfig.Fallbacks[i].Host)
 				}
 			}
 		}
@@ -288,17 +293,24 @@ func main() {
 		}
 
 		// Now build up the two connections we're going to use for the observed db
+		// First, make the config, then reuse it twice (2 connections to the same db)
 		observedDBConfig, err := pgx.ParseConfig(configuration.ObservedDBConn[0])
 		if err != nil {
 			log.Fatalln("couldn't create observedDBConfig", err)
 			// will now exit because Fatal
 		}
+
+		// Don't get in the way of pgBouncer transaction pooling
+		observedDBConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+
 		if observedDBConfig.TLSConfig != nil {
 			if observedDBConfig.TLSConfig.RootCAs != nil {
 				// golang libraries don't seem to send intermediate certs, so we have to manually make sure that happens.
-				log.Printf("We seem to have a root CA for observed DB; remaking the chain to be sure to capture any intermediate certs.")
+				if *debugFlag {
+					log.Printf("We seem to have a root CA for observed DB; remaking the chain to be sure to capture any intermediate certs.")
+				}
 
-				observedDBConfig.TLSConfig = remakeSSLCertConfig(configuration.ObservedDBConn[0])
+				observedDBConfig.TLSConfig = remakeSSLCertConfig(configuration.ObservedDBConn[0], "")
 			}
 		}
 
@@ -532,8 +544,7 @@ func main() {
 		// now that we've hashed all the events by fingerprint, process each one in a goroutine
 		for fingerprint, event := range eventHash {
 			var eventToBeGCedLater = event
-			//go processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
-			processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
+			go processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
 			eventsPending--
 		}
 
