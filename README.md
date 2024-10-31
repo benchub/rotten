@@ -23,7 +23,6 @@ data in an additional database and punt on any form of UI. Yes, that's a bit of 
 out, but it also lets us employ the power of SQL to filter our data and pull whatever 
 report we might want, for whatever time period we might want.
 
-
 Assumptions
 ===========
 As a young project rotten makes a lot of assumptions. Among them:
