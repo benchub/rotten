@@ -40,31 +40,27 @@ As a young project rotten makes a lot of assumptions. Among them:
 
 How to use it
 =============
-1. Get and install Go. http://www.golang.org
-2. Make sure you have modvendor installed:
+1. Get and install Go 1.27 or later. http://www.golang.org
+2. Build it. A native build needs cgo and a C compiler, because pg_query_go compiles
+   libpg_query from C:
   ```bash
-  go get -u github.com/goware/modvendor
-  ```
-3. After setting up your $GOPATH and $GOBIN, build it:
-  ```bash
-  go mod tidy
-  go mod vendor
-  ~/go/bin/modvendor -copy="**/*.c **/*.h **/*.proto" -v
   go build github.com/benchub/rotten
   ```
-4. Install pg_partman in the rotten db. See https://github.com/pgpartman/pg_partman. tldr:
+   Native macOS builds don't work yet (pg_query_go v5 fails on `strchrnul`). They'll work
+   after the pg_query_go upgrade. Until then, `make test` runs the build in Docker.
+3. Install pg_partman in the rotten db. See https://github.com/pgpartman/pg_partman. tldr:
  - download pg_partman and `make install`
  - add `pg_partman_bgw` to `shared_preload_libraries` in postgresql.conf
  - run `CREATE EXTENSION pg_partman` in the rotten db
-5. Import `schema/tables.sql` into the rotten db. Also create a `rotten-client` role that
+4. Import `schema/tables.sql` into the rotten db. Also create a `rotten-client` role that
    will use these tables.
-6. Install `pg_stat_statements` in the monitored database:
+5. Install `pg_stat_statements` in the monitored database:
  - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
  - run `CREATE EXTENSION pg_stat_statements` in the monitored database
-7. Install the `rotten-observer` role in your monitored databases and the `schema/function.sql`
+6. Install the `rotten-observer` role in your monitored databases and the `schema/function.sql`
    in the `dba` schema on those databases. Use `schema/function-pg13.sql` if you're on PG 13 or newer. 
-8. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
-9. Modify the conf to fit your environment.
+7. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
+8. Modify the conf to fit your environment.
   1. `RottenDBConn` and `ObservedDBConn` are hopefully self-explanatory. Extra care has been
      given in rotten to make sure that rotten will correct send a root ca with all the needed
      intermediate certs, if you are working with such an environment.
