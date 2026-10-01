@@ -96,6 +96,12 @@ func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_sou
 	protectedProcessingCounter.Lock()
 	protectedProcessingCounter.v++
 	protectedProcessingCounter.Unlock()
+	// Decrement on every return, including the early ones.
+	defer func() {
+		protectedProcessingCounter.Lock()
+		protectedProcessingCounter.v--
+		protectedProcessingCounter.Unlock()
+	}()
 
 	fingerprint_id, err := normalized_fingerprint_id(rottenDB, fingerprint, event)
 	if err != nil {
@@ -119,7 +125,8 @@ func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_sou
 
 	for hash, count := range event.context {
 		// dehash our context so we know what to put into the db
-		// "controller:%d,action:%d,job_tag:%d"
+		// "controller:%daction:%djob_tag:%d", with no separators; each part
+		// appears only when its ID is nonzero, and "" means no context.
 		columns := ""
 		values := ""
 
@@ -219,9 +226,6 @@ func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_sou
 	}
 
 	// now that the event has been recorded and the stats updated, our work is done and this goroutine can end.
-	protectedProcessingCounter.Lock()
-	protectedProcessingCounter.v--
-	protectedProcessingCounter.Unlock()
 }
 
 func reportSamples(rottenDB *pgxpool.Pool, f *Fingerprint, logical_source_id uint32, observation_interval uint32) {
