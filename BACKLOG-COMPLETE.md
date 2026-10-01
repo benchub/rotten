@@ -123,7 +123,6 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** The suite and golden file are unchanged and green.
 - **Needs:** -13.
 
-## Phase B: Postgres 14 through 18 (item 4).
 - Completed: October 1, 2026, 312c80d. Pure refactor; the characterization tests are unchanged.
 
 ### 20261001-120501-3: Inject the stats wait instead of using a global.

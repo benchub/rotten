@@ -36,6 +36,8 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -26.
 
+## Phase B: Postgres 14 through 18 (item 4).
+
 ### 20261001-103222-15: Write the observer setup SQL.
 - **Do:** Add `schema/observer.sql`. It creates the observer role (with a configurable name), grants `pg_read_all_stats`, and on 17+ grants EXECUTE on `pg_stat_statements_reset(oid,oid,bigint,boolean)`.
 - **Red test:** On each of Postgres 14 through 18, the observer can:
