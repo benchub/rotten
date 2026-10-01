@@ -336,9 +336,11 @@ func main() {
 		environment = configuration.Environment
 		cluster = configuration.Cluster
 		role = configuration.Role
-		re_controller, _ = regexp.Compile(configuration.ContextController)
-		re_action, _ = regexp.Compile(configuration.ContextAction)
-		re_job_tag, _ = regexp.Compile(configuration.ContextJob)
+		re_controller, re_action, re_job_tag, err = compileContextRegexes(configuration.ContextController, configuration.ContextAction, configuration.ContextJob)
+		if err != nil {
+			log.Fatalln(err)
+			// will now exit because Fatal
+		}
 
 		// find out the logical source ID we will be using
 		if err := rottenDB.QueryRow(context.Background(), `select id from logical_sources where project=$1 and environment=$2 and cluster=$3 and role=$4`, project, environment, cluster, role).Scan(&logical_id); err == nil {
@@ -606,4 +608,19 @@ func AppCleanup() {
 		}
 		f.Close()
 	}
+}
+
+// compileContextRegexes compiles the controller, action, and job regexes from
+// the config, and reports which one failed to compile.
+func compileContextRegexes(controller, action, job string) (c, a, j *regexp.Regexp, err error) {
+	if c, err = regexp.Compile(controller); err != nil {
+		return nil, nil, nil, fmt.Errorf("compile ContextController: %w", err)
+	}
+	if a, err = regexp.Compile(action); err != nil {
+		return nil, nil, nil, fmt.Errorf("compile ContextAction: %w", err)
+	}
+	if j, err = regexp.Compile(job); err != nil {
+		return nil, nil, nil, fmt.Errorf("compile ContextJob: %w", err)
+	}
+	return c, a, j, nil
 }
