@@ -68,6 +68,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   - Add a Connect interceptor that checks `Authorization: Bearer`.
   - Cache key lookups with a TTL, and update `last_used_at` (throttled).
 - **Grants:** `rotten_ingest` can only read `id, name, secret_hash, fqdn, revoked_at` on `api_keys`, so name those columns instead of using `select *` or `RETURNING *`.
+- **Source binding:** Batches carry their own source IDs. Reject any batch whose physical source (and its logical source) doesn't match the pass key's source. Also decide what a key without a pinned fqdn is allowed to do.
 - **Red test:** Unknown, malformed, and revoked keys all get `Unauthenticated`. A key revoked mid-connection gets rejected within the TTL. The secret never shows up in logs.
 - **Done when:** Passes.
 - **Needs:** -28, -29.
@@ -108,6 +109,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ### 20261001-103222-35: Validate input and set limits.
 - **Do:** Cap message size, fingerprints per batch, context entries, and string lengths. Reject a window that has `end <= start`, is more than five minutes in the future, or is longer than the max. Reject NaN or negative counters.
+- **Limits from -29:** Cap total message size, the number of aggregates and contexts, and the lengths of `normalized`, the context strings, and `fingerprint`.
 - **Red test:** Each limit gets rejected with `InvalidArgument`, and nothing is written.
 - **Done when:** Passes.
 - **Needs:** -33.
