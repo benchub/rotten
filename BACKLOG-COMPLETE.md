@@ -182,3 +182,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** The matrix passes, the worker uses `Reader`, and `schema/functions*.sql` are deleted.
 - **Needs:** -14, -15.
 - Completed: October 1, 2026, d46a9a8. Review found and closed a superuser hijack in the reset function. The original dba functions had the same hole.
+
+### 20261001-112142-4: Make the cursor and temp-table patterns configurable.
+- **Do:** Move the hard-coded cursor and temp-table regexes into worker config, keeping today's patterns as the default. Today, temp-table names only collapse when their random suffix is six or more characters, so shorter suffixes each get their own fingerprint. Document how to match a generator's real naming.
+- **Red test:** A configured pattern collapses a short-suffix temp table that today's default doesn't.
+- **Done when:** Passes, and the golden file is unchanged under the defaults.
+- **Needs:** -14.
+- Completed: October 1, 2026, f6384cb.

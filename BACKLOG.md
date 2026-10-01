@@ -12,12 +12,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase A: Test harness and characterization.
 
-### 20261001-112142-4: Make the cursor and temp-table patterns configurable.
-- **Do:** Move the hard-coded cursor and temp-table regexes into worker config, keeping today's patterns as the default. Today, temp-table names only collapse when their random suffix is six or more characters, so shorter suffixes each get their own fingerprint. Document how to match a generator's real naming.
-- **Red test:** A configured pattern collapses a short-suffix temp table that today's default doesn't.
-- **Done when:** Passes, and the golden file is unchanged under the defaults.
-- **Needs:** -14.
-
 ### 20261001-112142-5: Make partition retention a setting.
 - **Do:** Keep 21 days as the default for both `events` and `event_context`, but make the retention period configurable when the rotten DB is set up, through `rotten-server migrate` or a server setting.
 - **Red test:** A non-default setting shows up in `part_config.retention`.
