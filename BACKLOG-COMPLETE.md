@@ -69,3 +69,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - The decision record is written.
 - **Needs:** -4, -5.
 - Completed: October 1, 2026, aa1bb24. No fingerprint changes.
+
+### 20261001-111132-1: Run `make golden` natively.
+- **Do:** pg_query_go v6 builds natively, so `make golden` can run `go test -short -run '^TestFingerprintGolden$' -update .` on the host, like `make test-unit`. The file then gets written as the user, so drop the Docker run and the `chown`. Update the Makefile header comment to match.
+- **Red test:** A smoke check that `make golden` doesn't call `docker`, for example by running it with `DOCKER=false`, or by grepping the target. It leaves `git status` clean.
+- **Done when:** `make golden` runs natively and leaves no diff. We're not doing a separate Linux check: with no Docker in the golden path, there's nothing ownership-specific to verify.
+- **Needs:** -6.
+- Completed: October 1, 2026, 79940c2. A 13-line Makefile change, so the coordinator reviewed it instead of a reviewer agent.
