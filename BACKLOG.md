@@ -12,11 +12,11 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase A: Test harness and characterization.
 
-### 20261001-112142-2: Give the deparse fallback a test hook.
-- **Do:** Split the deparse-failure branch of `normalized_fingerprint` into its own function, or make `Deparse` injectable, so both of its paths get unit tests: the plain fingerprint fallback, and the refusal when a cursor or temp-table pattern matches. No real query reaches this branch under pg_query_go v5.
-- **Red test:** Unit tests for both paths, written before the split.
+### 20261001-130325-1: Make the deparse fallback's cursor check match real statements.
+- **Do:** `cursorRE` is anchored (`^...$`) so it can match single names in the tree walker. In the deparse fallback, that means the cursor check only matches a whole query that's a bare cursor name. Such a query can't parse, so the check never fires, and a statement like `FETCH 10 FROM users_cursor_abc123` would get its own fingerprint for every cursor. Give the fallback an unanchored cursor pattern, and keep the anchored one for the walker.
+- **Red test:** `deparseFallback("FETCH 10 FROM users_cursor_abc123", err)` should refuse. Today it returns a fingerprint. Switch the existing cursor test case from a bare name to a real statement.
 - **Done when:** Passes, and the golden file is unchanged.
-- **Needs:** -14.
+- **Needs:** Coordinate with -112142-4 (configurable patterns).
 
 ### 20261001-112142-3: Collapse schema names, with an option to turn it off.
 - **Do:** Today, `shard_1.users` and `shard_27.users` share a fingerprint, but bare `users` doesn't match them. Treat unqualified names the same as qualified ones by default. Add a worker setting to turn schema collapsing off completely, for deployments where schemas mean different things.

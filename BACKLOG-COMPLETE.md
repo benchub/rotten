@@ -131,3 +131,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** The suite is green with no `statsWait` global.
 - **Needs:** -14 (do it during or after).
 - Completed: October 1, 2026, 312c80d. Covered by -14: statsWait became a per-Worker field instead of being passed to reportSamples.
+
+### 20261001-112142-2: Give the deparse fallback a test hook.
+- **Do:** Split the deparse-failure branch of `normalized_fingerprint` into its own function, or make `Deparse` injectable, so both of its paths get unit tests: the plain fingerprint fallback, and the refusal when a cursor or temp-table pattern matches. No real query reaches this branch under pg_query_go v5 (still true under v6).
+- **Red test:** Unit tests for both paths, written before the split.
+- **Done when:** Passes, and the golden file is unchanged.
+- **Needs:** -14.
+- Completed: October 1, 2026, df1989e. Found the dead cursor check, now 20261001-130325-1.
