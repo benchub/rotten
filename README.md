@@ -63,6 +63,18 @@ How to use it
   ```
    Running `migrate` again is safe; it applies only what's new. Grants for the other
    roles aren't set up yet.
+
+   **Partition retention.** pg_partman drops `events` and `event_context` partitions
+   older than the retention period. The default is 21 days. To change it, pass
+   `-retention` or set `ROTTEN_RETENTION` (the flag wins):
+  ```bash
+  ./rotten-server migrate -retention 45d
+  ROTTEN_RETENTION='45 days' ./rotten-server migrate
+  ```
+   It takes a whole number of days, from 1 through 3650, written as `45 days`, `45d`, or a
+   Go duration like `1080h`. `migrate` writes it to `public.part_config` on every run, so
+   a run without the setting puts retention back to 21 days. Pass the same value every
+   time. An invalid value fails `migrate` before it changes anything.
 5. Install `pg_stat_statements` in the monitored database:
  - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
  - run `CREATE EXTENSION pg_stat_statements` in the monitored database

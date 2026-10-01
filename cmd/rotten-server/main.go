@@ -12,10 +12,15 @@ import (
 	"github.com/benchub/rotten/internal/migrate"
 )
 
-const usage = `usage: rotten-server migrate [-dsn DSN]
+const usage = `usage: rotten-server migrate [-dsn DSN] [-retention DAYS]
 
 migrate applies every pending schema migration to the rotten database. Run it
 as rotten_owner. The DSN comes from -dsn, or else ROTTEN_OWNER_DSN.
+
+-retention (or ROTTEN_RETENTION) sets how long pg_partman keeps partitions of
+events and event_context, as "21 days", "21d", or "504h". The default is 21
+days. migrate reapplies it on every run, so a run that omits the setting
+resets retention to 21 days. Pass the same value every time.
 `
 
 func main() {
@@ -30,14 +35,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dsn := fs.String("dsn", os.Getenv("ROTTEN_OWNER_DSN"), "rotten_owner DSN (default $ROTTEN_OWNER_DSN)")
+	defRetention := os.Getenv("ROTTEN_RETENTION")
+	if defRetention == "" {
+		defRetention = migrate.DefaultRetention.String()
+	}
+	retention := fs.String("retention", defRetention, "partition retention, like \"21 days\" or \"21d\" (default $ROTTEN_RETENTION, else 21 days)")
 	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "rotten-server migrate: unexpected arguments %q\n", fs.Args())
+		return 2
+	}
+	r, err := migrate.ParseRetention(*retention)
+	if err != nil {
+		fmt.Fprintf(stderr, "rotten-server migrate: %v\n", err)
 		return 2
 	}
 	if *dsn == "" {
 		fmt.Fprint(stderr, "rotten-server migrate: no DSN; pass -dsn or set ROTTEN_OWNER_DSN\n")
 		return 2
 	}
-	applied, err := migrate.Up(context.Background(), *dsn)
+	applied, err := migrate.UpRetention(context.Background(), *dsn, r)
 	for _, v := range applied {
 		fmt.Fprintf(stdout, "applied migration %d\n", v)
 	}
