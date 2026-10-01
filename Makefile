@@ -13,9 +13,8 @@
 # pg_query_go or the normalization code in fingerprint.go, then review
 # `git diff testdata/fingerprints.golden` to decide whether the changes are
 # intended. Error text is part of the golden output, so changed error messages
-# show up in the diff too. Never edit the golden file by hand. It runs as root
-# with the same cache volumes as test, then chowns the golden file to your
-# host uid:gid so it isn't root-owned on Linux.
+# show up in the diff too. Never edit the golden file by hand. It runs natively
+# on the host, like test-unit, so the file is written as you. No Docker needed.
 
 IMAGE      ?= rotten-test
 DOCKER_SOCK_PATH ?= /var/run/docker.sock
@@ -50,11 +49,9 @@ test: image
 test-unit:
 	go test -short $(GO_TEST_ARGS) ./...
 
-## golden: regenerate the fingerprint golden file, owned by the host user.
-golden: image
-	$(DOCKER_RUN) -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)" $(IMAGE) sh -c \
-		'go test -short -run "^TestFingerprintGolden$$" -update . && \
-		chown "$$HOST_UID:$$HOST_GID" testdata/fingerprints.golden'
+## golden: regenerate the fingerprint golden file, run natively on the host.
+golden:
+	go test -short -run '^TestFingerprintGolden$$' -update .
 
 ## shell: interactive shell in the test container, same mounts as test.
 shell: image
