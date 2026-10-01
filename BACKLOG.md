@@ -48,6 +48,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   - On a later flush, merge with what's already in the database.
   - When only some types are present, roll back.
 - **Red test:** You can't inject the sleep yet. Add the seam.
+- **Also:** Once the sleep seam exists, test `processEvent`'s new-fingerprint branch without pre-registering the fingerprint. Check that it registers the fingerprint, starts the goroutines, delivers the sample without blocking, and stores the right `normalized` text. Task -9's tests skip this branch to avoid the `f.last` race that -13 fixes.
 - **Done when:** Tests pass, with numbers checked against hand-computed means and deviations.
 - **Needs:** -2.
 
