@@ -12,11 +12,11 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase A: Test harness and characterization.
 
-### 20261001-111132-1: Confirm `make test` works on Linux.
-- **Do:** Run `make test` and `make test-unit` on a Linux Docker host, which task -1 only checked on macOS. Check that sibling containers are reachable through `host-gateway`. On macOS, `host.docker.internal` resolved to an IPv6 address, which worked there.
-- **Red test:** Task -2's testcontainers tests, run on Linux.
-- **Done when:** Both targets pass on Linux, `make golden` leaves `testdata/fingerprints.golden` owned by the host user, or the Makefile gets a fix.
-- **Needs:** -2.
+### 20261001-111132-1: Run `make golden` natively.
+- **Do:** pg_query_go v6 builds natively, so `make golden` can run `go test -short -run '^TestFingerprintGolden$' -update .` on the host, like `make test-unit`. The file then gets written as the user, so drop the Docker run and the `chown`. Update the Makefile header comment to match.
+- **Red test:** A smoke check that `make golden` doesn't call `docker`, for example by running it with `DOCKER=false`, or by grepping the target. It leaves `git status` clean.
+- **Done when:** `make golden` runs natively and leaves no diff. We're not doing a separate Linux check: with no Docker in the golden path, there's nothing ownership-specific to verify.
+- **Needs:** -6.
 
 ### 20261001-112142-2: Give the deparse fallback a test hook.
 - **Do:** Split the deparse-failure branch of `normalized_fingerprint` into its own function, or make `Deparse` injectable, so both of its paths get unit tests: the plain fingerprint fallback, and the refusal when a cursor or temp-table pattern matches. No real query reaches this branch under pg_query_go v5.
