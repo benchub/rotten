@@ -56,6 +56,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 ### 20261001-103222-24: Add the worker state store and snapshot table.
 - **Do:** Add `internal/state` on SQLite (`modernc.org/sqlite`) in `StateDir`. It holds a `snapshot` table (key, counters, and `taken_at`) with `Load` and `Save`. Writes are atomic.
   - Treat a snapshot older than `MaxSnapshotAge` as a baseline.
+- **Precision:** Store `stats_since`, `minmax_stats_since`, and `stats_reset` at full microsecond precision. If they get truncated, the next harvest will think a reset happened when none did.
 - **Red test:** Round-trip a snapshot. A stale snapshot becomes a baseline. A corrupt file gets moved aside, and the worker starts from a baseline.
 - **Done when:** Passes.
 - **Needs:** -19.
@@ -72,6 +73,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   The window runs from the snapshot's `taken_at` to now. The worker never runs a full reset. Delete the reset code and `schema/legacy_reset.sql`, the temporary bridge from -16.
 - **Baseline:** Diff on an empty or stale snapshot returns everything as new. Discard that harvest as a baseline, and add a test that pins it.
 - **Stddev:** When `WindowStats` says `stddevOK=false`, record no stddev for that window instead of a misleading one.
+- **Min/max:** On 17+, call `Reader.MinmaxReset` right after each harvest. If it fails, log the error and keep going, and min and max for that window come back flagged as lifetime. Drop zero-call deltas before reporting, since a window that had a reset but no calls shows min and max as 0.
 - **Red test:** End to end on 18:
   - `stats_reset` never changes because of the worker.
   - An outside `pg_stat_statements_reset()` mid-run gets handled per the rules.
