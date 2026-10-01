@@ -103,6 +103,9 @@ We'll use **unary calls over a long-lived, kept-alive connection**, not long str
   5. Otherwise, the value for this window is current minus snapshot.
 
   "Treat as new" means we use the current values as-is and replace the snapshot entry. Entries that disappear (evicted) get dropped from the snapshot.
+  - **Limitation on 14 through 16:** there's no `stats_since`, so rule 2 can't fire. If an entry is reset on its own and grows past its old counters before the next harvest, we can't detect it, and that window's delta comes out too small.
+  - Rule 3 also treats an optional counter that's present on only one side as new.
+  - Entries with zero delta calls aren't sent, but they stay in the snapshot. That also drops planning-only activity.
 - **First run with no snapshot:** record a baseline and send nothing. This matches today's "reset, then sleep" behavior. A snapshot older than `MaxSnapshotAge` (default three windows) also counts as a baseline, so we never send one huge window.
 - **Mean and stddev:** mean is Δtotal / Δcalls. For stddev, we rebuild each side's sum of squares from `stddev² × calls`, then subtract with the parallel-variance formula.
 - **Min and max can't be diffed.** On 17+, the worker calls `<schema>.pg_stat_statements_minmax_reset()` after each harvest, a wrapper that runs `pg_stat_statements_reset(0, 0, 0, minmax_only := true)`. The wrapper resets only min and max, not the counters. We can't grant the raw function: `minmax_only` defaults to false, so EXECUTE on it would also allow a full reset. On 14 through 16, we report the entry's lifetime min and max and flag them as lifetime values.
