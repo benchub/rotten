@@ -42,12 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -26.
 
-### 20261001-103222-5: Move to Go 1.27 and update the dependencies that don't affect parsing.
-- **Do:** Set `go 1.27` in `go.mod`. Update `pgx` (5.11), `x/*`, and `protobuf`. Remove the `modvendor` steps from the README.
-- **Red test:** The suite runs under Go 1.27 with the current `go.mod` and fails on whatever breaks. If nothing breaks, the existing suite is the check.
-- **Done when:** The suite passes, and `go vet ./...` is clean.
-- **Needs:** -4.
-
 ### 20261001-103222-6: Upgrade pg_query_go from v5 to v6.
 - **Do:** Bump to `pg_query_go/v6` 6.2.5 or later. Check that the reflectwalk skip list still matches the protobuf internals.
 - **Red test:** The golden corpus test. Every changed fingerprint is a failure to explain. Record the diff in `docs/decisions/fingerprint-v6.md`. We don't keep old data, so changes are fine. Just confirm each one is still a sensible grouping.

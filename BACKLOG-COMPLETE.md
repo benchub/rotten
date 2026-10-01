@@ -32,3 +32,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** The golden file is committed, and the test passes in Docker.
 - **Needs:** -1.
 - Completed: October 1, 2026, 10a194d. Regenerate with `make golden`. The deparse fallback path is split out as 20261001-112142-2.
+
+### 20261001-103222-5: Move to Go 1.27 and update the dependencies that don't affect parsing.
+- **Do:** Set `go 1.27` in `go.mod`. Update `pgx` (5.11), `x/*`, and `protobuf`. Remove the `modvendor` steps from the README.
+- **Red test:** The suite runs under Go 1.27 with the current `go.mod` and fails on whatever breaks. If nothing breaks, the existing suite is the check.
+- **Done when:** The suite passes, and `go vet ./...` is clean.
+- **Needs:** -4.
+- Completed: October 1, 2026, 0abba75. One review round; the README fix was checked by the coordinator.
