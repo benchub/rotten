@@ -19,7 +19,8 @@ type Stat struct {
 	DBID     uint32
 	TopLevel bool
 	QueryID  int64
-	Query    string
+	// Query is empty from Reader.ReadStats. TextCache.Fill sets it.
+	Query string
 
 	Plans         int64
 	TotalPlanTime float64
@@ -78,9 +79,10 @@ type Info struct {
 // Reader reads pg_stat_statements on one connection. It looks up the
 // extension version once, on first use.
 type Reader struct {
-	conn  *pgx.Conn
-	ver   [2]int
-	query string
+	conn      *pgx.Conn
+	ver       [2]int
+	query     string // showtext := false
+	queryText string // showtext := true
 }
 
 func NewReader(conn *pgx.Conn) *Reader { return &Reader{conn: conn} }
@@ -105,7 +107,8 @@ func (r *Reader) ExtVersion(ctx context.Context) ([2]int, error) {
 		return r.ver, fmt.Errorf("pgss: extversion %s is older than 1.9 (Postgres 14)", s)
 	}
 	r.ver = [2]int{a, b}
-	r.query = selectSQL(b)
+	r.query = selectSQL(b, false)
+	r.queryText = selectSQL(b, true)
 	return r.ver, nil
 }
 
@@ -126,7 +129,8 @@ func col(minor, since int, expr, typ string) string {
 }
 
 // selectSQL builds the query for extension version 1.<minor>.
-func selectSQL(minor int) string {
+// With showtext false, the query column is NULL and Query comes back empty.
+func selectSQL(minor int, showtext bool) string {
 	sharedRead, sharedWrite := "blk_read_time", "blk_write_time"
 	if minor >= 11 {
 		sharedRead, sharedWrite = "shared_blk_read_time", "shared_blk_write_time"
@@ -151,15 +155,33 @@ func selectSQL(minor int) string {
 		col(minor, 12, "parallel_workers_to_launch", "int8"),
 		col(minor, 12, "parallel_workers_launched", "int8"),
 	}
-	return "select " + strings.Join(cols, ", ") + " from pg_stat_statements"
+	return "select " + strings.Join(cols, ", ") + fmt.Sprintf(" from pg_stat_statements(showtext := %t)", showtext)
 }
 
-// Read returns every row of pg_stat_statements.
+// ReadStats returns every row of pg_stat_statements without query text
+// (Query is empty). It calls pg_stat_statements(showtext := false), so the
+// server doesn't read the query text file. Use a TextCache to attach text to
+// the rows you keep.
+func (r *Reader) ReadStats(ctx context.Context) ([]Stat, error) {
+	return r.read(ctx, false)
+}
+
+// Read returns every row of pg_stat_statements with query text, read in one
+// pg_stat_statements(showtext := true) call. It's the old full fetch, kept so
+// the worker loop works until task -25 moves it to ReadStats and TextCache.
 func (r *Reader) Read(ctx context.Context) ([]Stat, error) {
+	return r.read(ctx, true)
+}
+
+func (r *Reader) read(ctx context.Context, showtext bool) ([]Stat, error) {
 	if _, err := r.ExtVersion(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := r.conn.Query(ctx, r.query)
+	q := r.query
+	if showtext {
+		q = r.queryText
+	}
+	rows, err := r.conn.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("pgss: read: %w", err)
 	}
