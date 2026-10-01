@@ -26,11 +26,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** -17.
 
-### 20261001-134632-2: Skip comment lines in the fingerprint corpus parser.
-- **Do:** `loadCorpus` appends `--` lines that aren't case headers to the previous case's query. That's harmless today, because fingerprints ignore comments, but it would quietly change a case where comments matter. Skip those lines, or document the behavior.
-- **Red test:** A corpus with a comment line between two cases loads the earlier case's query without that line.
-- **Done when:** Passes, and the golden file is unchanged.
-- **Needs:** none.
 ### 20261001-103222-18: Cover Postgres 18 syntax and report parse failures.
 - **Do:** Add 18-only syntax to the corpus, such as `RETURNING OLD/NEW`, virtual generated columns, and `WITHOUT OVERLAPS`. Record which ones fail under the Postgres 17 parser. Keep a count of parse failures, along with up to N sample queries, so they're visible.
 - **Red test:** Expect parse failures to show up as counted and sampled, not silently dropped.

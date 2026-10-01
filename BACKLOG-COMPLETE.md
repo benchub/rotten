@@ -210,3 +210,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes. If it doesn't, normalize before fingerprinting.
 - **Needs:** -16.
 - Completed: October 1, 2026, b495019. Passed on its first run, because pg_query already ignores list length. Postgres 18 squashes IN lists of two or more items but not VALUES. Follow-ups are 20261001-134632-1 and -2.
+
+### 20261001-134632-2: Skip comment lines in the fingerprint corpus parser.
+- **Do:** `loadCorpus` appends `--` lines that aren't case headers to the previous case's query. That's harmless today, because fingerprints ignore comments, but it would quietly change a case where comments matter. Skip those lines, or document the behavior.
+- **Red test:** A corpus with a comment line between two cases loads the earlier case's query without that line.
+- **Done when:** Passes, and the golden file is unchanged.
+- **Needs:** none.
+- Completed: October 1, 2026, 451f246. Test-only change; the coordinator reviewed it.
