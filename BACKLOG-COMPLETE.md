@@ -283,3 +283,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -26.
 - Completed: October 1, 2026, 208dd4a. migrate applies retention declaratively: leaving the setting out resets it to 21 days.
+
+### 20261001-103222-29: Define the protobuf API.
+- **Do:** Add `proto/rotten/v1/ingest.proto` with two calls:
+  - `Register(WorkerInfo) -> Registration`, which returns source IDs.
+  - `SubmitHarvest(HarvestBatch) -> Ack`. A batch holds `batch_id`, the window, and repeated `FingerprintAggregate{fingerprint, normalized, contexts[], metrics, minmax_lifetime}`.
+
+  Add `buf.yaml`, `buf generate` with connect-go, and a `make proto` target that runs `buf lint` and `buf breaking` against `master`.
+- **Red test:** A round trip between a stub server and client over `httptest` (h2c and HTTP/1.1).
+- **Done when:** Passes, and the generated code is committed under `gen/`.
+- **Needs:** -14.
+- Completed: October 1, 2026, 1c58225. buf breaking starts guarding after this lands. Batches carry their own source IDs, and -30 and -33 must check them against the key.

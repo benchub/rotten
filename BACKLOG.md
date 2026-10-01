@@ -46,16 +46,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-29: Define the protobuf API.
-- **Do:** Add `proto/rotten/v1/ingest.proto` with two calls:
-  - `Register(WorkerInfo) -> Registration`, which returns source IDs.
-  - `SubmitHarvest(HarvestBatch) -> Ack`. A batch holds `batch_id`, the window, and repeated `FingerprintAggregate{fingerprint, normalized, contexts[], metrics, minmax_lifetime}`.
-
-  Add `buf.yaml`, `buf generate` with connect-go, and a `make proto` target that runs `buf lint` and `buf breaking` against `master`.
-- **Red test:** A round trip between a stub server and client over `httptest` (h2c and HTTP/1.1).
-- **Done when:** Passes, and the generated code is committed under `gen/`.
-- **Needs:** -14.
-
 ### 20261001-103222-30: Add pass key auth and the keys CLI.
 - **Do:**
   - Add `rotten-server keys create|list|revoke`. It connects as `rotten_owner` (`ROTTEN_ADMIN_DSN`), since the ingest role can't create or revoke keys. `create` prints the secret once.
@@ -85,6 +75,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 ### 20261001-103222-33: Build the SubmitHarvest write path.
 - **Do:** Add `internal/ingest`. In one transaction, resolve fingerprint, controller, action, and job IDs (moving `identity` to the server), then insert `events` and `event_context` and record `batch_id`. Use parameterized SQL, not `Sprintf`.
 - **Pruning:** Call `rotten.prune_ingested_batches()` on a timer to drop dedupe rows older than 30 days.
+- **Batch checks:** `logical_source_id` must match the logical source of `physical_source_id`, and both must match the pass key's source. Put that pairing in the red test. Reject windows that overlap windows already ingested for the source but aren't identical to them. If a duplicate `batch_id` arrives with different content, log a warning; that may need a content hash in `ingested_batches`.
 - **Red test:**
   - A batch produces the same rows the characterization test (-12) expects.
   - Sending the same batch twice writes one set of rows and acks both.
@@ -392,6 +383,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ### 20261001-142401-1: Fix the stale fingerprints column comments.
 - **Do:** Add a new migration that only replaces the comments. Don't edit 0001. In `0001_baseline.sql`, `fingerprints.fingerprint` is described as the query text, but it now holds the hex string from `fingerprint.Normalized`, the same value as `FingerprintAggregate.fingerprint` in `proto/rotten/v1/ingest.proto`. `fingerprints.normalized` should say it's `pg_query.Normalize` output of one representative text, stored on first insert only. I held this back from -29 because task -112142-5 is adding migrations, and a second new migration would risk a number collision.
+- **Also:** The fingerprint example in `proto/rotten/v1/ingest.proto` and in the `fingerprint.Normalized` doc comment is the old 42-character v1 format. Replace it with a real 16-hex-digit v6 value.
 - **Red test:** A migrate test reads both comments back with `col_description` and checks them.
 - **Done when:** Passes.
 - **Needs:** 20261001-103222-29, 20261001-112142-5.
