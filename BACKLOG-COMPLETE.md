@@ -171,3 +171,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and `internal/testdb.StartRotten` uses `migrate` instead of `tables.sql`.
 - **Needs:** -2.
 - Completed: October 1, 2026, 45d55d5. rotten_owner must own the database (for ALTER DATABASE SET search_path). The goose version table is pinned to public.
+
+### 20261001-103222-16: Build a pg_stat_statements reader that knows the version.
+- **Do:** Add `internal/pgss.Reader`. It reads `extversion`, maps columns into one `Stat` struct, and handles the 17 rename (`blk_*` to `shared_blk_*`). Optional fields include `local_blk_*`, WAL fields, `wal_buffers_full`, `parallel_workers_*`, `stats_since`, and `minmax_stats_since`.
+  - `total_time` = plan + exec.
+  - min, max, mean, and stddev come from exec only.
+  - Also read `pg_stat_statements_info`.
+- **Red test:** Run a known workload against each of versions 14 through 18 and assert on the fields. Expect 17 and 18 to fail first.
+- **Bridge:** The observer can't do a full reset, so until -25 the worker keeps only the old `dba` reset function, in `schema/legacy_reset.sql`. Reads go through the observer. The min/max wrapper and its schema setting move to -21.
+- **Done when:** The matrix passes, the worker uses `Reader`, and `schema/functions*.sql` are deleted.
+- **Needs:** -14, -15.
+- Completed: October 1, 2026, d46a9a8. Review found and closed a superuser hijack in the reset function. The original dba functions had the same hole.

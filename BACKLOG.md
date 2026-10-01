@@ -26,16 +26,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase B: Postgres 14 through 18 (item 4).
 
-### 20261001-103222-16: Build a pg_stat_statements reader that knows the version.
-- **Do:** Add `internal/pgss.Reader`. It reads `extversion`, maps columns into one `Stat` struct, and handles the 17 rename (`blk_*` to `shared_blk_*`). Optional fields include `local_blk_*`, WAL fields, `wal_buffers_full`, `parallel_workers_*`, `stats_since`, and `minmax_stats_since`.
-  - `total_time` = plan + exec.
-  - min, max, mean, and stddev come from exec only.
-  - Also read `pg_stat_statements_info`.
-- **Red test:** Run a known workload against each of versions 14 through 18 and assert on the fields. Expect 17 and 18 to fail first.
-- **Bridge:** The observer can't do a full reset, so until -25 the worker keeps only the old `dba` reset function, in `schema/legacy_reset.sql`. Reads go through the observer. The min/max wrapper and its schema setting move to -21.
-- **Done when:** The matrix passes, the worker uses `Reader`, and `schema/functions*.sql` are deleted.
-- **Needs:** -14, -15.
-
 ### 20261001-103222-17: Match Postgres 18 IN-list fingerprints to older versions.
 - **Do:** Add cases to the corpus: `IN ($1 /*, ... */)`, `IN ($1)`, and `IN ($1,$2,$3)`. Add squashed VALUES cases if 18 squashes them too.
 - **Red test:** Run the same workload on 16 and on 18. Each query should get the same fingerprint.
