@@ -26,7 +26,7 @@ These came from reading the code and probing real Postgres containers on October
 
 ```
 observed Postgres (primary or replica)
-   ^  read only: pg_read_all_stats (plus EXECUTE on pg_stat_statements_reset on 17+)
+   ^  read only: pg_read_all_stats (plus a min/max-only reset wrapper on 17+)
    |
 rotten-worker (Go)
    - reads pg_stat_statements, diffs against a local snapshot
@@ -91,7 +91,7 @@ We'll use **unary calls over a long-lived, kept-alive connection**, not long str
 
 ### pg_stat_statements diffing (item 2).
 
-- **Read directly.** Grant `pg_read_all_stats` to the observer role instead of using SECURITY DEFINER functions in a `dba` schema. That removes two TODOs: the hard-coded function location and the hard-coded role name.
+- **Read directly.** Grant `pg_read_all_stats` to the observer role instead of using SECURITY DEFINER functions in a `dba` schema. That removes two TODOs: the hard-coded function location and the hard-coded role name. The observer gets `pg_read_all_stats`, plus on 17+ one SECURITY DEFINER wrapper that only does the min/max reset. `schema/observer.sql` sets this up, with the role and schema names as psql variables (defaults `rotten_observer` and `rotten`).
 - **Fetch cheaply.** Each harvest calls `pg_stat_statements(showtext := false)` to get every row. Diffing needs every row, and the slow part of the old full fetch was the query text. Text is fetched only for keys we haven't cached yet.
 - **Supported versions:** Postgres 14 through 18.
 - **Key:** `(userid, dbid, toplevel, queryid)`.
@@ -105,7 +105,7 @@ We'll use **unary calls over a long-lived, kept-alive connection**, not long str
   "Treat as new" means we use the current values as-is and replace the snapshot entry. Entries that disappear (evicted) get dropped from the snapshot.
 - **First run with no snapshot:** record a baseline and send nothing. This matches today's "reset, then sleep" behavior. A snapshot older than `MaxSnapshotAge` (default three windows) also counts as a baseline, so we never send one huge window.
 - **Mean and stddev:** mean is Δtotal / Δcalls. For stddev, we rebuild each side's sum of squares from `stddev² × calls`, then subtract with the parallel-variance formula.
-- **Min and max can't be diffed.** On 17+, the worker calls `pg_stat_statements_reset(0, 0, 0, minmax_only := true)` after each harvest. That resets only min and max, not the counters. On 14 through 16, we report the entry's lifetime min and max and flag them as lifetime values.
+- **Min and max can't be diffed.** On 17+, the worker calls `<schema>.pg_stat_statements_minmax_reset()` after each harvest, a wrapper that runs `pg_stat_statements_reset(0, 0, 0, minmax_only := true)`. The wrapper resets only min and max, not the counters. We can't grant the raw function: `minmax_only` defaults to false, so EXECUTE on it would also allow a full reset. On 14 through 16, we report the entry's lifetime min and max and flag them as lifetime values.
 - **Top N:** pick the top 100 for each metric by delta, in Go. This replaces the 19-way SQL `UNION`.
 - **Where the snapshot lives:** a table in the worker's local SQLite store, the same file that holds the outbox. Two reasons:
   - Replicas are read-only, so the snapshot can't live on the observed database.
@@ -199,7 +199,7 @@ These answer the open questions from the first draft (October 1, 2026).
 2. **Existing data:** We don't keep it. We start with a fresh schema and accept any fingerprint changes from v5 to v6.
 3. **Postgres versions:** 14 through 18. There are no Postgres 13 code paths.
 4. **UI:** Rails, with generic `oidc` or `password` auth. Okta specifics stay in the deploy repo.
-5. **Observer grants:** `pg_read_all_stats` replaces the SECURITY DEFINER functions.
+5. **Observer grants:** `pg_read_all_stats`, plus on 17+ one SECURITY DEFINER wrapper that only does the min/max reset. This replaces the old SECURITY DEFINER functions.
 6. **Deployment:** Each piece runs on a host as a long-running process, and a separate repo deploys it. There's a network between workers and the server. The server and UI share only the rotten DB.
 7. **CI:** none for this repo. The `make test*` targets are the gate.
 

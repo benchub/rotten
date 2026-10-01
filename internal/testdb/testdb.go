@@ -6,6 +6,7 @@ package testdb
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -28,6 +30,9 @@ var RottenRoles = []string{"rotten-client", "readonly", "readwrite", "rotten-int
 type DB struct {
 	// DSN connects as the postgres superuser.
 	DSN string
+
+	c      testcontainers.Container
+	dbName string
 }
 
 // Connect opens a superuser connection and closes it at test cleanup.
@@ -93,7 +98,7 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 	if err != nil {
 		t.Fatalf("testdb: connection string: %v", err)
 	}
-	return &DB{DSN: dsn}
+	return &DB{DSN: dsn, c: c, dbName: dbName}
 }
 
 // StartRotten starts Postgres 18 with pg_partman installed in public, a
@@ -117,6 +122,32 @@ func StartRotten(t testing.TB) *DB {
 		}
 	}
 	return db
+}
+
+// PSQL runs the SQL file at path (on the host) with psql inside the database
+// container, as the postgres superuser, with ON_ERROR_STOP on. Each vars entry
+// becomes a `-v name=value` psql variable. It returns psql's combined output,
+// and an error if psql exits nonzero.
+func (d *DB) PSQL(t testing.TB, path string, vars map[string]string) (string, error) {
+	t.Helper()
+	ctx := context.Background()
+	const dst = "/tmp/rotten-psql.sql"
+	if err := d.c.CopyFileToContainer(ctx, path, dst, 0o644); err != nil {
+		t.Fatalf("testdb: copy %s: %v", path, err)
+	}
+	cmd := []string{"psql", "-X", "-U", "postgres", "-d", d.dbName, "-v", "ON_ERROR_STOP=1", "-f", dst}
+	for k, v := range vars {
+		cmd = append(cmd, "-v", k+"="+v)
+	}
+	code, r, err := d.c.Exec(ctx, cmd, tcexec.Multiplexed())
+	if err != nil {
+		t.Fatalf("testdb: exec psql: %v", err)
+	}
+	out, _ := io.ReadAll(r)
+	if code != 0 {
+		return string(out), fmt.Errorf("psql exited %d: %s", code, out)
+	}
+	return string(out), nil
 }
 
 // StartObserved starts an observed Postgres (14 through 18) with
