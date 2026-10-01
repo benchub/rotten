@@ -169,12 +169,22 @@ func (s *walker) Struct(v reflect.Value) error {
 // fingerprints like x IN (subquery) even though the scalar subquery errors
 // on more than one row.
 //
+// A cast array, x = ANY(ARRAY[a, b]::T[]), becomes x IN (a::T, b::T).
+// For a base type T, Postgres resolves ARRAY[...]::T[] by coercing each
+// element to T, so this is the same query, and pg_stat_statements on 16 and
+// 18 gives the two forms one queryid. A domain array (::posint[]) isn't
+// exact: Postgres coerces it as a whole, not per element. Merging it anyway
+// is an accepted over-merge, like IN (1::bigint) below. The cast can change the element type and the operator
+// (::bigint[] on an int column picks int4 = int8), and Postgres keeps that
+// apart from the uncast IN list. The fingerprint doesn't: it already ignores
+// element casts in IN lists, so IN (1::bigint) and IN (1) share one. That's
+// the accepted cost, and the cast array now follows the IN list's rule.
+//
 // It leaves alone: other operators (< ANY, = ALL, <> ANY), schema-qualified
 // OPERATOR(...) syntax, a non-literal array (= ANY($1) already fingerprints
-// like = $1), a cast array (ARRAY[...]::bigint[] can change the element type
-// and operator, so it isn't the same query as the uncast IN list), an empty
-// array (IN () isn't valid SQL), and multidimensional arrays (IN ((1, 2))
-// would mean a row comparison).
+// like = $1, and '{1,2}'::int[] is a constant), a cast to anything but a
+// one-dimensional array type, an empty array (IN () isn't valid SQL), and
+// multidimensional arrays (IN ((1, 2)) would mean a row comparison).
 func rewriteArrayToIn(e *pg_query.A_Expr) {
 	var op string
 	switch {
@@ -186,6 +196,13 @@ func rewriteArrayToIn(e *pg_query.A_Expr) {
 		return
 	}
 	arr := e.Rexpr.GetAArrayExpr()
+	var elemType *pg_query.TypeName
+	if tc := e.Rexpr.GetTypeCast(); tc != nil {
+		if elemType = arrayElemType(tc.TypeName); elemType == nil {
+			return
+		}
+		arr = tc.Arg.GetAArrayExpr()
+	}
 	if arr == nil || len(arr.Elements) == 0 {
 		return
 	}
@@ -194,9 +211,48 @@ func rewriteArrayToIn(e *pg_query.A_Expr) {
 			return
 		}
 	}
+	elems := arr.Elements
+	if elemType != nil {
+		elems = make([]*pg_query.Node, len(arr.Elements))
+		for i, el := range arr.Elements {
+			elems[i] = &pg_query.Node{Node: &pg_query.Node_TypeCast{TypeCast: &pg_query.TypeCast{
+				Arg:      el,
+				TypeName: copyTypeName(elemType),
+				Location: -1,
+			}}}
+		}
+	}
 	e.Kind = pg_query.A_Expr_Kind_AEXPR_IN
 	e.Name = []*pg_query.Node{pg_query.MakeStrNode(op)}
-	e.Rexpr = pg_query.MakeListNode(arr.Elements)
+	e.Rexpr = pg_query.MakeListNode(elems)
+}
+
+// arrayElemType returns the element type of a one-dimensional array cast,
+// like int[] or bigint ARRAY, or nil for anything else. Postgres treats
+// int[][] like int[], but that's rare enough to leave alone.
+func arrayElemType(tn *pg_query.TypeName) *pg_query.TypeName {
+	if tn == nil || len(tn.ArrayBounds) != 1 || tn.Setof || tn.PctType {
+		return nil
+	}
+	el := copyTypeName(tn)
+	el.ArrayBounds = nil
+	return el
+}
+
+// copyTypeName copies tn's fields into a new TypeName, so each pushed-down
+// cast gets its own node. The name and typmod nodes are shared, which is
+// fine since nothing rewrites them.
+func copyTypeName(tn *pg_query.TypeName) *pg_query.TypeName {
+	return &pg_query.TypeName{
+		Names:       tn.Names,
+		TypeOid:     tn.TypeOid,
+		Setof:       tn.Setof,
+		PctType:     tn.PctType,
+		Typmods:     tn.Typmods,
+		Typemod:     tn.Typemod,
+		ArrayBounds: tn.ArrayBounds,
+		Location:    -1,
+	}
 }
 
 // isOp reports whether name is the single unqualified operator op.

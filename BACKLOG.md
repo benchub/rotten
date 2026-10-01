@@ -406,3 +406,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A cross-version case for each form.
 - **Done when:** Passes.
 - **Needs:** 20261001-134632-1.
+
+### 20261001-140616-1: Decide whether nested element casts should collapse in IN lists.
+- **Do:** The fingerprint ignores a single cast on an IN-list element, so `id IN (1::bigint)` groups with `id IN (1)`, though Postgres gives them different queryids. A nested cast doesn't collapse: `id IN (1::bigint::int)` and `id = ANY(ARRAY[1::bigint]::int[])` get their own fingerprint. Decide whether that split is worth fixing, and whether the single-cast merge across types is wanted.
+- **Red test:** Golden cases for the nested-cast forms, with the grouping you pick.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** 20261001-135352-1.

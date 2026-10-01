@@ -25,12 +25,24 @@ import (
 
 // crossTables names one table per logical query, so each pg_stat_statements
 // row can be traced back to its logical query by the table it mentions.
-var crossTables = []string{"x_in_lit", "x_in_param", "x_in_cast_param", "x_any_lit", "x_any_param", "x_values_lit", "x_values_param"}
+var crossTables = []string{"x_in_lit", "x_in_param", "x_in_cast_param", "x_any_lit", "x_any_param", "x_any_cast_lit", "x_any_cast_wide_lit", "x_any_cast_param", "x_values_lit", "x_values_param"}
 
 // crossAlias pairs a table whose query should group with another table's.
 // The fingerprint is taken with the table name swapped for its alias, since
 // table names are part of the fingerprint.
-var crossAlias = map[string]string{"x_any_lit": "x_in_lit", "x_any_param": "x_in_cast_param"}
+//
+// The cast arrays group with the IN list too. With a matching cast (::int[]
+// on an int column), Postgres gives them the IN list's queryid. With a
+// widening cast (::bigint[]), Postgres gives them the queryid of
+// IN (1::bigint, 2::bigint), and the fingerprint already ignores element
+// casts in IN lists, so that's the IN list's fingerprint as well.
+var crossAlias = map[string]string{
+	"x_any_lit":           "x_in_lit",
+	"x_any_param":         "x_in_cast_param",
+	"x_any_cast_lit":      "x_in_lit",
+	"x_any_cast_wide_lit": "x_in_lit",
+	"x_any_cast_param":    "x_in_cast_param",
+}
 
 // runCrossWorkload runs each logical query with several list lengths and
 // row counts, with literals (simple protocol) and with bind parameters.
@@ -68,6 +80,10 @@ func runCrossWorkload(t *testing.T, conn *pgx.Conn) {
 			// forms cast each element, and the IN baseline casts too.
 			{"select * from x_in_cast_param where id in (" + strings.Join(castParams, ", ") + ")", args},
 			{"select * from x_any_param where id = any(array[" + strings.Join(castParams, ", ") + "])", args},
+			{"select * from x_any_cast_lit where id = any(array[" + strings.Join(lits, ", ") + "]::int[])", nil},
+			{"select * from x_any_cast_wide_lit where id = any(array[" + strings.Join(lits, ", ") + "]::bigint[])", nil},
+			// The array cast gives array[$1] its type, so no element casts.
+			{"select * from x_any_cast_param where id = any(array[" + strings.Join(params, ", ") + "]::int[])", args},
 			{"insert into x_values_lit (id, name) values " + strings.Join(vlits, ", "), nil},
 			{"insert into x_values_param (id, name) values " + strings.Join(vparams, ", "), vargs},
 		}

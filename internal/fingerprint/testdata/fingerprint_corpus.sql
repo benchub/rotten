@@ -93,6 +93,18 @@ SELECT * FROM users WHERE id = ANY(ARRAY[$1 /*, ... */])
 SELECT * FROM users WHERE id = ANY(ARRAY[$1, $2, $3])
 -- case: in_list_any_param
 SELECT * FROM users WHERE id = ANY($1)
+-- A cast array is the IN list with the cast pushed onto each element, which
+-- is how Postgres resolves it, so it groups too, whatever the cast type.
+-- case: in_list_any_cast_a
+SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3]::int[])
+-- case: any_array_cast
+SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3]::bigint[])
+-- case: in_list_any_cast_b
+SELECT * FROM users WHERE id = ANY(ARRAY[$1 /*, ... */]::bigint[])
+-- A domain array is coerced as a whole, not per element, so this merge is
+-- an accepted over-merge.
+-- case: in_list_any_cast_domain
+SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3]::posint[])
 
 -- NOT IN (...) and <> ALL(ARRAY[...]) group with each other (and with <> 1).
 -- case: not_in_list_a
@@ -101,6 +113,8 @@ SELECT * FROM users WHERE id NOT IN (1, 2, 3)
 SELECT * FROM users WHERE id <> ALL(ARRAY[1, 2, 3])
 -- case: not_in_list_c
 SELECT * FROM users WHERE id != ALL(ARRAY[$1 /*, ... */])
+-- case: not_in_list_cast
+SELECT * FROM users WHERE id <> ALL(ARRAY[1, 2, 3]::int[])
 
 -- Other ANY/ALL forms stay distinct from IN and from each other.
 -- case: any_lt_array
@@ -109,10 +123,10 @@ SELECT * FROM users WHERE id < ANY(ARRAY[1, 2, 3])
 SELECT * FROM users WHERE id = ALL(ARRAY[1, 2, 3])
 -- case: any_ne_array
 SELECT * FROM users WHERE id <> ANY(ARRAY[1, 2, 3])
--- case: any_array_cast
-SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3]::bigint[])
 -- case: any_nested_array
 SELECT * FROM users WHERE id = ANY(ARRAY[[1, 2], [3, 4]])
+-- case: any_nested_array_cast
+SELECT * FROM users WHERE id = ANY(ARRAY[[1, 2], [3, 4]]::int[])
 
 -- IN (subquery) and = ANY(subquery) are the same SubLink to Postgres.
 -- case: in_subquery_a
