@@ -12,11 +12,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase A: Test harness and characterization.
 
-### 20261001-103222-1: Run Go tests in Docker.
-- **Do:** Add `docker/test.Dockerfile` (`golang:1.27`, cgo on) and a `Makefile` with `test`, `test-unit`, and `shell` targets. Mount the Docker socket so testcontainers can start sibling containers.
-- **Red test:** `TestHarnessRuns`. It fails until `make test` runs inside the container.
-- **Done when:** `make test` passes on macOS and Linux.
-
 ### 20261001-103222-2: Build Postgres test images and load the schema.
 - **Do:** Add `internal/testdb` testcontainers helpers:
   - `StartRotten(t)`: Postgres 18 with pg_partman. Creates the `rotten-client`, `readonly`, `readwrite`, and `rotten-interface` roles.
@@ -25,6 +20,12 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** The schema loads, and partitions exist for today.
 - **Needs:** -1.
 
+
+### 20261001-111132-1: Confirm `make test` works on Linux.
+- **Do:** Run `make test` and `make test-unit` on a Linux Docker host, which task -1 only checked on macOS. Check that sibling containers are reachable through `host-gateway`. On macOS, `host.docker.internal` resolved to an IPv6 address, which worked there.
+- **Red test:** Task -2's testcontainers tests, run on Linux.
+- **Done when:** Both targets pass on Linux, or the Makefile gets a fix.
+- **Needs:** -2.
 
 ### 20261001-103222-4: Pin fingerprints with a golden corpus.
 - **Do:** Build `testdata/fingerprint_corpus.sql`, one query per case:
