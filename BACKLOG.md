@@ -81,18 +81,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-28: Add the auth and dedupe tables and the database roles.
-- **Do:**
-  - Add a migration for `api_keys(id, name, secret_hash, fqdn null, created_at, created_by, last_used_at, revoked_at, revoked_by)`.
-  - Add `ingested_batches(batch_id pk, key_id, received_at)`, pruned after 30 days.
-  - Add `migrations/permissions.sql`. It revokes everything, then grants table by table to `rotten_ingest`, `rotten_ui`, and `rotten_readonly`, using the grant table in `docs/plan.md`. `migrate` reapplies it every run.
-- **Red test:** One test for each role:
-  - `rotten_ingest` can insert into `events` and update `api_keys.last_used_at`. It can't insert into `api_keys`, change `revoked_at`, or delete anything.
-  - `rotten_ui` can't insert into `events`.
-  - `rotten_readonly` can't write anything.
-  - A new table added in a test migration can't be reached by any role until it's listed in `permissions.sql`.
-- **Done when:** Passes.
-- **Needs:** -26.
 ### 20261001-103222-29: Define the protobuf API.
 - **Do:** Add `proto/rotten/v1/ingest.proto` with two calls:
   - `Register(WorkerInfo) -> Registration`, which returns source IDs.
@@ -108,6 +96,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   - Add `rotten-server keys create|list|revoke`. It connects as `rotten_owner` (`ROTTEN_ADMIN_DSN`), since the ingest role can't create or revoke keys. `create` prints the secret once.
   - Add a Connect interceptor that checks `Authorization: Bearer`.
   - Cache key lookups with a TTL, and update `last_used_at` (throttled).
+- **Grants:** `rotten_ingest` can only read `id, name, secret_hash, fqdn, revoked_at` on `api_keys`, so name those columns instead of using `select *` or `RETURNING *`.
 - **Red test:** Unknown, malformed, and revoked keys all get `Unauthenticated`. A key revoked mid-connection gets rejected within the TTL. The secret never shows up in logs.
 - **Done when:** Passes.
 - **Needs:** -28, -29.
@@ -129,6 +118,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ### 20261001-103222-33: Build the SubmitHarvest write path.
 - **Do:** Add `internal/ingest`. In one transaction, resolve fingerprint, controller, action, and job IDs (moving `identity` to the server), then insert `events` and `event_context` and record `batch_id`. Use parameterized SQL, not `Sprintf`.
+- **Pruning:** Call `rotten.prune_ingested_batches()` on a timer to drop dedupe rows older than 30 days.
 - **Red test:**
   - A batch produces the same rows the characterization test (-12) expects.
   - Sending the same batch twice writes one set of rows and acks both.
@@ -328,6 +318,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ### 20261001-103222-52: Build the pass key admin pages.
 - **Do:** Admins can create keys (the secret shows once), list them, and revoke them, using `rotten_ui`'s narrow `api_keys` grants. Fill in `created_by` and `revoked_by`, and write each action to `ui_audit_log`, which needs a migration and grant.
+- **Grants:** `rotten_ui` can't read `secret_hash`, and can only insert `name, secret_hash, fqdn, created_by`. Add a test that `INSERT ... RETURNING id` works.
 - **Red test:**
   - Viewers get 403.
   - Create shows the secret once.

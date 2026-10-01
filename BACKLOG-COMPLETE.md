@@ -217,3 +217,17 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and the golden file is unchanged.
 - **Needs:** none.
 - Completed: October 1, 2026, 451f246. Test-only change; the coordinator reviewed it.
+
+### 20261001-103222-28: Add the auth and dedupe tables and the database roles.
+- **Do:**
+  - Add a migration for `api_keys(id, name, secret_hash, fqdn null, created_at, created_by, last_used_at, revoked_at, revoked_by)`.
+  - Add `ingested_batches(batch_id pk, key_id, received_at)`, pruned after 30 days.
+  - Add `migrations/permissions.sql`. It revokes everything, then grants table by table to `rotten_ingest`, `rotten_ui`, and `rotten_readonly`, using the grant table in `docs/plan.md`. `migrate` reapplies it every run.
+- **Red test:** One test for each role:
+  - `rotten_ingest` can insert into `events` and update `api_keys.last_used_at`. It can't insert into `api_keys`, change `revoked_at`, or delete anything.
+  - `rotten_ui` can't insert into `events`.
+  - `rotten_readonly` can't write anything.
+  - A new table added in a test migration can't be reached by any role until it's listed in `permissions.sql`.
+- **Done when:** Passes.
+- **Needs:** -26.
+- Completed: October 1, 2026, 27f11dc. Operators create the roles. Pruning is a SECURITY DEFINER function, so ingest never gets DELETE. Default privileges revoke function EXECUTE from PUBLIC globally, because the per-schema form can only add privileges.
