@@ -239,3 +239,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -19, -15.
 - Completed: October 1, 2026, d9e310a. The worker doesn't call the reset yet; -25 wires it in.
+
+### 20261001-134632-1: Give `= ANY(ARRAY[...])` and `IN (...)` the same fingerprint.
+- **Do:** On Postgres 18, `id = any(array[1,2,3])` shares a queryid with the squashed `id in ($1 /*, ... */)`, and pg_stat_statements keeps whichever text arrived first. pg_query fingerprints the two forms differently, so the same queryid can land on different rotten fingerprints, and grouping can differ from Postgres 16. Normalize the two forms to one fingerprint, unless that would merge queries that really differ.
+- **Red test:** Add `= ANY(ARRAY[...])` with several lengths to the cross-version workload and golden corpus. It should share a fingerprint with the IN-list form on both 16 and 18.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** -17.
+- Completed: October 1, 2026, fd4f01a. Follow-ups are 20261001-135352-1 (cast arrays) and -2 (<> ALL subquery).
