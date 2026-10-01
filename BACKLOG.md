@@ -382,3 +382,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A migrate test reads both comments back with `col_description` and checks them.
 - **Done when:** Passes.
 - **Needs:** 20261001-103222-29, 20261001-112142-5.
+
+### 20261001-143308-1: Limit unauthenticated key lookups.
+- **Do:** The auth interceptor caches only keys it finds, so each bad token with a well-formed key ID costs one `api_keys` query. Add a per-client rate limit on failed auth, or a short negative cache that a new key's ID can't hit (for example, cache misses only for IDs above the current max). Also decide whether a database error during lookup should stay `Unavailable` or fall back to a still-fresh cache entry.
+- **Red test:** A burst of unknown-key calls from one client causes at most a bounded number of lookups, and a key created during the burst works right away.
+- **Done when:** Passes.
+- **Needs:** 20261001-103222-30.

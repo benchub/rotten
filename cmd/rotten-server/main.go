@@ -1,5 +1,6 @@
-// Command rotten-server is the rotten server. For now it has one
-// subcommand, migrate, which applies the embedded schema migrations.
+// Command rotten-server is the rotten server. Its subcommands are migrate,
+// which applies the embedded schema migrations, and keys, which manages
+// worker pass keys.
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 )
 
 const usage = `usage: rotten-server migrate [-dsn DSN] [-retention DAYS]
+       rotten-server keys create|list|revoke ...
 
 migrate applies every pending schema migration to the rotten database. Run it
 as rotten_owner. The DSN comes from -dsn, or else ROTTEN_OWNER_DSN.
@@ -28,13 +30,18 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "keys" {
+		return runKeys(args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || args[0] != "migrate" {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dsn := fs.String("dsn", os.Getenv("ROTTEN_OWNER_DSN"), "rotten_owner DSN (default $ROTTEN_OWNER_DSN)")
+	// No env default: flag help prints defaults, and the DSN may hold a
+	// password. The env var is read after Parse.
+	dsn := fs.String("dsn", "", "rotten_owner DSN (default $ROTTEN_OWNER_DSN)")
 	defRetention := os.Getenv("ROTTEN_RETENTION")
 	if defRetention == "" {
 		defRetention = migrate.DefaultRetention.String()
@@ -51,6 +58,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "rotten-server migrate: %v\n", err)
 		return 2
+	}
+	if *dsn == "" {
+		*dsn = os.Getenv("ROTTEN_OWNER_DSN")
 	}
 	if *dsn == "" {
 		fmt.Fprint(stderr, "rotten-server migrate: no DSN; pass -dsn or set ROTTEN_OWNER_DSN\n")

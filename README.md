@@ -75,6 +75,20 @@ How to use it
    Go duration like `1080h`. `migrate` writes it to `public.part_config` on every run, so
    a run without the setting puts retention back to 21 days. Pass the same value every
    time. An invalid value fails `migrate` before it changes anything.
+
+   **Server keys.** Workers authenticate to `rotten-server` with a pass key in an
+   `Authorization: Bearer` header. Manage keys as `rotten_owner` through `ROTTEN_ADMIN_DSN`:
+  ```bash
+  export ROTTEN_ADMIN_DSN='postgres://rotten_owner@host/rotten'
+  ./rotten-server keys create --fqdn db1.example.com db1-worker
+  ./rotten-server keys list
+  ./rotten-server keys revoke db1-worker
+  ```
+   `create` prints the key once. The database keeps only a SHA-256 hash of its secret, so
+   a lost key can't be recovered; revoke it and create a new one. `list` never shows
+   secrets. `--fqdn` pins a key to one worker host. The server refuses to register or
+   accept harvests for any source with an unpinned key, so give every worker key `--fqdn`.
+   A revoked key stops working within the server's key cache TTL, 30 seconds by default.
 5. Install `pg_stat_statements` in the monitored database:
  - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
  - run `CREATE EXTENSION pg_stat_statements` in the monitored database
