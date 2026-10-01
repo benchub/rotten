@@ -8,6 +8,14 @@
 # host.docker.internal. Docker Desktop on macOS provides that name; on Linux,
 # --add-host=host.docker.internal:host-gateway maps it to the host.
 # For a non-default socket: make test DOCKER_SOCK_PATH=$HOME/.colima/default/docker.sock
+#
+# golden: regenerates testdata/fingerprints.golden. Run it after any change to
+# pg_query_go or the normalization code in fingerprint.go, then review
+# `git diff testdata/fingerprints.golden` to decide whether the changes are
+# intended. Error text is part of the golden output, so changed error messages
+# show up in the diff too. Never edit the golden file by hand. It runs as root
+# with the same cache volumes as test, then chowns the golden file to your
+# host uid:gid so it isn't root-owned on Linux.
 
 IMAGE      ?= rotten-test
 DOCKER_SOCK_PATH ?= /var/run/docker.sock
@@ -26,7 +34,7 @@ DOCKER_SOCK := \
 
 GO_TEST_ARGS ?=
 
-.PHONY: test test-unit shell image
+.PHONY: test test-unit golden shell image
 
 ## image: the Go test image, plus the rotten DB image (Postgres 18 + pg_partman)
 ## that internal/testdb.StartRotten runs by name.
@@ -41,6 +49,12 @@ test: image
 ## test-unit: Go tests with -short and no Docker socket.
 test-unit: image
 	$(DOCKER_RUN) $(IMAGE) go test -short $(GO_TEST_ARGS) ./...
+
+## golden: regenerate the fingerprint golden file, owned by the host user.
+golden: image
+	$(DOCKER_RUN) -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)" $(IMAGE) sh -c \
+		'go test -short -run "^TestFingerprintGolden$$" -update . && \
+		chown "$$HOST_UID:$$HOST_GID" testdata/fingerprints.golden'
 
 ## shell: interactive shell in the test container, same mounts as test.
 shell: image
