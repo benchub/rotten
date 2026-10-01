@@ -28,8 +28,11 @@ GO_TEST_ARGS ?=
 
 .PHONY: test test-unit shell image
 
+## image: the Go test image, plus the rotten DB image (Postgres 18 + pg_partman)
+## that internal/testdb.StartRotten runs by name.
 image:
 	docker build -q -f $(DOCKERFILE) -t $(IMAGE) . >/dev/null
+	docker build -q -f docker/rotten-db.Dockerfile -t rotten-db-test:18 docker >/dev/null
 
 ## test: all Go tests, race detector on, Docker socket mounted for testcontainers.
 test: image
