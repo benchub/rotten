@@ -36,12 +36,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -26.
 
-### 20261001-103222-12: Characterize the worker end to end.
-- **Do:** Pull the loop out of `main()` into `run(ctx, cfg, clock)`. Point the worker at `StartObserved(t, 16)` (the current helpers only work up to 16) and `StartRotten`, with a two-second window. Generate a known workload with marginalia comments.
-- **Red test:** Assert on the events, contexts, and fingerprints the worker writes. Assert that cancelling `ctx` stops the worker.
-- **Done when:** The test passes reliably 10 times in a row.
-- **Needs:** -7, -8, -9, -10.
-
 ### 20261001-103222-13: Make `go test -race` clean.
 - **Do:** Turn on `-race` in `make test`. Fix what it flags: `eventCount`, `eventsPending`, `parseFailures`, and `lastWindowEnd` become atomics, and `f.last` gets read under its lock.
 - **Red test:** The suite fails under `-race` right now.

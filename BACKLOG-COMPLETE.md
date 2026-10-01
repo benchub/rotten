@@ -101,3 +101,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Tests pass, with numbers checked against hand-computed means and deviations.
 - **Needs:** -2.
 - Completed: October 1, 2026, 96c70f3. Found the rollback bug (20261001-114554-1) and the unflushed first sample (20261001-120544-1).
+
+### 20261001-103222-12: Characterize the worker end to end.
+- **Do:** Pull the loop out of `main()` into `run(ctx, cfg, clock)`. Point the worker at `StartObserved(t, 16)` (the current helpers only work up to 16) and `StartRotten`, with a two-second window. Generate a known workload with marginalia comments.
+- **Red test:** Assert on the events, contexts, and fingerprints the worker writes. Assert that cancelling `ctx` stops the worker.
+- **Done when:** The test passes reliably 10 times in a row.
+- **Needs:** -7, -8, -9, -10.
+- Completed: October 1, 2026, ebc26a1. Passed 10 of 10. Follow-ups are 20261001-120501-1 through -3.
