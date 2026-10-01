@@ -416,7 +416,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - A missing groups claim gives a viewer at most, never an admin.
   - `OMNIAUTH_FAKE` does nothing outside development.
   - Booting in `oidc` mode with a missing `OIDC_*` value fails.
-- **Done when:** Passes. A manual login against a real OIDC provider (your Okta dev app, configured outside this repo) works.
+- **Done when:** Passes. Okta itself is a placeholder here: document the env vars an Okta app needs, and leave the real setup to the repo that deploys this one.
 - **Needs:** -49.
 
 ### 20261001-105250-3: Add password login.

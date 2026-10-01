@@ -8,6 +8,11 @@
   3. **Iterate.** The builder addresses the review, and the reviewer checks again. That's at most two review-and-fix rounds.
   4. **Final fix.** The builder gets one last chance to fix anything still open.
   5. **Land.** The main session confirms `make test-all` is green and the diff is clean. Then it moves the task to `BACKLOG-COMPLETE.md` and merges the worktree branch into `master`.
+  - **Squash merge** each task into `master` locally. Never push. The user pushes upstream.
+  - **Unresolved review findings.** If the reviewer still has issues after two rounds, land what's solid and split the rest into new backlog tasks.
+  - **Parallel tasks.** Run tasks at the same time only when they're unlikely to touch the same files. When in doubt, go one at a time to avoid merge conflicts.
+  - **New findings.** Add bugs and follow-ups that turn up during a task to `BACKLOG.md` as new tasks.
+  - **Dependencies.** Builders may add Go modules and gems as needed.
 - **New tasks** get IDs in the form `YYYYMMDD-HHMMSS-N` (creation time plus a counter).
 - **Design context** lives in `docs/plan.md`, including the decisions on scope: Postgres 14 through 18, no data retention, no CI.
 - **Before calling anything done,** run `make test-all` (or `make test` until the UI exists). There's no CI, so this is the gate.
