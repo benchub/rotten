@@ -12,12 +12,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase A: Test harness and characterization.
 
-### 20261001-112142-5: Make partition retention a setting.
-- **Do:** Keep 21 days as the default for both `events` and `event_context`, but make the retention period configurable when the rotten DB is set up, through `rotten-server migrate` or a server setting.
-- **Red test:** A non-default setting shows up in `part_config.retention`.
-- **Done when:** Passes.
-- **Needs:** -26.
-
 ## Phase B: Postgres 14 through 18 (item 4).
 
 ### 20261001-103222-18: Cover Postgres 18 syntax and report parse failures.

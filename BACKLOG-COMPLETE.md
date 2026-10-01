@@ -276,3 +276,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -16, -22.
 - Completed: October 1, 2026, f873a82. Hidden "<insufficient privilege>" rows (QueryID 0) are never cached.
+
+### 20261001-112142-5: Make partition retention a setting.
+- **Do:** Keep 21 days as the default for both `events` and `event_context`, but make the retention period configurable when the rotten DB is set up, through `rotten-server migrate` or a server setting.
+- **Red test:** A non-default setting shows up in `part_config.retention`.
+- **Done when:** Passes.
+- **Needs:** -26.
+- Completed: October 1, 2026, 208dd4a. migrate applies retention declaratively: leaving the setting out resets it to 21 days.
