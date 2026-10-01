@@ -52,12 +52,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   - The decision record is written.
 - **Needs:** -4, -5.
 
-### 20261001-103222-8: Characterize merging events within a window.
-- **Do:** Pull the "same fingerprint seen twice" block in `main.go` out into a pure `mergeEvent(a, b)`. Test the sums, min and max, the runningstat merge of mean and stddev, and the context histogram counts.
-- **Red test:** `mergeEvent` doesn't exist yet.
-- **Done when:** Tests pass, and `main.go` calls `mergeEvent`.
-- **Needs:** -1.
-
 ### 20261001-103222-9: Characterize event writes.
 - **Do:** Test `processEvent` against `StartRotten`. Check one `events` row with the right window, calls, and time, plus one `event_context` row for each context hash. Cover events with no context and events with all three context columns.
 - **Red test:** Write the test first. It'll also show the `stillProcessing` counter leaking on early return. Fix that.

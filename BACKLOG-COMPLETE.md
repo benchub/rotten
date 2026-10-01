@@ -51,3 +51,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** All cases pass.
 - **Needs:** -2.
 - Completed: October 1, 2026, adb8c80.
+
+### 20261001-103222-8: Characterize merging events within a window.
+- **Do:** Pull the "same fingerprint seen twice" block in `main.go` out into a pure `mergeEvent(a, b)`. Test the sums, min and max, the runningstat merge of mean and stddev, and the context histogram counts.
+- **Red test:** `mergeEvent` doesn't exist yet.
+- **Done when:** Tests pass, and `main.go` calls `mergeEvent`.
+- **Needs:** -1.
+- Completed: October 1, 2026, 4e5f014. Found the mean and stddev merge bug (20261001-113241-1) and the context count bug (20261001-113241-2).
