@@ -18,12 +18,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes, and the golden file is unchanged.
 - **Needs:** Coordinate with -112142-4 (configurable patterns).
 
-### 20261001-112142-3: Collapse schema names, with an option to turn it off.
-- **Do:** Today, `shard_1.users` and `shard_27.users` share a fingerprint, but bare `users` doesn't match them. Treat unqualified names the same as qualified ones by default. Add a worker setting to turn schema collapsing off completely, for deployments where schemas mean different things.
-- **Red test:** Golden cases where `users`, `public.users`, and `shard_1.users` share a fingerprint by default and differ with the setting off.
-- **Done when:** Passes, and `make golden` shows only the intended changes.
-- **Needs:** -14.
-
 ### 20261001-112142-4: Make the cursor and temp-table patterns configurable.
 - **Do:** Move the hard-coded cursor and temp-table regexes into worker config, keeping today's patterns as the default. Today, temp-table names only collapse when their random suffix is six or more characters, so shorter suffixes each get their own fingerprint. Document how to match a generator's real naming.
 - **Red test:** A configured pattern collapses a short-suffix temp table that today's default doesn't.

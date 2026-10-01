@@ -138,3 +138,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and the golden file is unchanged.
 - **Needs:** -14.
 - Completed: October 1, 2026, df1989e. Found the dead cursor check, now 20261001-130325-1.
+
+### 20261001-112142-3: Collapse schema names, with an option to turn it off.
+- **Do:** Today, `shard_1.users` and `shard_27.users` share a fingerprint, but bare `users` doesn't match them. Treat unqualified names the same as qualified ones by default. Add a worker setting to turn schema collapsing off completely, for deployments where schemas mean different things.
+- **Red test:** Golden cases where `users`, `public.users`, and `shard_1.users` share a fingerprint by default and differ with the setting off.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** -14.
+- Completed: October 1, 2026, aa9321a. Fingerprints for unqualified-table queries changed. Follow-up: 20261001-131002-1.
