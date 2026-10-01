@@ -53,8 +53,15 @@ How to use it
  - download pg_partman and `make install`
  - add `pg_partman_bgw` to `shared_preload_libraries` in postgresql.conf
  - run `CREATE EXTENSION pg_partman` in the rotten db
-4. Import `schema/tables.sql` into the rotten db. Also create a `rotten-client` role that
-   will use these tables.
+4. Create a `rotten_owner` login role, make it the owner of the rotten db, and grant it
+   pg_partman's non-superuser privileges (all on pg_partman's tables and sequences, and
+   execute on its functions and procedures). Then build and run the migrations as that role:
+  ```bash
+  go build ./cmd/rotten-server
+  ROTTEN_OWNER_DSN='postgres://rotten_owner@host/rotten' ./rotten-server migrate
+  ```
+   Running `migrate` again is safe; it applies only what's new. Grants for the other
+   roles aren't set up yet.
 5. Install `pg_stat_statements` in the monitored database:
  - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
  - run `CREATE EXTENSION pg_stat_statements` in the monitored database

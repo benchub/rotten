@@ -386,6 +386,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - Worker config.
   - UI setup, including a full env reference for both auth modes and how to point OIDC at Okta without org values in this repo.
   - The database roles and what each one may do.
+  - The pg_partman permissions retention needs: the `pg_partman_bgw` role must be able to drop `rotten_owner`'s partitions.
 
   Update the Known Issues and TODO sections.
 - **Red test:** A docs smoke check that every config key in `conf`, the server config, and every `ENV` the UI reads appears in the docs. A small Go test can do this.
@@ -446,3 +447,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** -112142-3.
 
+
+### 20261001-132234-1: Fix the flaky "port 5432/tcp not found" in StartObserved.
+- **Do:** `TestObserverSQL` failed once in a full `make test` run with `testdb: connection string: port "5432/tcp" not found`, then passed on rerun. Find out why `ConnectionString` runs before the port is mapped, and make `start` wait for it.
+- **Red test:** Hard to force. Loop `TestObserverSQL` under `-count` until it fails, then show the fix holds for the same loop.
+- **Done when:** A long loop of the testdb tests passes.
+- **Needs:** none.

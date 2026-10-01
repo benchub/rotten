@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benchub/rotten/internal/migrate"
 	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
@@ -23,8 +24,11 @@ import (
 // ObservedVersions are the Postgres major versions rotten supports observing.
 var ObservedVersions = []int{14, 15, 16, 17, 18}
 
-// RottenRoles are the roles schema/tables.sql grants to.
-var RottenRoles = []string{"rotten-client", "readonly", "readwrite", "rotten-interface"}
+// OwnerRole owns the rotten database and runs migrate.
+const OwnerRole = "rotten_owner"
+
+// RottenRoles are the login roles StartRottenEmpty creates.
+var RottenRoles = []string{OwnerRole}
 
 // DB is a running Postgres container.
 type DB struct {
@@ -101,11 +105,23 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 	return &DB{DSN: dsn, c: c, dbName: dbName}
 }
 
-// StartRotten starts Postgres 18 with pg_partman installed in public, a
-// database named rotten, and the roles in RottenRoles (LOGIN, password =
-// role name; see DSNAs). It uses RottenImage, which `make image` builds. It doesn't load the
-// schema.
+// StartRotten is StartRottenEmpty plus migrate.Up, run as OwnerRole, so the
+// database has the latest schema.
 func StartRotten(t testing.TB) *DB {
+	t.Helper()
+	db := StartRottenEmpty(t)
+	if _, err := migrate.Up(context.Background(), db.DSNAs(t, OwnerRole)); err != nil {
+		t.Fatalf("testdb: migrate: %v", err)
+	}
+	return db
+}
+
+// StartRottenEmpty starts Postgres 18 with pg_partman installed in public, a
+// database named rotten owned by OwnerRole, and the roles in RottenRoles
+// (LOGIN, password = role name; see DSNAs). OwnerRole gets what pg_partman
+// needs to create partitions. It uses RottenImage, which `make image` builds.
+// It doesn't load the schema.
+func StartRottenEmpty(t testing.TB) *DB {
 	t.Helper()
 	skipShort(t)
 	db := start(t, RottenImage, "rotten")
@@ -119,6 +135,19 @@ func StartRotten(t testing.TB) *DB {
 		// contain single quotes.
 		if _, err := conn.Exec(ctx, fmt.Sprintf("create role %s login password '%s'", pgx.Identifier{r}.Sanitize(), r)); err != nil {
 			t.Fatalf("testdb: create role %s: %v", r, err)
+		}
+	}
+	owner := pgx.Identifier{OwnerRole}.Sanitize()
+	for _, q := range []string{
+		"alter database rotten owner to " + owner,
+		// pg_partman's non-superuser setup, with the extension in public.
+		"grant all on all tables in schema public to " + owner,
+		"grant all on all sequences in schema public to " + owner,
+		"grant execute on all functions in schema public to " + owner,
+		"grant execute on all procedures in schema public to " + owner,
+	} {
+		if _, err := conn.Exec(ctx, q); err != nil {
+			t.Fatalf("testdb: %s: %v", q, err)
 		}
 	}
 	return db

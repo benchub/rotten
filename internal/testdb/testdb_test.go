@@ -3,8 +3,6 @@ package testdb
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -37,16 +35,6 @@ func TestRottenSchemaLoads(t *testing.T) {
 		if err := conn.QueryRow(ctx, "select exists(select from pg_roles where rolname = $1)", r).Scan(&ok); err != nil || !ok {
 			t.Fatalf("role %s missing (err %v)", r, err)
 		}
-	}
-
-	sql, err := os.ReadFile(filepath.Join(RepoRoot(), "schema", "tables.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Exec without arguments uses the simple protocol, so the whole file runs
-	// as one multi-statement batch.
-	if _, err := conn.Exec(ctx, string(sql)); err != nil {
-		t.Fatalf("load schema/tables.sql: %v", err)
 	}
 
 	for _, parent := range []string{"rotten.events", "rotten.event_context"} {

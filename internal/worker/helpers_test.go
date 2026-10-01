@@ -2,8 +2,6 @@ package worker
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"regexp"
 	"testing"
 
@@ -27,14 +25,6 @@ func startIdentityDB(t *testing.T) (*testdb.DB, *pgxpool.Pool) {
 		t.Skip("integration test skipped under -short")
 	}
 	db := testdb.StartRotten(t)
-	conn := db.Connect(t)
-	sql, err := os.ReadFile(filepath.Join(testdb.RepoRoot(), "schema", "tables.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conn.Exec(context.Background(), string(sql)); err != nil {
-		t.Fatalf("load schema: %v", err)
-	}
 	// New connections pick up the database's search_path, which includes
 	// rotten, the same way production sessions do.
 	pool, err := pgxpool.New(context.Background(), db.DSN)

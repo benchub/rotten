@@ -1,7 +1,14 @@
 
+-- +goose Up
+-- The baseline schema. migrate runs this as rotten_owner, which owns the
+-- database, so rotten_owner owns the schema and everything in it. Grants for
+-- the other roles live in a later migration.
 CREATE SCHEMA "rotten";
 
-set search_path to rotten;
+-- goose runs each migration in one transaction on one connection, so this
+-- holds for the rest of the file. public stays on the path for
+-- pg_partman's functions.
+set local search_path to rotten, public;
 
 create table controllers (
     id serial primary key,
@@ -121,25 +128,28 @@ CREATE TABLE fingerprint_stats (
     count bigint,
     mean double precision,
     deviation double precision,
-    last integer,
+    last bigint,
 
     primary key (fingerprint_id,logical_source_id,type)
 );
 
 
-grant SELECT,INSERT,UPDATE on all tables in schema rotten to "rotten-client";
-grant SELECT,UPDATE on all sequences in schema rotten to "rotten-client";
-grant SELECT on all tables in schema rotten to "readonly";
-grant SELECT,INSERT,UPDATE,DELETE on all tables in schema rotten to "readwrite";
-grant SELECT,UPDATE on all sequences in schema rotten to "readwrite";
+-- New sessions find rotten's tables without schema-qualifying them.
+-- +goose StatementBegin
+DO $$
+BEGIN
+    EXECUTE format('alter database %I set search_path to "$user", rotten, public', current_database());
+END
+$$;
+-- +goose StatementEnd
 
-grant usage on schema rotten to readwrite,readonly,"rotten-client";
-
-grant select on all tables in schema rotten to "rotten-interface";
-grant select on all sequences in schema rotten to "rotten-interface";
-grant usage on schema rotten to "rotten-interface";
-
-alter default privileges in schema rotten grant select ON tables TO "rotten-interface" ;
-
-alter database rotten set search_path to "$user", rotten, public;
-
+-- +goose Down
+-- +goose StatementBegin
+DO $$
+BEGIN
+    EXECUTE format('alter database %I reset search_path', current_database());
+END
+$$;
+-- +goose StatementEnd
+delete from public.part_config where parent_table in ('rotten.events', 'rotten.event_context');
+drop schema rotten cascade;
