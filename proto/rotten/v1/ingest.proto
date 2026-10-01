@@ -1,0 +1,157 @@
+// The worker-to-server ingest API. See docs/plan.md, "Transport: Connect RPC
+// over HTTPS" and "Fault tolerance".
+//
+// Compatibility rules for this file:
+//   - Never renumber or reuse a field number. Delete a field by adding its
+//     number and name to a `reserved` line.
+//   - proto3 has no required fields. The server validates presence itself
+//     and returns InvalidArgument.
+//   - Every enum starts with an _UNSPECIFIED zero value, so an old reader
+//     sees an unknown new value as "unspecified", not as a real choice.
+//   - `make proto` runs `buf breaking` against master.
+syntax = "proto3";
+
+package rotten.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/benchub/rotten/gen/rotten/v1;rottenv1";
+
+service IngestService {
+  // Register tells the server who this worker is and returns the source
+  // IDs to put on each SubmitHarvestRequest. Calling it again with the same
+  // fields returns the same IDs.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // SubmitHarvest sends one observation window. It's idempotent on
+  // batch_id: a retried batch gets acked without being written twice.
+  rpc SubmitHarvest(SubmitHarvestRequest) returns (SubmitHarvestResponse);
+}
+
+// RegisterRequest identifies the observed database a worker watches.
+message RegisterRequest {
+  string project = 1;
+  string environment = 2;
+  string cluster = 3;
+  string role = 4;
+  string fqdn = 5;
+  // The worker's build version, for logs and debugging. Informational only.
+  optional string worker_version = 6;
+}
+
+message RegisterResponse {
+  // logical_source_id names project, environment, cluster, and role.
+  uint32 logical_source_id = 1;
+  // physical_source_id names the logical source plus the fqdn.
+  uint32 physical_source_id = 2;
+}
+
+// SubmitHarvestRequest is one observation window's worth of
+// pg_stat_statements deltas, already fingerprinted on the worker.
+message SubmitHarvestRequest {
+  // Exactly "<physical_source_id>:<window_start>:<window_end>" in decimal,
+  // with both times as Unix microseconds (UTC), for example
+  // "42:1790856000000000:1790856060000000". It's deterministic, so a replay
+  // from the worker's outbox dedupes on the server. A plain string instead
+  // of a hash keeps it readable in logs and ingested_batches, and it's
+  // short enough. The server rejects a batch_id that doesn't match the
+  // other fields with InvalidArgument.
+  string batch_id = 1;
+
+  // Source IDs from Register, not an opaque registration token. The
+  // outbox can replay a batch long after it was built, even across server
+  // restarts, so a batch must stand on its own without server-side session
+  // state. The server still checks these IDs against the source the pass
+  // key is bound to, so a key can't write as another source.
+  uint32 logical_source_id = 2;
+  uint32 physical_source_id = 3;
+
+  google.protobuf.Timestamp window_start = 4;
+  google.protobuf.Timestamp window_end = 5;
+
+  repeated FingerprintAggregate aggregates = 6;
+}
+
+// FingerprintAggregate is everything seen for one fingerprint in a window.
+//
+// Several pg_stat_statements entries can share a fingerprint (different
+// IN-list lengths, schema qualifiers, and so on). The worker merges them
+// into one aggregate before sending:
+//   - calls, total_time, rows, the block counts, and the block times add.
+//   - min_time takes the smallest and max_time the largest.
+//   - stddev_time is the pooled population stddev (Chan et al., as in
+//     pgss.WindowStats) when every merged entry has one, and unset if any
+//     entry's is unset.
+//   - mean_time is recomputed as total_time / calls.
+//   - minmax_lifetime is true if any merged entry's min/max is lifetime.
+//   - contexts with the same (controller, action, job_tag) add their counts.
+message FingerprintAggregate {
+  // The hex string from fingerprint.Normalized (pg_query's fingerprint of
+  // the munged, deparsed query), for example
+  // "02a281c251c3a43d2fe7457dff01f76c5cc523f8c8". It's a string, not an
+  // integer, so the format can change without a wire change.
+  string fingerprint = 1;
+  // pg_query.Normalize output of one representative query text for this
+  // fingerprint. The server stores it only when it first inserts the
+  // fingerprint and ignores it afterward.
+  string normalized = 2;
+  // A histogram of marginalia contexts seen in the window.
+  repeated QueryContext contexts = 3;
+  Metrics metrics = 4;
+  // True when min_time and max_time are the pg_stat_statements entry's
+  // lifetime values, not this window's (Postgres 14 through 16, where the
+  // min/max can't be reset on their own).
+  bool minmax_lifetime = 5;
+}
+
+// QueryContext is one controller/action/job tag combination and how many
+// calls carried it. The server resolves the controller, action, and job_tag
+// strings to lookup IDs. An empty string means the tag wasn't present and
+// is stored as NULL. count must be between 1 and 2^31-1. The server rejects
+// anything else with InvalidArgument.
+message QueryContext {
+  string controller = 1;
+  string action = 2;
+  string job_tag = 3;
+  uint64 count = 4;
+}
+
+// Metrics holds the 19 stats domains from internal/worker for one window.
+// Times are in milliseconds, as pg_stat_statements reports them. Counts
+// are window deltas.
+message Metrics {
+  uint64 calls = 1;
+  double total_time = 2;
+  double min_time = 3;
+  double max_time = 4;
+  // Informational only. total_time / calls is authoritative, and the
+  // server uses that when the two disagree.
+  double mean_time = 5;
+  // Absent when the window stddev can't be trusted (see pgss.WindowStats).
+  optional double stddev_time = 6;
+  uint64 rows = 7;
+  uint64 shared_blks_hit = 8;
+  uint64 shared_blks_read = 9;
+  uint64 shared_blks_dirtied = 10;
+  uint64 shared_blks_written = 11;
+  uint64 local_blks_hit = 12;
+  uint64 local_blks_read = 13;
+  uint64 local_blks_dirtied = 14;
+  uint64 local_blks_written = 15;
+  uint64 temp_blks_read = 16;
+  uint64 temp_blks_written = 17;
+  double blk_read_time = 18;
+  double blk_write_time = 19;
+}
+
+message SubmitHarvestResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    // The batch was written.
+    STATUS_ACCEPTED = 1;
+    // The batch_id was already ingested, so nothing was written.
+    STATUS_DUPLICATE = 2;
+  }
+  string batch_id = 1;
+  Status status = 2;
+}

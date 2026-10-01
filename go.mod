@@ -3,6 +3,7 @@ module github.com/benchub/rotten
 go 1.27
 
 require (
+	connectrpc.com/connect v1.21.0
 	github.com/benchub/runningstat v0.2.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/mitchellh/reflectwalk v1.0.2
@@ -11,6 +12,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	github.com/tj/go-pg-escape v1.1.0
+	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.60.1
 )
 
@@ -77,8 +79,12 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
+)
+
+tool (
+	connectrpc.com/connect/cmd/protoc-gen-connect-go
+	google.golang.org/protobuf/cmd/protoc-gen-go
 )

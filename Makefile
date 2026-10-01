@@ -34,7 +34,41 @@ DOCKER_SOCK := \
 
 GO_TEST_ARGS ?=
 
-.PHONY: test test-unit golden shell image
+.PHONY: test test-unit golden shell image proto tools
+
+# buf is pinned at BUF_VERSION and stays out of go.mod (its dependency tree
+# is large). `make tools` installs it into ./bin with GOBIN, and `make proto`
+# uses that binary when it's there. Otherwise `make proto` falls back to
+# `go run`, which needs network access the first time to download buf's
+# modules, then works from the module cache. Neither needs Docker. The
+# protoc plugins run through `go tool`, pinned in go.mod's tool block.
+BUF_VERSION ?= v1.72.0
+BUF := $(if $(wildcard $(CURDIR)/bin/buf),$(CURDIR)/bin/buf,go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION))
+# The breaking-change baseline is where this branch forked from master, so
+# work landing on master meanwhile doesn't count against this branch. It
+# falls back to master when there's no merge base.
+PROTO_BASE ?= $(or $(shell git merge-base HEAD master 2>/dev/null),master)
+
+## tools: install the pinned buf into ./bin (needs network access once).
+tools:
+	GOBIN="$(CURDIR)/bin" go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+
+## proto: regenerate gen/ from proto/, lint, and check for breaking changes
+## against $(PROTO_BASE). Breaking is skipped when $(PROTO_BASE) has no
+## proto/ yet (the first commit) or doesn't resolve. The baseline is
+## exported with git archive, which also works in worktrees, where .git is a
+## file.
+proto:
+	$(BUF) generate
+	$(BUF) lint
+	@if git cat-file -e "$(PROTO_BASE):proto" 2>/dev/null; then \
+		base=$$(mktemp -d) && \
+		git archive "$(PROTO_BASE)" proto buf.yaml | tar -x -C "$$base" && \
+		$(BUF) breaking --against "$$base"; status=$$?; \
+		rm -rf "$$base"; exit $$status; \
+	else \
+		echo "buf breaking: $(PROTO_BASE) has no proto/ yet, skipping"; \
+	fi
 
 ## image: the Go test image, plus the rotten DB image (Postgres 18 + pg_partman)
 ## that internal/testdb.StartRotten runs by name.

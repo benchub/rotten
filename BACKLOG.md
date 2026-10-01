@@ -389,3 +389,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** Golden cases for the nested-cast forms, with the grouping you pick.
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** 20261001-135352-1.
+
+### 20261001-142401-1: Fix the stale fingerprints column comments.
+- **Do:** Add a new migration that only replaces the comments. Don't edit 0001. In `0001_baseline.sql`, `fingerprints.fingerprint` is described as the query text, but it now holds the hex string from `fingerprint.Normalized`, the same value as `FingerprintAggregate.fingerprint` in `proto/rotten/v1/ingest.proto`. `fingerprints.normalized` should say it's `pg_query.Normalize` output of one representative text, stored on first insert only. I held this back from -29 because task -112142-5 is adding migrations, and a second new migration would risk a number collision.
+- **Red test:** A migrate test reads both comments back with `col_description` and checks them.
+- **Done when:** Passes.
+- **Needs:** 20261001-103222-29, 20261001-112142-5.
