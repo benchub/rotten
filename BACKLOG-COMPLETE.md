@@ -269,3 +269,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -19.
 - Completed: October 1, 2026, 760ef37. Review found SQLite deleting side files during a failed open, and a false corruption alarm after a crash mid-checkpoint. Both are fixed.
+
+### 20261001-103222-23: Cache query text.
+- **Do:** Do the full fetch with `showtext := false`. Fetch text only for selected keys that aren't in the cache. Drop text from the cache when its key is evicted.
+- **Red test:** An integration test counts text fetches. The second harvest of the same workload fetches no text.
+- **Done when:** Passes.
+- **Needs:** -16, -22.
+- Completed: October 1, 2026, f873a82. Hidden "<insufficient privilege>" rows (QueryID 0) are never cached.

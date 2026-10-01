@@ -28,12 +28,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase C: Diffing against a snapshot (item 2).
 
-### 20261001-103222-23: Cache query text.
-- **Do:** Do the full fetch with `showtext := false`. Fetch text only for selected keys that aren't in the cache. Drop text from the cache when its key is evicted.
-- **Red test:** An integration test counts text fetches. The second harvest of the same workload fetches no text.
-- **Done when:** Passes.
-- **Needs:** -16, -22.
-
 ### 20261001-103222-25: Wire diffing into the worker and stop resetting.
 - **Do:** In the harvest loop:
   1. Read.
@@ -48,6 +42,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Stddev:** When `WindowStats` says `stddevOK=false`, record no stddev for that window instead of a misleading one.
 - **Min/max:** On 17+, call `Reader.MinmaxReset` right after each harvest. If it fails, log the error and keep going, and min and max for that window come back flagged as lifetime. Drop zero-call deltas before reporting, since a window that had a reset but no calls shows min and max as 0.
 - **State errors:** If the state store returns an error at runtime, such as corruption after Open, log it and treat the harvest as a baseline instead of exiting. Only `internal/state` imports SQLite, so the server must never import it.
+- **Text:** Switch to `ReadStats`, then `TextCache.Retain`, then `topNDeltas`, then `TextCache.Fill`, all before any reset. Rows with QueryID 0 (hidden from the observer) get no text, so log or count them.
 - **Red test:** End to end on 18:
   - `stats_reset` never changes because of the worker.
   - An outside `pg_stat_statements_reset()` mid-run gets handled per the rules.
