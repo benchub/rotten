@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// stepper replaces statsWait so a test decides when reportSamples runs a
+// stepper replaces Worker.statsWait so a test decides when reportSamples runs a
 // pass. reportSamples sends on waiting each time it reaches the wait, then
 // blocks until the test sends true (run a pass) or false (return).
 type stepper struct {
@@ -19,17 +19,15 @@ type stepper struct {
 	done    chan struct{}
 }
 
-// installStepper swaps statsWait for a stepper and restores it at cleanup.
-// statsWait is a package global, so these tests must not call t.Parallel().
-func installStepper(t *testing.T) *stepper {
+// installStepper sets w.statsWait to a stepper. Call it before starting
+// anything that runs reportSamples.
+func installStepper(t *testing.T, w *Worker) *stepper {
 	t.Helper()
 	s := &stepper{waiting: make(chan time.Duration), tick: make(chan bool), done: make(chan struct{})}
-	old := statsWait
-	statsWait = func(d time.Duration) bool {
+	w.statsWait = func(d time.Duration) bool {
 		s.waiting <- d
 		return <-s.tick
 	}
-	t.Cleanup(func() { statsWait = old })
 	return s
 }
 
@@ -66,17 +64,17 @@ func (s *stepper) stop(t *testing.T) {
 
 // startReport starts reportSamples with the stepper installed and waits for
 // it to reach its first wait.
-func startReport(t *testing.T, s *stepper, pool *pgxpool.Pool, f *Fingerprint, logical uint32, interval uint32) time.Duration {
+func startReport(t *testing.T, s *stepper, w *Worker, pool *pgxpool.Pool, f *Fingerprint, logical uint32, interval uint32) time.Duration {
 	t.Helper()
 	go func() {
-		reportSamples(pool, f, logical, interval)
+		w.reportSamples(pool, f, logical, interval)
 		close(s.done)
 	}()
 	return s.arrive(t)
 }
 
 // newTestFingerprint inserts a fingerprints row and builds a Fingerprint the
-// same way processEvent does. It isn't registered in protectedFingerprints.
+// same way processEvent does. It isn't registered in any Worker.
 func newTestFingerprint(t *testing.T, pool *pgxpool.Pool, fingerprint string) *Fingerprint {
 	t.Helper()
 	var id uint64
@@ -191,9 +189,9 @@ func TestConsumeSamplesPushesEveryDomain(t *testing.T) {
 
 func TestReportSamplesInsertsThenMerges(t *testing.T) {
 	pf := startProcessDB(t)
-	s := installStepper(t)
+	s := installStepper(t, pf.w)
 	f := newTestFingerprint(t, pf.pool, "select stats")
-	if d := startReport(t, s, pf.pool, f, pf.logical, 7); d != 14*time.Second {
+	if d := startReport(t, s, pf.w, pf.pool, f, pf.logical, 7); d != 14*time.Second {
 		t.Errorf("wait = %v, want 2*observation_interval = 14s", d)
 	}
 	defer s.stop(t)
@@ -229,7 +227,7 @@ func TestReportSamplesInsertsThenMerges(t *testing.T) {
 
 func TestReportSamplesMergesExistingRows(t *testing.T) {
 	pf := startProcessDB(t)
-	s := installStepper(t)
+	s := installStepper(t, pf.w)
 	f := newTestFingerprint(t, pf.pool, "select seeded")
 	// Seed source 0 with count 3, mean 6, deviation 1 for each domain
 	// (scaled). Init reads that as squared-deviation sum 1*1*(3-1) = 2.
@@ -241,7 +239,7 @@ func TestReportSamplesMergesExistingRows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	startReport(t, s, pf.pool, f, pf.logical, 7)
+	startReport(t, s, pf.w, pf.pool, f, pf.logical, 7)
 	defer s.stop(t)
 
 	// Two 7s: mean (18+14)/5 = 6.4. Sum of squares 2 + 0 + 2*3*1/5 = 3.2,
@@ -255,7 +253,7 @@ func TestReportSamplesMergesExistingRows(t *testing.T) {
 
 func TestReportSamplesPartialRowsRollBack(t *testing.T) {
 	pf := startProcessDB(t)
-	s := installStepper(t)
+	s := installStepper(t, pf.w)
 	f := newTestFingerprint(t, pf.pool, "select partial")
 	// Only five of the 19 types exist for source 0.
 	for _, d := range knownStatsDomains[:5] {
@@ -265,7 +263,7 @@ func TestReportSamplesPartialRowsRollBack(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	startReport(t, s, pf.pool, f, pf.logical, 7)
+	startReport(t, s, pf.w, pf.pool, f, pf.logical, 7)
 	defer s.stop(t)
 
 	feed(f, sampleOf(1, 4000), sampleOf(3, 4001))
@@ -291,14 +289,14 @@ func TestReportSamplesPartialRowsRollBack(t *testing.T) {
 
 func TestProcessEventNewFingerprintStartsGoroutines(t *testing.T) {
 	pf := startProcessDB(t)
-	s := installStepper(t)
+	s := installStepper(t, pf.w)
 	query := "select * from t where a = 5"
 	e := newEvent(query, 4, 8, map[string]uint32{})
 	e.rows = 9
 
 	done := make(chan struct{})
 	go func() {
-		processEvent(pf.pool, pf.logical, pf.physical, 7, query, e)
+		pf.w.processEvent(pf.pool, pf.logical, pf.physical, 7, query, e)
 		close(done)
 	}()
 	select {
@@ -319,9 +317,9 @@ func TestProcessEventNewFingerprintStartsGoroutines(t *testing.T) {
 	if normalized != "select * from t where a = $1" {
 		t.Errorf("normalized = %q, want %q", normalized, "select * from t where a = $1")
 	}
-	protectedFingerprints.RLock()
-	f := protectedFingerprints.m[id]
-	protectedFingerprints.RUnlock()
+	pf.w.fingerprintsMu.RLock()
+	f := pf.w.fingerprints[id]
+	pf.w.fingerprintsMu.RUnlock()
 	if f == nil {
 		t.Fatal("processEvent didn't register the new fingerprint")
 	}
@@ -375,7 +373,7 @@ func TestProcessEventNewFingerprintStartsGoroutines(t *testing.T) {
 	if n := len(statRows(t, pf.pool, id, pf.logical)); n != len(knownStatsDomains) {
 		t.Errorf("logical source rows = %d, want 19", n)
 	}
-	if v := stillProcessing(); v != 0 {
+	if v := pf.w.stillProcessing(); v != 0 {
 		t.Errorf("stillProcessing = %d, want 0", v)
 	}
 }
@@ -386,7 +384,7 @@ func TestProcessEventNewFingerprintStartsGoroutines(t *testing.T) {
 // flushed exactly once, so the rows end up holding all of them.
 func TestReportSamplesWhileConsuming(t *testing.T) {
 	pf := startProcessDB(t)
-	s := installStepper(t)
+	s := installStepper(t, pf.w)
 	f := newTestFingerprint(t, pf.pool, "select concurrent")
 	ch := make(chan *Samples)
 	f.samples = ch
@@ -395,7 +393,7 @@ func TestReportSamplesWhileConsuming(t *testing.T) {
 		consumeSamples(f)
 		close(consumed)
 	}()
-	startReport(t, s, pf.pool, f, pf.logical, 7)
+	startReport(t, s, pf.w, pf.pool, f, pf.logical, 7)
 	defer s.stop(t)
 
 	const n = 50

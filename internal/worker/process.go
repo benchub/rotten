@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 
 	runningstat "github.com/benchub/runningstat"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
 )
 
 var knownStatsDomains = [19]string{"calls",
@@ -61,49 +63,38 @@ type Fingerprint struct {
 	db_id uint64
 }
 
-// A dictionary of what fingerprints we've seen since startup and are currently processing
-var protectedFingerprints = struct {
-	sync.RWMutex
-	m map[uint64]*Fingerprint
-}{m: make(map[uint64]*Fingerprint)}
-
-var protectedProcessingCounter = struct {
-	sync.RWMutex
-	v uint32
-}{v: 0}
-
 var re_action_hash, _ = regexp.Compile(`action:([\d]+)`)
 var re_controller_hash, _ = regexp.Compile(`controller:([\d]+)`)
 var re_job_tag_hash, _ = regexp.Compile(`job_tag:([\d]+)`)
 
-func fingerprintCount() int {
-	protectedFingerprints.RLock()
-	known := len(protectedFingerprints.m)
-	protectedFingerprints.RUnlock()
+func (w *Worker) fingerprintCount() int {
+	w.fingerprintsMu.RLock()
+	known := len(w.fingerprints)
+	w.fingerprintsMu.RUnlock()
 
 	return known
 }
 
-func stillProcessing() uint32 {
-	protectedProcessingCounter.RLock()
-	v := protectedProcessingCounter.v
-	protectedProcessingCounter.RUnlock()
+func (w *Worker) stillProcessing() uint32 {
+	w.processingMu.RLock()
+	v := w.processing
+	w.processingMu.RUnlock()
 
 	return v
 }
 
-func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_source_id uint32, observation_interval uint32, fingerprint string, event *QueryEvent) {
-	protectedProcessingCounter.Lock()
-	protectedProcessingCounter.v++
-	protectedProcessingCounter.Unlock()
+func (w *Worker) processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_source_id uint32, observation_interval uint32, fingerprint string, event *QueryEvent) {
+	w.processingMu.Lock()
+	w.processing++
+	w.processingMu.Unlock()
 	// Decrement on every return, including the early ones.
 	defer func() {
-		protectedProcessingCounter.Lock()
-		protectedProcessingCounter.v--
-		protectedProcessingCounter.Unlock()
+		w.processingMu.Lock()
+		w.processing--
+		w.processingMu.Unlock()
 	}()
 
-	fingerprint_id, err := normalized_fingerprint_id(rottenDB, fingerprint, event)
+	fingerprint_id, err := fingerprinting.ID(rottenDB, fingerprint, event.query)
 	if err != nil {
 		log.Println("failed to get fingerprint id for event, so ignoring it")
 		return
@@ -195,9 +186,9 @@ func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_sou
 
 	// If we've already started a goroutine for this fingerprint, send this event to that channel.
 	// If not, start a new goroutine and make a channel for it to consume from.
-	protectedFingerprints.RLock()
-	existingFingerprint, present := protectedFingerprints.m[fingerprint_id]
-	protectedFingerprints.RUnlock()
+	w.fingerprintsMu.RLock()
+	existingFingerprint, present := w.fingerprints[fingerprint_id]
+	w.fingerprintsMu.RUnlock()
 	if present {
 		existingFingerprint.samples <- &sample
 	} else {
@@ -211,16 +202,16 @@ func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_sou
 
 		newFingerprint.samples = make(chan *Samples)
 
-		protectedFingerprints.Lock()
-		protectedFingerprints.m[fingerprint_id] = &newFingerprint
-		protectedFingerprints.Unlock()
+		w.fingerprintsMu.Lock()
+		w.fingerprints[fingerprint_id] = &newFingerprint
+		w.fingerprintsMu.Unlock()
 
 		// update the statistics for these samples as they come in
 		go consumeSamples(&newFingerprint)
 
 		// save the statistics to the db on a different schedule, which should reduce the writes to the rotten DB
 		// (multiple updates in memory might get folded into a single update on disk)
-		go reportSamples(rottenDB, &newFingerprint, logical_source_id, observation_interval)
+		go w.reportSamples(rottenDB, &newFingerprint, logical_source_id, observation_interval)
 
 		newFingerprint.samples <- &sample
 	}
@@ -228,16 +219,10 @@ func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_sou
 	// now that the event has been recorded and the stats updated, our work is done and this goroutine can end.
 }
 
-// statsWait blocks between reportSamples passes. Returning false makes
-// reportSamples return. Production always sleeps and returns true, so the
-// loop runs forever; tests swap in a stepper to drive and stop it.
-var statsWait = func(d time.Duration) bool {
-	time.Sleep(d)
-	return true
-}
-
-func reportSamples(rottenDB *pgxpool.Pool, f *Fingerprint, logical_source_id uint32, observation_interval uint32) {
-	wait := statsWait
+// reportSamples flushes f's stats to fingerprint_stats every
+// 2*observation_interval seconds, waiting between passes with w.statsWait.
+func (w *Worker) reportSamples(rottenDB *pgxpool.Pool, f *Fingerprint, logical_source_id uint32, observation_interval uint32) {
+	wait := w.statsWait
 	// Read f.last under the lock, because consumeSamples may already be
 	// writing it.
 	f.statsLock.RLock()

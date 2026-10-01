@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"context"
@@ -17,10 +17,9 @@ const longInterval = 3600
 // preRegister inserts the fingerprint row and registers a Fingerprint with a
 // buffered channel, so processEvent takes the "already present" path and
 // doesn't start consumeSamples and reportSamples. That lets the test read the
-// sample processEvent sends, and keeps stray reportSamples goroutines from
-// reading statsWait while other tests swap it. It returns the channel
-// processEvent sends its sample to.
-func preRegister(t *testing.T, pool *pgxpool.Pool, fingerprint string) chan *Samples {
+// sample processEvent sends. It returns the channel processEvent sends its
+// sample to.
+func preRegister(t *testing.T, w *Worker, pool *pgxpool.Pool, fingerprint string) chan *Samples {
 	t.Helper()
 	var id uint64
 	if err := pool.QueryRow(context.Background(),
@@ -29,30 +28,14 @@ func preRegister(t *testing.T, pool *pgxpool.Pool, fingerprint string) chan *Sam
 		t.Fatal(err)
 	}
 	ch := make(chan *Samples, 1)
-	protectedFingerprints.Lock()
-	protectedFingerprints.m[id] = &Fingerprint{db_id: id, samples: ch}
-	protectedFingerprints.Unlock()
+	w.fingerprintsMu.Lock()
+	w.fingerprints[id] = &Fingerprint{db_id: id, samples: ch}
+	w.fingerprintsMu.Unlock()
 	return ch
 }
 
-// resetProcessGlobals clears the fingerprint registry and the processing
-// counter now and at cleanup. Goroutines from earlier tests stay parked on
-// their own channels and sleeps, and never see the new map. These are
-// package globals, so tests that use them must not call t.Parallel().
-func resetProcessGlobals(t *testing.T) {
-	reset := func() {
-		protectedFingerprints.Lock()
-		protectedFingerprints.m = make(map[uint64]*Fingerprint)
-		protectedFingerprints.Unlock()
-		protectedProcessingCounter.Lock()
-		protectedProcessingCounter.v = 0
-		protectedProcessingCounter.Unlock()
-	}
-	reset()
-	t.Cleanup(reset)
-}
-
 type processFixture struct {
+	w                          *Worker
 	pool                       *pgxpool.Pool
 	logical, physical          uint32
 	controller, action, jobTag uint32
@@ -61,8 +44,7 @@ type processFixture struct {
 func startProcessDB(t *testing.T) processFixture {
 	t.Helper()
 	_, pool := startIdentityDB(t)
-	resetProcessGlobals(t)
-	f := processFixture{pool: pool}
+	f := processFixture{w: New(Config{}, nil), pool: pool}
 	scan := func(q string, dst *uint32) {
 		if err := pool.QueryRow(context.Background(), q).Scan(dst); err != nil {
 			t.Fatalf("%s: %v", q, err)
@@ -129,8 +111,8 @@ func TestProcessEventWritesEvent(t *testing.T) {
 	f := startProcessDB(t)
 	// An empty context map is the only way to get no event_context rows.
 	e := newEvent("select 1", 7, 12.5, map[string]uint32{})
-	samples := preRegister(t, f.pool, "select 1")
-	processEvent(f.pool, f.logical, f.physical, longInterval, "select 1", e)
+	samples := preRegister(t, f.w, f.pool, "select 1")
+	f.w.processEvent(f.pool, f.logical, f.physical, longInterval, "select 1", e)
 
 	if n := count(t, f.pool, "select count(*) from rotten.events"); n != 1 {
 		t.Fatalf("events rows = %d, want 1", n)
@@ -168,7 +150,7 @@ func TestProcessEventWritesEvent(t *testing.T) {
 	default:
 		t.Error("processEvent sent no sample to the existing fingerprint")
 	}
-	if v := stillProcessing(); v != 0 {
+	if v := f.w.stillProcessing(); v != 0 {
 		t.Errorf("stillProcessing = %d after success, want 0", v)
 	}
 }
@@ -180,8 +162,8 @@ func TestProcessEventWritesContexts(t *testing.T) {
 	all := fmt.Sprintf("controller:%daction:%djob_tag:%d", f.controller, f.action, f.jobTag)
 	job := fmt.Sprintf("job_tag:%d", f.jobTag)
 	e := newEvent("select 2", 12, 3, map[string]uint32{"": 2, job: 3, all: 7, "controller:999": 0})
-	preRegister(t, f.pool, "select 2")
-	processEvent(f.pool, f.logical, f.physical, longInterval, "select 2", e)
+	preRegister(t, f.w, f.pool, "select 2")
+	f.w.processEvent(f.pool, f.logical, f.physical, longInterval, "select 2", e)
 
 	var eventID uint64
 	if err := f.pool.QueryRow(context.Background(), `select id from rotten.events`).Scan(&eventID); err != nil {
@@ -212,7 +194,7 @@ func TestProcessEventWritesContexts(t *testing.T) {
 				i, r.c, ptr(r.ctl), ptr(r.act), ptr(r.job), w.c, w.ctl, w.act, w.job)
 		}
 	}
-	if v := stillProcessing(); v != 0 {
+	if v := f.w.stillProcessing(); v != 0 {
 		t.Errorf("stillProcessing = %d after success, want 0", v)
 	}
 }
@@ -222,12 +204,12 @@ func TestProcessEventEarlyReturnReleasesCounter(t *testing.T) {
 	// pg_query.Normalize rejects this, so processEvent returns before the
 	// transaction starts.
 	e := newEvent("selec oops (", 1, 1, map[string]uint32{"": 1})
-	processEvent(f.pool, f.logical, f.physical, longInterval, "selec oops (", e)
+	f.w.processEvent(f.pool, f.logical, f.physical, longInterval, "selec oops (", e)
 
 	if n := count(t, f.pool, "select count(*) from rotten.events"); n != 0 {
 		t.Errorf("unparseable query wrote %d events, want 0", n)
 	}
-	if v := stillProcessing(); v != 0 {
+	if v := f.w.stillProcessing(); v != 0 {
 		t.Errorf("stillProcessing = %d after early return, want 0", v)
 	}
 }

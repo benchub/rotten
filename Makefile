@@ -9,10 +9,11 @@
 # --add-host=host.docker.internal:host-gateway maps it to the host.
 # For a non-default socket: make test DOCKER_SOCK_PATH=$HOME/.colima/default/docker.sock
 #
-# golden: regenerates testdata/fingerprints.golden. Run it after any change to
-# pg_query_go or the normalization code in fingerprint.go, then review
-# `git diff testdata/fingerprints.golden` to decide whether the changes are
-# intended. Error text is part of the golden output, so changed error messages
+# golden: regenerates internal/fingerprint/testdata/fingerprints.golden. Run it
+# after any change to pg_query_go or the normalization code in
+# internal/fingerprint/fingerprint.go, then review
+# `git diff internal/fingerprint/testdata/fingerprints.golden` to decide whether
+# the changes are intended. Error text is part of the golden output, so changed error messages
 # show up in the diff too. Never edit the golden file by hand. It runs natively
 # on the host, like test-unit, so the file is written as you. No Docker needed.
 
@@ -51,7 +52,7 @@ test-unit:
 
 ## golden: regenerate the fingerprint golden file, run natively on the host.
 golden:
-	go test -short -run '^TestFingerprintGolden$$' -update .
+	go test -short -run '^TestFingerprintGolden$$' ./internal/fingerprint -update
 
 ## shell: interactive shell in the test container, same mounts as test.
 shell: image

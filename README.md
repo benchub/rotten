@@ -44,8 +44,9 @@ How to use it
 2. Build it. A native build needs cgo and a C compiler, because pg_query_go compiles
    libpg_query from C:
   ```bash
-  go build github.com/benchub/rotten
+  go build ./cmd/rotten-worker
   ```
+   That writes a `rotten-worker` binary in the current directory.
    Native builds work on macOS and Linux. `make test-unit` runs natively, and `make test`
    runs the full suite in Docker.
 3. Install pg_partman in the rotten db. See https://github.com/pgpartman/pg_partman. tldr:

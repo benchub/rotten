@@ -1,4 +1,4 @@
-package main
+package fingerprint
 
 import (
 	"context"
@@ -92,18 +92,18 @@ func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 	return nil
 }
 
-// Take a query, normalize some elements to keep the "same" query from having different
-// fingerprints, and return a short fingerprint of the query as determined by postgres'
+// Normalized takes a query, normalizes some elements to keep the "same" query from having different
+// fingerprints, and returns a short fingerprint of the query as determined by postgres'
 // fingerprint logic.
 // e.g. "SELECT 1" -> "02a281c251c3a43d2fe7457dff01f76c5cc523f8c8"
-func normalized_fingerprint(event *QueryEvent) (fingerprint string, err error) {
+func Normalized(query string) (fingerprint string, err error) {
 	/* This logic is a noble cause but I don't think it's robust enough for prime time
 	    modified_query := inRE.ReplaceAllString(
 			valuesRE.ReplaceAllString(
-				event.query,
+				query,
 				"VALUES ${1}"),
 			"IN (1)")*/
-	modified_query := event.query
+	modified_query := query
 
 	tree, err := pg_query.Parse(modified_query)
 	if err != nil {
@@ -127,7 +127,7 @@ func normalized_fingerprint(event *QueryEvent) (fingerprint string, err error) {
 		// we can't seem to use our golang parse tree, so let's just see if we can't fingerprint it straight.
 		// This might end up in a lot of fingerprints that are only different based on their schema name,
 		// but it's the best we can do.
-		if cursorRE.MatchString(event.query) || tempTableRE.MatchString(event.query) {
+		if cursorRE.MatchString(query) || tempTableRE.MatchString(query) {
 			// EXCEPT - if the query matches our cursor or temp table RE, that's just going to grow as a function of usage, not of schema count.
 			// So actually _don't_ fingerprint something that matches either of those regexes.
 			log.Println("couldn't fingerprint non-deparsable query involving cursors or temp tables: ", modified_query, err)
@@ -152,13 +152,14 @@ func normalized_fingerprint(event *QueryEvent) (fingerprint string, err error) {
 	return fingerprint, nil
 }
 
-// Find the sequence id of this fingerprint in the rotten db.
-func normalized_fingerprint_id(rottenDB *pgxpool.Pool, fingerprint string, event *QueryEvent) (db_id uint64, err error) {
+// ID finds the sequence id of this fingerprint in the rotten db, inserting
+// it with query normalized if it is new.
+func ID(rottenDB *pgxpool.Pool, fingerprint string, query string) (db_id uint64, err error) {
 	var fingerprint_id uint64
 
-	normalized, err := pg_query.Normalize(event.query)
+	normalized, err := pg_query.Normalize(query)
 	if err != nil {
-		log.Println("couldn't normalize query", event.query, err)
+		log.Println("couldn't normalize query", query, err)
 		return 0, errors.New("failed to normalize")
 	}
 

@@ -1,4 +1,4 @@
-package main
+package identity
 
 import (
 	"context"
@@ -19,21 +19,6 @@ const (
 	sampleAction     = `/\*.*action:([^,]+).*\*/`
 	sampleJob        = `/\*.*job(_tag)?:([^,]+).*\*/`
 )
-
-// resetIdentityCaches clears the package-level identity caches now and at
-// test cleanup, so one test's cached IDs can't leak into another. The caches
-// are package globals, so tests that use them must not call t.Parallel().
-func resetIdentityCaches(t *testing.T) {
-	reset := func() {
-		for _, h := range []*ProtectedHash{&protectedControllers, &protectedActions, &protectedJobTags} {
-			h.Lock()
-			h.m = make(map[string]uint32)
-			h.Unlock()
-		}
-	}
-	reset()
-	t.Cleanup(reset)
-}
 
 // startIdentityDB starts the rotten DB, loads the schema, and returns a pool.
 func startIdentityDB(t *testing.T) (*testdb.DB, *pgxpool.Pool) {
@@ -57,13 +42,12 @@ func startIdentityDB(t *testing.T) (*testdb.DB, *pgxpool.Pool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	resetIdentityCaches(t)
 	return db, pool
 }
 
 func sampleRegexes(t *testing.T) (c, a, j *regexp.Regexp) {
 	t.Helper()
-	c, a, j, err := compileContextRegexes(sampleController, sampleAction, sampleJob)
+	c, a, j, err := CompileRegexes(sampleController, sampleAction, sampleJob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +71,7 @@ func count(t *testing.T, pool *pgxpool.Pool, q string) int {
 }
 
 func TestCompileContextRegexes(t *testing.T) {
-	c, a, j, err := compileContextRegexes(sampleController, sampleAction, sampleJob)
+	c, a, j, err := CompileRegexes(sampleController, sampleAction, sampleJob)
 	if err != nil {
 		t.Fatalf("sample regexes: %v", err)
 	}
@@ -100,7 +84,7 @@ func TestCompileContextRegexes(t *testing.T) {
 		"action":     {sampleController, bad, sampleJob},
 		"job":        {sampleController, sampleAction, bad},
 	} {
-		if _, _, _, err := compileContextRegexes(in[0], in[1], in[2]); err == nil {
+		if _, _, _, err := CompileRegexes(in[0], in[1], in[2]); err == nil {
 			t.Errorf("%s: bad regex compiled without error", name)
 		}
 	}
@@ -108,12 +92,13 @@ func TestCompileContextRegexes(t *testing.T) {
 
 func TestFindIdentityExtraction(t *testing.T) {
 	_, pool := startIdentityDB(t)
+	caches := NewCaches()
 	reC, reA, reJ := sampleRegexes(t)
 
-	web := &QueryEvent{query: "select 1 /*application:Canvas,controller:users,action:show*/"}
-	ns := &QueryEvent{query: "select 1 /*controller_with_namespace:api/v1/courses,action:index*/"}
-	jobTag := &QueryEvent{query: "select 1 /*job_tag:Delayed::Job#perform*/"}
-	job := &QueryEvent{query: "select 1 /*job:Other#run*/"}
+	web := "select 1 /*application:Canvas,controller:users,action:show*/"
+	ns := "select 1 /*controller_with_namespace:api/v1/courses,action:index*/"
+	jobTag := "select 1 /*job_tag:Delayed::Job#perform*/"
+	job := "select 1 /*job:Other#run*/"
 
 	// The last capture group wins, so the "_with_namespace" and "_tag"
 	// groups never become the identity. Captures with no comma after them
@@ -122,11 +107,11 @@ func TestFindIdentityExtraction(t *testing.T) {
 		name, table, col, want string
 		got                    uint32
 	}{
-		{"controller", "controllers", "controller", "users", find_controller_id(pool, web, reC)},
-		{"namespaced controller", "controllers", "controller", "api/v1/courses", find_controller_id(pool, ns, reC)},
-		{"action", "actions", "action", "show", find_action_id(pool, web, reA)},
-		{"job_tag", "job_tags", "job_tag", "Delayed::Job#perform", find_job_tag_id(pool, jobTag, reJ)},
-		{"job", "job_tags", "job_tag", "Other#run", find_job_tag_id(pool, job, reJ)},
+		{"controller", "controllers", "controller", "users", caches.Controllers.Find(pool, web, reC)},
+		{"namespaced controller", "controllers", "controller", "api/v1/courses", caches.Controllers.Find(pool, ns, reC)},
+		{"action", "actions", "action", "show", caches.Actions.Find(pool, web, reA)},
+		{"job_tag", "job_tags", "job_tag", "Delayed::Job#perform", caches.JobTags.Find(pool, jobTag, reJ)},
+		{"job", "job_tags", "job_tag", "Other#run", caches.JobTags.Find(pool, job, reJ)},
 	} {
 		if tc.got == 0 {
 			t.Errorf("%s: got id 0", tc.name)
@@ -145,19 +130,20 @@ func TestFindIdentityExtraction(t *testing.T) {
 
 func TestFindIdentityNoMatch(t *testing.T) {
 	_, pool := startIdentityDB(t)
+	caches := NewCaches()
 	reC, reA, reJ := sampleRegexes(t)
-	ev := &QueryEvent{query: "select 1"}
-	if id := find_controller_id(pool, ev, reC); id != 0 {
+	ev := "select 1"
+	if id := caches.Controllers.Find(pool, ev, reC); id != 0 {
 		t.Errorf("controller: got %d, want 0", id)
 	}
-	if id := find_action_id(pool, ev, reA); id != 0 {
+	if id := caches.Actions.Find(pool, ev, reA); id != 0 {
 		t.Errorf("action: got %d, want 0", id)
 	}
-	if id := find_job_tag_id(pool, ev, reJ); id != 0 {
+	if id := caches.JobTags.Find(pool, ev, reJ); id != 0 {
 		t.Errorf("job: got %d, want 0", id)
 	}
 	// A regex that matches but has no capture group also returns 0.
-	if id := find_controller_id(pool, &QueryEvent{query: "select 1 /* x */"}, regexp.MustCompile(`/\*`)); id != 0 {
+	if id := caches.Controllers.Find(pool, "select 1 /* x */", regexp.MustCompile(`/\*`)); id != 0 {
 		t.Errorf("no capture group: got %d, want 0", id)
 	}
 	n := count(t, pool, `select (select count(*) from rotten.controllers)
@@ -169,15 +155,16 @@ func TestFindIdentityNoMatch(t *testing.T) {
 
 func TestFindIdentityCacheHit(t *testing.T) {
 	_, pool := startIdentityDB(t)
+	caches := NewCaches()
 	reC, _, _ := sampleRegexes(t)
-	ev := &QueryEvent{query: "select 1 /*controller:users,action:show*/"}
-	first := find_controller_id(pool, ev, reC)
+	ev := "select 1 /*controller:users,action:show*/"
+	first := caches.Controllers.Find(pool, ev, reC)
 	if first == 0 {
 		t.Fatal("first lookup got 0")
 	}
-	protectedControllers.RLock()
-	cached, ok := protectedControllers.m["users"]
-	protectedControllers.RUnlock()
+	caches.Controllers.mu.Lock()
+	cached, ok := caches.Controllers.m["users"]
+	caches.Controllers.mu.Unlock()
 	if !ok || cached != first {
 		t.Fatalf("cache[users] = %d, %v; want %d", cached, ok, first)
 	}
@@ -185,7 +172,7 @@ func TestFindIdentityCacheHit(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), "delete from rotten.controllers"); err != nil {
 		t.Fatal(err)
 	}
-	if got := find_controller_id(pool, ev, reC); got != first {
+	if got := caches.Controllers.Find(pool, ev, reC); got != first {
 		t.Errorf("second lookup got %d, want cached %d", got, first)
 	}
 	if n := count(t, pool, "select count(*) from rotten.controllers"); n != 0 {
@@ -195,6 +182,7 @@ func TestFindIdentityCacheHit(t *testing.T) {
 
 func TestFindIdentityReusesExistingRow(t *testing.T) {
 	_, pool := startIdentityDB(t)
+	caches := NewCaches()
 	_, reA, _ := sampleRegexes(t)
 	var want uint32
 	err := pool.QueryRow(context.Background(),
@@ -202,7 +190,7 @@ func TestFindIdentityReusesExistingRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := find_action_id(pool, &QueryEvent{query: "select 1 /*controller:users,action:show*/"}, reA)
+	got := caches.Actions.Find(pool, "select 1 /*controller:users,action:show*/", reA)
 	if got != want {
 		t.Errorf("got %d, want existing %d", got, want)
 	}
@@ -212,11 +200,12 @@ func TestFindIdentityReusesExistingRow(t *testing.T) {
 }
 
 // TestFindIdentityInsertRace holds an uncommitted insert of the same value in
-// another session. find_identity's select sees no row, and its insert blocks
+// another session. Find's select sees no row, and its insert blocks
 // on the unique index. Once the other session commits, the insert fails and
-// find_identity re-selects the winner's ID.
+// Find re-selects the winner's ID.
 func TestFindIdentityInsertRace(t *testing.T) {
 	db, pool := startIdentityDB(t)
+	caches := NewCaches()
 	_, _, reJ := sampleRegexes(t)
 	ctx := context.Background()
 
@@ -235,17 +224,17 @@ func TestFindIdentityInsertRace(t *testing.T) {
 
 	done := make(chan uint32, 1)
 	go func() {
-		done <- find_job_tag_id(pool, &QueryEvent{query: "select 1 /*job:Racy#go*/"}, reJ)
+		done <- caches.JobTags.Find(pool, "select 1 /*job:Racy#go*/", reJ)
 	}()
 
-	// Wait until find_identity's insert is blocked on the other session.
-	// The query match depends on the SQL text find_identity builds
+	// Wait until Find's insert is blocked on the other session.
+	// The query match depends on the SQL text Find builds
 	// ("insert into job_tags(job_tag) ..."). If that text changes, update it.
 	deadline := time.Now().Add(30 * time.Second)
 	for count(t, pool, `select count(*) from pg_stat_activity
 		where wait_event_type = 'Lock' and query like 'insert into job_tags%'`) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("find_identity's insert never blocked")
+			t.Fatal("Find's insert never blocked")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -258,7 +247,7 @@ func TestFindIdentityInsertRace(t *testing.T) {
 			t.Errorf("got %d, want the winning session's id %d", got, winner)
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("find_identity didn't return")
+		t.Fatal("Find didn't return")
 	}
 	if n := count(t, pool, "select count(*) from rotten.job_tags"); n != 1 {
 		t.Errorf("job_tags has %d rows, want 1", n)

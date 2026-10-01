@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/testdb"
 )
 
@@ -47,7 +48,7 @@ func (c *stepClock) Sleep(ctx context.Context, d time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return realClock{}.Sleep(ctx, d)
+	return RealClock{}.Sleep(ctx, d)
 }
 
 func (c *stepClock) times() []int64 {
@@ -68,45 +69,18 @@ func (c *stepClock) waitSleep(t *testing.T) time.Duration {
 	}
 }
 
-// parkStats makes every reportSamples goroutine wait until the test ends and
-// then return without touching the database. This test checks events,
-// contexts, and fingerprints. stats_test.go covers fingerprint_stats.
-//
-// Each reportSamples reads statsWait before calling it, so cleanup waits
-// until one has parked per registered fingerprint before restoring the old
-// value. Parking takes mu, which orders those reads before the restore.
-func parkStats(t *testing.T) {
+// parkStats makes every reportSamples goroutine w starts wait until the test
+// ends and then return without touching the database. This test checks
+// events, contexts, and fingerprints. stats_test.go covers fingerprint_stats.
+// Call it before starting w. statsWait belongs to w, so no other test's
+// goroutines can see it.
+func parkStats(t *testing.T, w *Worker) {
 	done := make(chan struct{})
-	var mu sync.Mutex
-	parked := 0
-	old := statsWait
-	statsWait = func(time.Duration) bool {
-		mu.Lock()
-		parked++
-		mu.Unlock()
+	w.statsWait = func(time.Duration) bool {
 		<-done
 		return false
 	}
-	t.Cleanup(func() {
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			mu.Lock()
-			n := parked
-			mu.Unlock()
-			if n >= fingerprintCount() {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Errorf("only %d of %d reportSamples goroutines parked", n, fingerprintCount())
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		close(done)
-		mu.Lock()
-		statsWait = old
-		mu.Unlock()
-	})
+	t.Cleanup(func() { close(done) })
 }
 
 // startObservedForWorker starts Postgres 16 with the dba functions from
@@ -184,7 +158,7 @@ func runWorkload(t *testing.T, conn *pgx.Conn) {
 
 func fingerprintOf(t *testing.T, query string) string {
 	t.Helper()
-	fp, err := normalized_fingerprint(&QueryEvent{query: query})
+	fp, err := fingerprinting.Normalized(query)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,8 +192,6 @@ func waitWorkload(t *testing.T, pool *pgxpool.Pool, fps ...string) {
 func TestWorkerEndToEnd(t *testing.T) {
 	observed := startObservedForWorker(t)
 	rotten, _ := startIdentityDB(t)
-	resetProcessGlobals(t)
-	parkStats(t)
 
 	pcfg, err := pgxpool.ParseConfig(rotten.DSN)
 	if err != nil {
@@ -244,27 +216,43 @@ func TestWorkerEndToEnd(t *testing.T) {
 	reC, reA, reJ := sampleRegexes(t)
 
 	obsDSN := observed.DSNAs(t, "rotten_observer")
-	cfg := workerConfig{
-		rottenDB:            pool,
-		observedDB:          observerConn(t, obsDSN),
-		observedDBReset:     observerConn(t, obsDSN),
-		observationInterval: 2,
-		sanityCheck:         "select true",
-		logicalID:           logical,
-		physicalID:          physical,
-		reController:        reC,
-		reAction:            reA,
-		reJobTag:            reJ,
+	cfg := Config{
+		RottenDB:            pool,
+		ObservedDB:          observerConn(t, obsDSN),
+		ObservedDBReset:     observerConn(t, obsDSN),
+		ObservationInterval: 2,
+		SanityCheck:         "select true",
+		LogicalID:           logical,
+		PhysicalID:          physical,
+		ReController:        reC,
+		ReAction:            reA,
+		ReJobTag:            reJ,
 	}
 	clk := &stepClock{sleeping: make(chan time.Duration), proceed: make(chan struct{})}
+	w := New(cfg, clk)
+	parkStats(t, w)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ran := make(chan error, 1)
-	// main starts reportProgress next to run, so do the same here: it reads
-	// the counters run writes. It never returns, so it outlives the test and
-	// logs once a second. noIdleHands is off so it never panics.
-	go reportProgress(false, 1, cfg.observationInterval)
-	go func() { ran <- run(ctx, cfg, clk) }()
+
+	// main starts ReportProgress next to Run, so do the same here: it reads
+	// the counters Run writes. It logs once a second until the test ends.
+	// noIdleHands is off so it never panics.
+	progressCtx, stopProgress := context.WithCancel(context.Background())
+	progressDone := make(chan struct{})
+	go func() {
+		w.ReportProgress(progressCtx, false, 1)
+		close(progressDone)
+	}()
+	t.Cleanup(func() {
+		stopProgress()
+		select {
+		case <-progressDone:
+		case <-time.After(10 * time.Second):
+			t.Error("ReportProgress didn't return after its context ended")
+		}
+	})
+	go func() { ran <- w.Run(ctx) }()
 
 	// The first sleep follows the initial reset, so the window is open.
 	if d := clk.waitSleep(t); d != 2*time.Second {
@@ -407,5 +395,23 @@ func TestWorkerEndToEnd(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	if after := count(t, pool, "select count(*) from rotten.events"); after != before {
 		t.Errorf("events grew from %d to %d after run returned", before, after)
+	}
+}
+
+// TestReportProgressStops checks the stop hook: ReportProgress returns once
+// its context ends, from its sleep between reports.
+func TestReportProgressStops(t *testing.T) {
+	w := New(Config{ObservationInterval: 2}, RealClock{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		w.ReportProgress(ctx, false, 3600)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ReportProgress didn't return after its context ended")
 	}
 }
