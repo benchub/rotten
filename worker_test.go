@@ -260,6 +260,10 @@ func TestWorkerEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ran := make(chan error, 1)
+	// main starts reportProgress next to run, so do the same here: it reads
+	// the counters run writes. It never returns, so it outlives the test and
+	// logs once a second. noIdleHands is off so it never panics.
+	go reportProgress(false, 1, cfg.observationInterval)
 	go func() { ran <- run(ctx, cfg, clk) }()
 
 	// The first sleep follows the initial reset, so the window is open.

@@ -16,9 +16,9 @@ const longInterval = 3600
 
 // preRegister inserts the fingerprint row and registers a Fingerprint with a
 // buffered channel, so processEvent takes the "already present" path and
-// doesn't start consumeSamples and reportSamples. reportSamples reads f.last
-// without the lock as it starts, which races with consumeSamples under -race
-// (tasks 20261001-103222-10 and -13 handle that). It returns the channel
+// doesn't start consumeSamples and reportSamples. That lets the test read the
+// sample processEvent sends, and keeps stray reportSamples goroutines from
+// reading statsWait while other tests swap it. It returns the channel
 // processEvent sends its sample to.
 func preRegister(t *testing.T, pool *pgxpool.Pool, fingerprint string) chan *Samples {
 	t.Helper()

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -74,12 +75,12 @@ type QueryEvent struct {
 // When we find events to process, send them here
 var eventsToProcess = make(chan *QueryEvent, 1000)
 
-// Some stats that we won't bother to make concurrency-safe.
-// They're never decremented anyway.
-var eventCount uint64
-var lastWindowEnd PoorMansTime
-var parseFailures uint32
-var eventsPending uint32
+// Progress stats. run writes them and reportProgress reads them from another
+// goroutine, so they're atomics. lastWindowEnd holds PoorMansTime.sec.
+var eventCount atomic.Uint64
+var lastWindowEnd atomic.Int64
+var parseFailures atomic.Uint32
+var eventsPending atomic.Uint32
 
 var configFileFlag = flag.String("config", "", "the config file")
 var noIdleHandsFlag = flag.Bool("noIdleHands", false, "when set to true, kill us (ungracefully) if we seem to be doing nothing")
@@ -477,8 +478,8 @@ func run(ctx context.Context, cfg workerConfig, clk clock) error {
 		eventHash = make(map[string]QueryEvent)
 
 		windowEnd.sec = clk.Now().Unix()
-		parseFailures = 0
-		eventsPending = 0
+		parseFailures.Store(0)
+		eventsPending.Store(0)
 		doIt = true
 
 		log.Println("Performing sanity check")
@@ -539,13 +540,13 @@ func run(ctx context.Context, cfg workerConfig, clk clock) error {
 			newEvent.observationTimeStart = windowStart
 			newEvent.observationTimeEnd = windowEnd
 
-			eventCount++
-			lastWindowEnd = newEvent.observationTimeEnd
+			eventCount.Add(1)
+			lastWindowEnd.Store(newEvent.observationTimeEnd.sec)
 
 			fingerprint, err := normalized_fingerprint(&newEvent)
 			if err != nil {
 				//log.Println("failed to get fingerprint for event, so ignoring it")
-				parseFailures++
+				parseFailures.Add(1)
 				continue
 			}
 
@@ -575,18 +576,18 @@ func run(ctx context.Context, cfg workerConfig, clk clock) error {
 				eventHash[fingerprint] = existingEvent
 			} else {
 				eventHash[fingerprint] = newEvent
-				eventsPending++
+				eventsPending.Add(1)
 			}
 		}
 		queries.Close()
 
-		log.Printf("processing %d unique events", eventsPending)
+		log.Printf("processing %d unique events", eventsPending.Load())
 
 		// now that we've hashed all the events by fingerprint, process each one in a goroutine
 		for fingerprint, event := range eventHash {
 			var eventToBeGCedLater = event
 			go processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
-			eventsPending--
+			eventsPending.Add(^uint32(0)) // decrement
 		}
 
 		if int64(observation_interval) > (clk.Now().Unix() - windowEnd.sec) {
@@ -657,14 +658,15 @@ func mergeEvent(a, b QueryEvent) QueryEvent {
 
 func reportProgress(noIdleHands bool, interval uint32, observation_interval uint32) {
 	almostDead := false
-	lastProcessed := eventCount
-	lastWindowEnd.sec = time.Now().Unix()
+	lastProcessed := eventCount.Load()
+	lastWindowEnd.Store(time.Now().Unix())
 
 	for {
-		closed := time.Now().Unix() - lastWindowEnd.sec
+		closed := time.Now().Unix() - lastWindowEnd.Load()
+		processed := eventCount.Load()
 
-		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", eventsPending, "unique events queued,", parseFailures, "fingerprints failed,", stillProcessing(), "still being recorded. Overall,", eventCount, "processed,", fingerprintCount(), "fingerprints seen")
-		if noIdleHands && lastProcessed == eventCount {
+		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", eventsPending.Load(), "unique events queued,", parseFailures.Load(), "fingerprints failed,", stillProcessing(), "still being recorded. Overall,", processed, "processed,", fingerprintCount(), "fingerprints seen")
+		if noIdleHands && lastProcessed == processed {
 			if almostDead {
 				var m map[string]int
 
@@ -676,7 +678,7 @@ func reportProgress(noIdleHands bool, interval uint32, observation_interval uint
 			almostDead = false
 		}
 
-		lastProcessed = eventCount
+		lastProcessed = processed
 		time.Sleep(time.Duration(interval) * time.Second)
 	}
 }

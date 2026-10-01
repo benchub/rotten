@@ -379,3 +379,39 @@ func TestProcessEventNewFingerprintStartsGoroutines(t *testing.T) {
 		t.Errorf("stillProcessing = %d, want 0", v)
 	}
 }
+
+// TestReportSamplesWhileConsuming feeds samples from another goroutine while
+// reportSamples runs its passes, the way production does. Under -race this
+// catches reportSamples reading f.last without the lock. Every sample is
+// flushed exactly once, so the rows end up holding all of them.
+func TestReportSamplesWhileConsuming(t *testing.T) {
+	pf := startProcessDB(t)
+	s := installStepper(t)
+	f := newTestFingerprint(t, pf.pool, "select concurrent")
+	ch := make(chan *Samples)
+	f.samples = ch
+	consumed := make(chan struct{})
+	go func() {
+		consumeSamples(f)
+		close(consumed)
+	}()
+	startReport(t, s, pf.pool, f, pf.logical, 7)
+	defer s.stop(t)
+
+	const n = 50
+	go func() {
+		for i := 0; i < n; i++ {
+			ch <- sampleOf(1, int64(1000+i))
+		}
+		close(ch)
+	}()
+	for i := 0; i < 10; i++ {
+		s.step(t)
+	}
+	<-consumed
+	// One last pass flushes whatever arrived after the previous one.
+	s.step(t)
+	for _, src := range []uint32{0, pf.logical} {
+		checkStats(t, pf.pool, f.db_id, src, n, 1, 0, 1000+n-1)
+	}
+}

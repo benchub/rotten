@@ -247,7 +247,11 @@ func reportSamples(rottenDB *pgxpool.Pool, f *Fingerprint, logical_source_id uin
 		if !wait(time.Duration(2*observation_interval) * time.Second) {
 			return
 		}
-		if f.last > lastReport {
+		// consumeSamples writes f.last under statsLock, so read it there too.
+		f.statsLock.RLock()
+		changed := f.last > lastReport
+		f.statsLock.RUnlock()
+		if changed {
 			// Let's record these stats we've been collecting for this fingerprint.
 			// As we walk through all of them for both this logical_source_id and logical_source_id=0, we
 			// *could* try to only hold a lock on the fingerprint stats block as little as possible.
