@@ -13,6 +13,9 @@
   - **Parallel tasks.** Run tasks at the same time only when they're unlikely to touch the same files. When in doubt, go one at a time to avoid merge conflicts.
   - **New findings.** Add bugs and follow-ups that turn up during a task to `BACKLOG.md` as new tasks.
   - **Dependencies.** Builders may add Go modules and gems as needed.
+  - **Blocked commands.** If a command is blocked or denied, stop and report it. Never work around it, for example by moving the command into a script.
+  - **Worker config changes.** Change the worker's config format only for a good reason, because every change means config-management work for the user. When you do change it, keep the change small and document it.
+  - **pg_query_go Postgres 18 parser.** Don't upgrade until the user confirms the release is out.
 - **New tasks** get IDs in the form `YYYYMMDD-HHMMSS-N` (creation time plus a counter).
 - **Design context** lives in `docs/plan.md`, including the decisions on scope: Postgres 14 through 18, no data retention, no CI.
 - **Before calling anything done,** run `make test-all` (or `make test` until the UI exists). There's no CI, so this is the gate.
