@@ -39,3 +39,15 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** The suite passes, and `go vet ./...` is clean.
 - **Needs:** -4.
 - Completed: October 1, 2026, 0abba75. One review round; the README fix was checked by the coordinator.
+
+### 20261001-103222-7: Characterize identity extraction.
+- **Do:** Test `find_identity` and its wrappers against `StartRotten`:
+  - Controller, action, and job extraction with the sample regexes in `conf`.
+  - The in-memory cache gets hit.
+  - An existing row gets reused.
+  - The insert race, where a second session wins the insert.
+  - A regex with no match returns 0.
+- **Red test:** Write each case before touching the code. Make the regex compile errors return errors instead of being silently ignored.
+- **Done when:** All cases pass.
+- **Needs:** -2.
+- Completed: October 1, 2026, adb8c80.

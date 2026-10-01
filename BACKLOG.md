@@ -52,17 +52,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   - The decision record is written.
 - **Needs:** -4, -5.
 
-### 20261001-103222-7: Characterize identity extraction.
-- **Do:** Test `find_identity` and its wrappers against `StartRotten`:
-  - Controller, action, and job extraction with the sample regexes in `conf`.
-  - The in-memory cache gets hit.
-  - An existing row gets reused.
-  - The insert race, where a second session wins the insert.
-  - A regex with no match returns 0.
-- **Red test:** Write each case before touching the code. Make the regex compile errors return errors instead of being silently ignored.
-- **Done when:** All cases pass.
-- **Needs:** -2.
-
 ### 20261001-103222-8: Characterize merging events within a window.
 - **Do:** Pull the "same fingerprint seen twice" block in `main.go` out into a pure `mergeEvent(a, b)`. Test the sums, min and max, the runningstat merge of mean and stddev, and the context histogram counts.
 - **Red test:** `mergeEvent` doesn't exist yet.
