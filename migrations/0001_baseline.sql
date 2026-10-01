@@ -2,7 +2,7 @@
 -- +goose Up
 -- The baseline schema. migrate runs this as rotten_owner, which owns the
 -- database, so rotten_owner owns the schema and everything in it. Grants for
--- the other roles live in a later migration.
+-- the other roles live in permissions.sql.
 CREATE SCHEMA "rotten";
 
 -- goose runs each migration in one transaction on one connection, so this

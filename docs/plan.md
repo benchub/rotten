@@ -170,8 +170,8 @@ We're not keeping existing data, so we start fresh.
 | Role | Used by | Can do |
 |---|---|---|
 | `rotten_owner` | `migrate` only | Owns the schema and all DDL. |
-| `rotten_ingest` | Server | Inserts into and selects from the event tables, updates `fingerprint_stats`, and selects and updates `last_used_at` on `api_keys`. Can't create or revoke keys. |
-| `rotten_ui` | UI | Selects from the event tables. Has DML on `users`. Inserts into and selects from `api_keys` and `ui_audit_log`, and updates only `revoked_at` on `api_keys`. |
+| `rotten_ingest` | Server | Inserts into and selects from the event tables, updates `fingerprint_stats`, selects the auth columns of `api_keys` and updates only `last_used_at`, inserts into and selects from `ingested_batches`, and runs `prune_ingested_batches()`. Can't create or revoke keys, and can't delete anything. |
+| `rotten_ui` | UI | Selects from the event tables. Has DML on `users`. Inserts into and selects from `api_keys` (never `secret_hash`) and `ui_audit_log`, and updates only `revoked_at` and `revoked_by` on `api_keys`. |
 | `rotten_readonly` | People at a SQL prompt | Selects from the event tables. |
 
 ### Build artifacts.

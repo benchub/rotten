@@ -27,8 +27,28 @@ var ObservedVersions = []int{14, 15, 16, 17, 18}
 // OwnerRole owns the rotten database and runs migrate.
 const OwnerRole = "rotten_owner"
 
+// The roles migrations/permissions.sql grants to. An operator creates them
+// in production; StartRottenEmpty creates them for tests.
+const (
+	IngestRole   = "rotten_ingest"
+	UIRole       = "rotten_ui"
+	ReadonlyRole = "rotten_readonly"
+)
+
 // RottenRoles are the login roles StartRottenEmpty creates.
-var RottenRoles = []string{OwnerRole}
+var RottenRoles = []string{OwnerRole, IngestRole, UIRole, ReadonlyRole}
+
+// ConnectAs opens a connection logged in as role and closes it at test
+// cleanup.
+func (d *DB) ConnectAs(t testing.TB, role string) *pgx.Conn {
+	t.Helper()
+	conn, err := pgx.Connect(context.Background(), d.DSNAs(t, role))
+	if err != nil {
+		t.Fatalf("testdb: connect as %s: %v", role, err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	return conn
+}
 
 // DB is a running Postgres container.
 type DB struct {
