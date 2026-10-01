@@ -36,15 +36,10 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -26.
 
-### 20261001-103222-13: Make `go test -race` clean.
-- **Do:** Turn on `-race` in `make test`. Fix what it flags: `eventCount`, `eventsPending`, `parseFailures`, and `lastWindowEnd` become atomics, and `f.last` gets read under its lock.
-- **Red test:** The suite fails under `-race` right now.
-- **Done when:** The suite passes with `-race`.
-- **Needs:** -12.
-
 ### 20261001-103222-14: Split the code into packages.
 - **Do:** Move the code into `cmd/rotten-worker` and `internal/{fingerprint,identity,worker,testdb}`. Replace the globals with structs. This is a pure refactor with no behavior change.
 - **Red test:** None needed. The existing suite is the check, and the tests move with the code.
+- **Also:** When the globals become structs, give `reportProgress` a stop hook. The end-to-end test's progress goroutine never returns today. Also make sure goroutines started by `run` can't read `statsWait` after a later test swaps it.
 - **Done when:** The suite and golden file are unchanged and green.
 - **Needs:** -13.
 

@@ -108,3 +108,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** The test passes reliably 10 times in a row.
 - **Needs:** -7, -8, -9, -10.
 - Completed: October 1, 2026, ebc26a1. Passed 10 of 10. Follow-ups are 20261001-120501-1 through -3.
+
+### 20261001-103222-13: Make `go test -race` clean.
+- **Do:** Turn on `-race` in `make test`. Fix what it flags: `eventCount`, `eventsPending`, `parseFailures`, and `lastWindowEnd` become atomics, and `f.last` gets read under its lock.
+- **Red test:** The suite fails under `-race` right now.
+- **Done when:** The suite passes with `-race`.
+- **Needs:** -12.
+- Completed: October 1, 2026, a6f4100. Five races fixed.
