@@ -83,3 +83,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Tests pass.
 - **Needs:** -2.
 - Completed: October 1, 2026, 69645fb. The new-fingerprint branch is left for -10.
+
+### 20261001-103222-11: Characterize TLS chain building.
+- **Do:** Generate a root CA, an intermediate, and a client cert in the test. Check that `remakeSSLCertConfig` returns a chain that includes the intermediate, and that `ServerName` comes from the right host, including fallback hosts.
+- **Red test:** Bad paths should return errors, not call `log.Fatal`. Change the signature to `(*tls.Config, error)`.
+- **Done when:** Tests pass.
+- **Needs:** -1.
+- Completed: October 1, 2026, 46606a0. Follow-ups are 20261001-114433-1 and -2.

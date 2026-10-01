@@ -46,12 +46,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Tests pass, with numbers checked against hand-computed means and deviations.
 - **Needs:** -2.
 
-### 20261001-103222-11: Characterize TLS chain building.
-- **Do:** Generate a root CA, an intermediate, and a client cert in the test. Check that `remakeSSLCertConfig` returns a chain that includes the intermediate, and that `ServerName` comes from the right host, including fallback hosts.
-- **Red test:** Bad paths should return errors, not call `log.Fatal`. Change the signature to `(*tls.Config, error)`.
-- **Done when:** Tests pass.
-- **Needs:** -1.
-
 ### 20261001-103222-12: Characterize the worker end to end.
 - **Do:** Pull the loop out of `main()` into `run(ctx, cfg, clock)`. Point the worker at `StartObserved(t, 16)` (the current helpers only work up to 16) and `StartRotten`, with a two-second window. Generate a known workload with marginalia comments.
 - **Red test:** Assert on the events, contexts, and fingerprints the worker writes. Assert that cancelling `ctx` stops the worker.
