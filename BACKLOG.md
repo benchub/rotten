@@ -34,13 +34,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase C: Diffing against a snapshot (item 2).
 
-### 20261001-103222-21: Handle min and max for each window.
-- **Do:** On 17+, the worker runs a min/max-only reset after each harvest. On 14 through 16, it reports lifetime min and max with a `minmax_lifetime` flag.
-- **Also:** Call the wrapper `<schema>.pg_stat_statements_minmax_reset()` from `schema/observer.sql`. Add one optional worker setting for its schema, defaulting to `rotten`.
-- **Red test:** Run on 17 and 18. The second window's max reflects only that window. Run on 16. The flag gets set.
-- **Done when:** Passes.
-- **Needs:** -19, -15.
-
 ### 20261001-103222-22: Pick the top N in Go.
 - **Do:** Choose the top 100 entries by delta for each metric, and take the union of those sets. Replace the 19-way SQL `UNION`.
 - **Red test:** On a fixture, the selection matches what the old SQL picks from the same values.

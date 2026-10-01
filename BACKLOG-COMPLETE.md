@@ -231,3 +231,11 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -26.
 - Completed: October 1, 2026, 27f11dc. Operators create the roles. Pruning is a SECURITY DEFINER function, so ingest never gets DELETE. Default privileges revoke function EXECUTE from PUBLIC globally, because the per-schema form can only add privileges.
+
+### 20261001-103222-21: Handle min and max for each window.
+- **Do:** On 17+, the worker runs a min/max-only reset after each harvest. On 14 through 16, it reports lifetime min and max with a `minmax_lifetime` flag.
+- **Also:** Call the wrapper `<schema>.pg_stat_statements_minmax_reset()` from `schema/observer.sql`. Add one optional worker setting for its schema, defaulting to `rotten`.
+- **Red test:** Run on 17 and 18. The second window's max reflects only that window. Run on 16. The flag gets set.
+- **Done when:** Passes.
+- **Needs:** -19, -15.
+- Completed: October 1, 2026, d9e310a. The worker doesn't call the reset yet; -25 wires it in.
