@@ -25,8 +25,8 @@ type corpusCase struct {
 	query string
 }
 
-// loadCorpus splits the corpus into cases. Lines before the first case
-// header are a file comment and get ignored.
+// loadCorpus splits the corpus into cases. Full-line "--" comments that
+// aren't case headers get ignored, including the file comment at the top.
 func loadCorpus(t *testing.T) []corpusCase {
 	t.Helper()
 	f, err := os.Open(corpusPath)
@@ -34,7 +34,12 @@ func loadCorpus(t *testing.T) []corpusCase {
 		t.Fatal(err)
 	}
 	defer f.Close()
+	return parseCorpus(t, f)
+}
 
+// parseCorpus does the splitting for loadCorpus.
+func parseCorpus(t *testing.T, r io.Reader) []corpusCase {
+	t.Helper()
 	var cases []corpusCase
 	var cur *corpusCase
 	var lines []string
@@ -45,7 +50,7 @@ func loadCorpus(t *testing.T) []corpusCase {
 		}
 	}
 	seen := map[string]bool{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := sc.Text()
 		if name, ok := strings.CutPrefix(line, casePrefix); ok {
@@ -56,6 +61,11 @@ func loadCorpus(t *testing.T) []corpusCase {
 			}
 			seen[name] = true
 			cur, lines = &corpusCase{name: name}, nil
+			continue
+		}
+		// Full-line comments aren't part of any query. Comments inside a
+		// query line stay, since marginalia cases rely on them.
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
 			continue
 		}
 		lines = append(lines, line)
