@@ -107,14 +107,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-26: Adopt goose migrations with a fresh baseline.
-- **Do:** Create `migrations/0001_baseline.sql` from `tables.sql`, fixed for pg_partman 5. Make `fingerprint_stats.last` a `bigint`, and drop the legacy roles. Embed the migrations in the server binary as `rotten-server migrate`, running as `rotten_owner`. Delete `schema/tables.sql`.
-- **Red test:**
-  - `migrate` brings an empty database to the latest version, and running it a second time changes nothing.
-  - Writing `last = 2^31` works.
-- **Done when:** Passes, and `internal/testdb.StartRotten` uses `migrate` instead of `tables.sql`.
-- **Needs:** -2.
-
 ### 20261001-103222-28: Add the auth and dedupe tables and the database roles.
 - **Do:**
   - Add a migration for `api_keys(id, name, secret_hash, fqdn null, created_at, created_by, last_used_at, revoked_at, revoked_by)`.

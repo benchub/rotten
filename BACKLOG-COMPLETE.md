@@ -162,3 +162,12 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and the golden file is unchanged.
 - **Needs:** Coordinate with -112142-4 (configurable patterns).
 - Completed: October 1, 2026, 312dd86. Small change, so the coordinator reviewed it.
+
+### 20261001-103222-26: Adopt goose migrations with a fresh baseline.
+- **Do:** Create `migrations/0001_baseline.sql` from `tables.sql`, fixed for pg_partman 5. Make `fingerprint_stats.last` a `bigint`, and drop the legacy roles. Embed the migrations in the server binary as `rotten-server migrate`, running as `rotten_owner`. Delete `schema/tables.sql`.
+- **Red test:**
+  - `migrate` brings an empty database to the latest version, and running it a second time changes nothing.
+  - Writing `last = 2^31` works.
+- **Done when:** Passes, and `internal/testdb.StartRotten` uses `migrate` instead of `tables.sql`.
+- **Needs:** -2.
+- Completed: October 1, 2026, 45d55d5. rotten_owner must own the database (for ALTER DATABASE SET search_path). The goose version table is pinned to public.
