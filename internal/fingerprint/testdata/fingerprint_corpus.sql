@@ -74,6 +74,12 @@ SELECT * FROM users WHERE id IN (1)
 SELECT * FROM users WHERE id IN (1, 2, 3)
 -- case: in_list_c
 SELECT * FROM users WHERE id IN (4, 5, 6, 7, 8, 9, 10)
+-- case: in_list_d
+SELECT * FROM users WHERE id IN ($1 /*, ... */)
+-- case: in_list_e
+SELECT * FROM users WHERE id IN ($1)
+-- case: in_list_f
+SELECT * FROM users WHERE id IN ($1,$2,$3)
 
 -- case: values_a
 INSERT INTO users (id, name) VALUES (1, 'a')
