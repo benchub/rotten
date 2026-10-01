@@ -313,3 +313,26 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -28, -29.
 - Completed: October 1, 2026, f205fb8. Unpinned keys fail closed: -32 and -33 must call Key.AllowsFQDN. Review caught the admin DSN leaking in help output. Rate limiting is 20261001-143308-1.
+
+### 20261001-103222-25: Wire diffing into the worker and stop resetting.
+- **Do:** In the harvest loop:
+  1. Read.
+  2. Diff.
+  3. Pick the top N.
+  4. Fingerprint.
+  5. Send.
+  6. Save the snapshot.
+
+  The window runs from the snapshot's `taken_at` to now. The worker never runs a full reset. Delete the reset code and `schema/legacy_reset.sql`, the temporary bridge from -16.
+- **Baseline:** Diff on an empty or stale snapshot returns everything as new. Discard that harvest as a baseline, and add a test that pins it.
+- **Stddev:** When `WindowStats` says `stddevOK=false`, record no stddev for that window instead of a misleading one.
+- **Min/max:** On 17+, call `Reader.MinmaxReset` right after each harvest. If it fails, log the error and keep going, and min and max for that window come back flagged as lifetime. Drop zero-call deltas before reporting, since a window that had a reset but no calls shows min and max as 0.
+- **State errors:** If the state store returns an error at runtime, such as corruption after Open, log it and treat the harvest as a baseline instead of exiting. Only `internal/state` imports SQLite, so the server must never import it.
+- **Text:** Switch to `ReadStats`, then `TextCache.Retain`, then `topNDeltas`, then `TextCache.Fill`, all before any reset. Rows with QueryID 0 (hidden from the observer) get no text, so log or count them.
+- **Red test:** End to end on 18:
+  - `stats_reset` never changes because of the worker.
+  - An outside `pg_stat_statements_reset()` mid-run gets handled per the rules.
+  - After a restart, the next window starts at the saved snapshot.
+- **Done when:** Passes on every supported version.
+- **Needs:** -20, -21, -23, -24.
+- Completed: October 1, 2026, 491a5aa. Item 2 is done. The review mutation-checked all scenarios on 14 and 18. Follow-ups: 20261001-143630-1 and -2. The crash gap is noted on -38.

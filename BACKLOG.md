@@ -22,28 +22,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase C: Diffing against a snapshot (item 2).
 
-### 20261001-103222-25: Wire diffing into the worker and stop resetting.
-- **Do:** In the harvest loop:
-  1. Read.
-  2. Diff.
-  3. Pick the top N.
-  4. Fingerprint.
-  5. Send.
-  6. Save the snapshot.
-
-  The window runs from the snapshot's `taken_at` to now. The worker never runs a full reset. Delete the reset code and `schema/legacy_reset.sql`, the temporary bridge from -16.
-- **Baseline:** Diff on an empty or stale snapshot returns everything as new. Discard that harvest as a baseline, and add a test that pins it.
-- **Stddev:** When `WindowStats` says `stddevOK=false`, record no stddev for that window instead of a misleading one.
-- **Min/max:** On 17+, call `Reader.MinmaxReset` right after each harvest. If it fails, log the error and keep going, and min and max for that window come back flagged as lifetime. Drop zero-call deltas before reporting, since a window that had a reset but no calls shows min and max as 0.
-- **State errors:** If the state store returns an error at runtime, such as corruption after Open, log it and treat the harvest as a baseline instead of exiting. Only `internal/state` imports SQLite, so the server must never import it.
-- **Text:** Switch to `ReadStats`, then `TextCache.Retain`, then `topNDeltas`, then `TextCache.Fill`, all before any reset. Rows with QueryID 0 (hidden from the observer) get no text, so log or count them.
-- **Red test:** End to end on 18:
-  - `stats_reset` never changes because of the worker.
-  - An outside `pg_stat_statements_reset()` mid-run gets handled per the rules.
-  - After a restart, the next window starts at the saved snapshot.
-- **Done when:** Passes on every supported version.
-- **Needs:** -20, -21, -23, -24.
-
 ## Phase D: Rotten server (item 1).
 
 ### 20261001-103222-31: Set up server TLS.
@@ -109,6 +87,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ### 20261001-103222-38: Add the worker outbox.
 - **Do:** Add an `outbox` table in `internal/state`. Save the batch and the next snapshot in one transaction. A sender drains the outbox oldest first and deletes each batch on ack. Cap the outbox size, and when it's full, drop the oldest batches and count them.
+- **Crash gap:** Today the worker saves its snapshot right after starting the processEvent goroutines, without waiting for them. A crash after the save loses that window, and a crash between sending and the save counts it twice on restart. The outbox should close both gaps. Until then, document the risk in the `harvest` comment.
 - **Red test:**
   - With the server down for three windows, all three windows arrive in order once it's back.
   - Killing the worker between "saved" and "acked" causes no duplicates.
