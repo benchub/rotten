@@ -28,12 +28,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase C: Diffing against a snapshot (item 2).
 
-### 20261001-103222-22: Pick the top N in Go.
-- **Do:** Choose the top 100 entries by delta for each metric, and take the union of those sets. Replace the 19-way SQL `UNION`.
-- **Red test:** On a fixture, the selection matches what the old SQL picks from the same values.
-- **Done when:** Passes.
-- **Needs:** -19.
-
 ### 20261001-103222-23: Cache query text.
 - **Do:** Do the full fetch with `showtext := false`. Fetch text only for selected keys that aren't in the cache. Drop text from the cache when its key is evicted.
 - **Red test:** An integration test counts text fetches. The second harvest of the same workload fetches no text.

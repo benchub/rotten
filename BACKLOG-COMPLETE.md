@@ -246,3 +246,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** -17.
 - Completed: October 1, 2026, fd4f01a. Follow-ups are 20261001-135352-1 (cast arrays) and -2 (<> ALL subquery).
+
+### 20261001-103222-22: Pick the top N in Go.
+- **Do:** Choose the top 100 entries by delta for each metric, and take the union of those sets. Replace the 19-way SQL `UNION`.
+- **Red test:** On a fixture, the selection matches what the old SQL picks from the same values.
+- **Done when:** Passes.
+- **Needs:** -19.
+- Completed: October 1, 2026, f57135a. Lifetime min and max rank as 0, so on 14-16 the slowest single call no longer gets a query into the top N.
