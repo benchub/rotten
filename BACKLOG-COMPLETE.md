@@ -196,3 +196,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -16.
 - Completed: October 1, 2026, c963eee.
+
+### 20261001-103222-20: Work out mean and stddev for each window from deltas.
+- **Do:** Mean = Δtotal / Δcalls. Get stddev by removing the old sum of squares from the new one with the parallel-variance formula.
+- **Red test:** Generate two sample sets. Check that the diff of their cumulative stats matches the directly computed stats for the second set, within 1e-9. Δcalls = 0 should give no event.
+- **Done when:** Passes.
+- **Needs:** -19.
+- Completed: October 1, 2026, 20c6a18. Stddev is flagged unreliable when the window is tiny next to its history (M2 ratio below 1e-6).

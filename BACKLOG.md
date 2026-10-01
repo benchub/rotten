@@ -34,12 +34,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase C: Diffing against a snapshot (item 2).
 
-### 20261001-103222-20: Work out mean and stddev for each window from deltas.
-- **Do:** Mean = Δtotal / Δcalls. Get stddev by removing the old sum of squares from the new one with the parallel-variance formula.
-- **Red test:** Generate two sample sets. Check that the diff of their cumulative stats matches the directly computed stats for the second set, within 1e-9. Δcalls = 0 should give no event.
-- **Done when:** Passes.
-- **Needs:** -19.
-
 ### 20261001-103222-21: Handle min and max for each window.
 - **Do:** On 17+, the worker runs a min/max-only reset after each harvest. On 14 through 16, it reports lifetime min and max with a `minmax_lifetime` flag.
 - **Also:** Call the wrapper `<schema>.pg_stat_statements_minmax_reset()` from `schema/observer.sql`. Add one optional worker setting for its schema, defaulting to `rotten`.
@@ -77,6 +71,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
   The window runs from the snapshot's `taken_at` to now. The worker never runs a full reset. Delete the reset code and `schema/legacy_reset.sql`, the temporary bridge from -16.
 - **Baseline:** Diff on an empty or stale snapshot returns everything as new. Discard that harvest as a baseline, and add a test that pins it.
+- **Stddev:** When `WindowStats` says `stddevOK=false`, record no stddev for that window instead of a misleading one.
 - **Red test:** End to end on 18:
   - `stats_reset` never changes because of the worker.
   - An outside `pg_stat_statements_reset()` mid-run gets handled per the rules.
