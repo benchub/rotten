@@ -76,3 +76,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** `make golden` runs natively and leaves no diff. We're not doing a separate Linux check: with no Docker in the golden path, there's nothing ownership-specific to verify.
 - **Needs:** -6.
 - Completed: October 1, 2026, 79940c2. A 13-line Makefile change, so the coordinator reviewed it instead of a reviewer agent.
+
+### 20261001-103222-9: Characterize event writes.
+- **Do:** Test `processEvent` against `StartRotten`. Check one `events` row with the right window, calls, and time, plus one `event_context` row for each context hash. Cover events with no context and events with all three context columns.
+- **Red test:** Write the test first. It'll also show the `stillProcessing` counter leaking on early return. Fix that.
+- **Done when:** Tests pass.
+- **Needs:** -2.
+- Completed: October 1, 2026, 69645fb. The new-fingerprint branch is left for -10.

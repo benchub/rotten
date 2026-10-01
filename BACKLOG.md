@@ -36,12 +36,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -26.
 
-### 20261001-103222-9: Characterize event writes.
-- **Do:** Test `processEvent` against `StartRotten`. Check one `events` row with the right window, calls, and time, plus one `event_context` row for each context hash. Cover events with no context and events with all three context columns.
-- **Red test:** Write the test first. It'll also show the `stillProcessing` counter leaking on early return. Fix that.
-- **Done when:** Tests pass.
-- **Needs:** -2.
-
 ### 20261001-103222-10: Characterize the fingerprint_stats merge.
 - **Do:** Test `reportSamples` and `consumeSamples` with an injectable sleep or clock:
   - On the first flush, insert 19 rows for both the source and source 0.
