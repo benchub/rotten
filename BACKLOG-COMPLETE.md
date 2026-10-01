@@ -253,3 +253,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -19.
 - Completed: October 1, 2026, f57135a. Lifetime min and max rank as 0, so on 14-16 the slowest single call no longer gets a query into the top N.
+
+### 20261001-135352-1: Decide whether cast arrays in `= ANY(ARRAY[...]::T[])` should group with IN.
+- **Do:** Task -134632-1 leaves `id = ANY(ARRAY[1,2]::int[])` distinct from `id IN (1,2)`, because a cast can change the element type and the operator (for example `::bigint[]` on an int column). On Postgres 18, a cast that matches the column type may still give the IN-list queryid. Probe 16 and 18 with matching and mismatched casts, then pick a rule, such as pushing the cast down onto each element.
+- **Red test:** Add the cast forms to the cross-version workload and assert the grouping you choose.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** 20261001-134632-1.
+- Completed: October 1, 2026, 572c722. Follow-up: 20261001-140616-1 (nested element casts).

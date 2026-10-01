@@ -395,12 +395,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** A long loop of the testdb tests passes.
 - **Needs:** none.
 
-### 20261001-135352-1: Decide whether cast arrays in `= ANY(ARRAY[...]::T[])` should group with IN.
-- **Do:** Task -134632-1 leaves `id = ANY(ARRAY[1,2]::int[])` distinct from `id IN (1,2)`, because a cast can change the element type and the operator (for example `::bigint[]` on an int column). On Postgres 18, a cast that matches the column type may still give the IN-list queryid. Probe 16 and 18 with matching and mismatched casts, then pick a rule, such as pushing the cast down onto each element.
-- **Red test:** Add the cast forms to the cross-version workload and assert the grouping you choose.
-- **Done when:** Passes, and `make golden` shows only the intended changes.
-- **Needs:** 20261001-134632-1.
-
 ### 20261001-135352-2: Decide whether `<> ALL(subquery)` should group with `NOT IN (subquery)`.
 - **Do:** They mean the same thing, but Postgres parses `NOT IN (subquery)` as `NOT (x = ANY (subquery))`, so its queryid differs from `<> ALL (subquery)`. Task -134632-1 leaves them apart to match Postgres. Check whether pg_stat_statements on 16 and 18 ever merges them. Group them only if it does.
 - **Red test:** A cross-version case for each form.
