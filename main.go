@@ -103,7 +103,7 @@ type Configuration struct {
 	ContextJob          string
 }
 
-func remakeSSLCertConfig(connectionString string, host string) *tls.Config {
+func remakeSSLCertConfig(connectionString string, host string) (*tls.Config, error) {
 	// hacky hack solution to get the rootca files, as well as the client certs, so that we can build up a cert chain with all the intermediate certs.
 	connectionStringSettings := make(map[string]string)
 
@@ -129,22 +129,22 @@ func remakeSSLCertConfig(connectionString string, host string) *tls.Config {
 	rootCertPool := x509.NewCertPool()
 	rootCert, err := os.ReadFile(connectionStringSettings["sslrootcert"])
 	if err != nil {
-		log.Fatalln("Error loading root certificate: ", err)
+		return nil, fmt.Errorf("error loading root certificate: %w", err)
 	}
 
 	// Load client cert & key
 	clientCert, err := os.ReadFile(connectionStringSettings["sslcert"])
 	if err != nil {
-		log.Fatalf("Failed to read client certificate file: %v", err)
+		return nil, fmt.Errorf("failed to read client certificate file: %w", err)
 	}
 	clientKey, err := os.ReadFile(connectionStringSettings["sslkey"])
 	if err != nil {
-		log.Fatalf("Failed to read client key file: %v", err)
+		return nil, fmt.Errorf("failed to read client key file: %w", err)
 	}
 
 	ok := rootCertPool.AppendCertsFromPEM(rootCert)
 	if !ok {
-		log.Fatalln("Failed to append root certificate to pool")
+		return nil, fmt.Errorf("failed to append root certificate to pool")
 	}
 
 	if *debugFlag {
@@ -156,7 +156,7 @@ func remakeSSLCertConfig(connectionString string, host string) *tls.Config {
 			if block.Type == "CERTIFICATE" {
 				caCert, err := x509.ParseCertificate(block.Bytes)
 				if err != nil {
-					log.Fatalln("Error parsing certificate: ", err)
+					return nil, fmt.Errorf("error parsing certificate: %w", err)
 				}
 				log.Printf("\tSubject: %s\n", caCert.Subject)
 			}
@@ -168,7 +168,7 @@ func remakeSSLCertConfig(connectionString string, host string) *tls.Config {
 	clientChain = append(clientChain, rootCert...)
 	clientCerts, err := tls.X509KeyPair(clientChain, clientKey)
 	if err != nil {
-		log.Fatalln("Error loading client key pair: ", err)
+		return nil, fmt.Errorf("error loading client key pair: %w", err)
 	}
 
 	if *debugFlag {
@@ -176,7 +176,7 @@ func remakeSSLCertConfig(connectionString string, host string) *tls.Config {
 		for _, cert := range clientCerts.Certificate {
 			parsedCert, err := x509.ParseCertificate(cert)
 			if err != nil {
-				log.Fatalf("Error parsing client certificate: %v\n", err)
+				return nil, fmt.Errorf("error parsing client certificate: %w", err)
 			}
 			log.Printf("\tSubject: %s\n", parsedCert.Subject)
 		}
@@ -201,7 +201,7 @@ func remakeSSLCertConfig(connectionString string, host string) *tls.Config {
 		},
 	}
 
-	return tlsConfig
+	return tlsConfig, nil
 }
 
 func main() {
@@ -278,10 +278,16 @@ func main() {
 					log.Println("We seem to have a root CA for rotten DB; remaking the chain to be sure to capture any intermediate certs.", configuration.RottenDBConn[0])
 				}
 
-				rottenDBConfig.ConnConfig.TLSConfig = remakeSSLCertConfig(configuration.RottenDBConn[0], "")
+				rottenDBConfig.ConnConfig.TLSConfig, err = remakeSSLCertConfig(configuration.RottenDBConn[0], "")
+				if err != nil {
+					log.Fatalln("couldn't remake rotten db TLS config:", err)
+				}
 
 				for i := 0; i < len(rottenDBConfig.ConnConfig.Fallbacks); i++ {
-					rottenDBConfig.ConnConfig.Fallbacks[i].TLSConfig = remakeSSLCertConfig(configuration.RottenDBConn[0], rottenDBConfig.ConnConfig.Fallbacks[i].Host)
+					rottenDBConfig.ConnConfig.Fallbacks[i].TLSConfig, err = remakeSSLCertConfig(configuration.RottenDBConn[0], rottenDBConfig.ConnConfig.Fallbacks[i].Host)
+					if err != nil {
+						log.Fatalln("couldn't remake rotten db fallback TLS config:", err)
+					}
 				}
 			}
 		}
@@ -310,7 +316,10 @@ func main() {
 					log.Printf("We seem to have a root CA for observed DB; remaking the chain to be sure to capture any intermediate certs.")
 				}
 
-				observedDBConfig.TLSConfig = remakeSSLCertConfig(configuration.ObservedDBConn[0], "")
+				observedDBConfig.TLSConfig, err = remakeSSLCertConfig(configuration.ObservedDBConn[0], "")
+				if err != nil {
+					log.Fatalln("couldn't remake observed db TLS config:", err)
+				}
 			}
 		}
 

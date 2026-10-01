@@ -456,3 +456,15 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A `mergeEvent` test with counts near the uint32 limit.
 - **Done when:** Tests pass, and large counts don't wrap.
 - **Needs:** -8.
+
+### 20261001-114433-1: Remake the TLS config for observed DB fallbacks.
+- **Do:** `main()` remakes the chain for rotten DB fallbacks but not for observed DB fallbacks. Those keep the pgx default config, which has no intermediates. Decide whether that's intended, and fix it if not.
+- **Red test:** A config with several observed hosts gets the remade chain on every fallback.
+- **Done when:** Tests pass.
+- **Needs:** -11.
+
+### 20261001-114433-2: Parse connection strings properly in `remakeSSLCertConfig`.
+- **Do:** It splits on spaces and on every "=". Quoted values, values with spaces or "=", and URL-form strings (`postgres://...?sslrootcert=...`) silently produce empty paths. Use pgx parsing instead.
+- **Red test:** A URL-form connection string with `sslrootcert` builds the chain.
+- **Done when:** Tests pass.
+- **Needs:** -11.
