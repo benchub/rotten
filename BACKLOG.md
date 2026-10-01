@@ -12,12 +12,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase A: Test harness and characterization.
 
-### 20261001-130325-1: Make the deparse fallback's cursor check match real statements.
-- **Do:** `cursorRE` is anchored (`^...$`) so it can match single names in the tree walker. In the deparse fallback, that means the cursor check only matches a whole query that's a bare cursor name. Such a query can't parse, so the check never fires, and a statement like `FETCH 10 FROM users_cursor_abc123` would get its own fingerprint for every cursor. Give the fallback an unanchored cursor pattern, and keep the anchored one for the walker.
-- **Red test:** `deparseFallback("FETCH 10 FROM users_cursor_abc123", err)` should refuse. Today it returns a fingerprint. Switch the existing cursor test case from a bare name to a real statement.
-- **Done when:** Passes, and the golden file is unchanged.
-- **Needs:** Coordinate with -112142-4 (configurable patterns).
-
 ### 20261001-112142-4: Make the cursor and temp-table patterns configurable.
 - **Do:** Move the hard-coded cursor and temp-table regexes into worker config, keeping today's patterns as the default. Today, temp-table names only collapse when their random suffix is six or more characters, so shorter suffixes each get their own fingerprint. Document how to match a generator's real naming.
 - **Red test:** A configured pattern collapses a short-suffix temp table that today's default doesn't.

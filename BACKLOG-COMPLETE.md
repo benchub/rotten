@@ -155,3 +155,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** The matrix passes.
 - **Needs:** -2.
 - Completed: October 1, 2026, 9a35d6c. Uses a min/max-only SECURITY DEFINER wrapper on 17+ (user decision). Review found and closed an overload hijack and a pre-owned-wrapper hole.
+
+### 20261001-130325-1: Make the deparse fallback's cursor check match real statements.
+- **Do:** `cursorRE` is anchored (`^...$`) so it can match single names in the tree walker. In the deparse fallback, that means the cursor check only matches a whole query that's a bare cursor name. Such a query can't parse, so the check never fires, and a statement like `FETCH 10 FROM users_cursor_abc123` would get its own fingerprint for every cursor. Give the fallback an unanchored cursor pattern, and keep the anchored one for the walker.
+- **Red test:** `deparseFallback("FETCH 10 FROM users_cursor_abc123", err)` should refuse. Today it returns a fingerprint. Switch the existing cursor test case from a bare name to a real statement.
+- **Done when:** Passes, and the golden file is unchanged.
+- **Needs:** Coordinate with -112142-4 (configurable patterns).
+- Completed: October 1, 2026, 312dd86. Small change, so the coordinator reviewed it.
