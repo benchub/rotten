@@ -39,7 +39,7 @@ func TestDeparseFallbackFingerprintFailure(t *testing.T) {
 
 func TestDeparseFallbackRefusesCursorAndTempTable(t *testing.T) {
 	cases := map[string]string{
-		"cursor":     "users_cursor_abc123",
+		"cursor":     "FETCH 10 FROM users_cursor_abc123",
 		"temp table": "SELECT * FROM orders_temp_table_abc123",
 	}
 	for name, query := range cases {

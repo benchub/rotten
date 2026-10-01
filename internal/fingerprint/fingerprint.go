@@ -30,6 +30,10 @@ var randomTableRE, _ = regexp.Compile(`^table_\d+$`)
 // replace all cursors in the parse tree with a constant cursor
 var cursorRE, _ = regexp.Compile(`^([^\s]+)[_\-]cursor_[0-9a-z]+([^\s]*)$`)
 
+// cursorInQueryRE is cursorRE without the anchors, so the deparse fallback
+// can find a cursor name anywhere in a whole statement.
+var cursorInQueryRE, _ = regexp.Compile(`([^\s]+)[_\-]cursor_[0-9a-z]+([^\s]*)`)
+
 // replace all temp tables in the parse tree with a constant temp table name
 var tempTableRE, _ = regexp.Compile(`([^\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\s]*)`)
 
@@ -165,7 +169,7 @@ func deparseFallback(query string, deparseErr error) (string, error) {
 	// we can't seem to use our golang parse tree, so let's just see if we can't fingerprint it straight.
 	// This might end up in a lot of fingerprints that are only different based on their schema name,
 	// but it's the best we can do.
-	if cursorRE.MatchString(query) || tempTableRE.MatchString(query) {
+	if cursorInQueryRE.MatchString(query) || tempTableRE.MatchString(query) {
 		// EXCEPT - if the query matches our cursor or temp table RE, that's just going to grow as a function of usage, not of schema count.
 		// So actually _don't_ fingerprint something that matches either of those regexes.
 		log.Println("couldn't fingerprint non-deparsable query involving cursors or temp tables: ", query, deparseErr)
