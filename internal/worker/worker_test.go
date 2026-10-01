@@ -158,7 +158,7 @@ func runWorkload(t *testing.T, conn *pgx.Conn) {
 
 func fingerprintOf(t *testing.T, query string) string {
 	t.Helper()
-	fp, err := fingerprinting.Normalized(query)
+	fp, err := fingerprinting.Normalized(query, fingerprinting.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

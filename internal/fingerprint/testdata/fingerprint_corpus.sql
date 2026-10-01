@@ -43,6 +43,12 @@ SELECT * FROM shard_1.users WHERE id = 1
 SELECT * FROM shard_27.users WHERE id = 2
 -- case: schema_unqualified
 SELECT * FROM users WHERE id = 3
+-- case: schema_public
+SELECT * FROM public.users WHERE id = 4
+-- case: create_schema_a
+CREATE SCHEMA shard_1
+-- case: create_schema_b
+CREATE SCHEMA shard_27
 
 -- case: repack_index_a
 CREATE INDEX CONCURRENTLY index_12345 ON repack.table_12345 (id)

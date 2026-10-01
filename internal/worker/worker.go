@@ -78,6 +78,7 @@ type Config struct {
 	ReController        *regexp.Regexp
 	ReAction            *regexp.Regexp
 	ReJobTag            *regexp.Regexp
+	Fingerprint         fingerprinting.Options
 }
 
 // Clock is Run's source of time. Sleep returns ctx.Err() if ctx ends first.
@@ -255,7 +256,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			w.eventCount.Add(1)
 			w.lastWindowEnd.Store(newEvent.observationTimeEnd.sec)
 
-			fingerprint, err := fingerprinting.Normalized(newEvent.query)
+			fingerprint, err := fingerprinting.Normalized(newEvent.query, w.cfg.Fingerprint)
 			if err != nil {
 				//log.Println("failed to get fingerprint for event, so ignoring it")
 				w.parseFailures.Add(1)

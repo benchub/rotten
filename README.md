@@ -85,6 +85,10 @@ How to use it
      physical log if more information is desired other than the fingerprint.
   6. `Project`, `Environment`, `Cluster`, and `Role` are logical identifiers for where the samples
      of data are coming from.
+  7. `KeepSchemas` is optional and defaults to `false`. By default, rotten ignores schema
+     names when it fingerprints queries, so `users`, `public.users`, and `shard_1.users`
+     all group together. Set it to `true` if your schemas mean different things and you
+     want their queries kept apart.
 
 Known Issues
 ============

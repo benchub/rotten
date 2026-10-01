@@ -33,12 +33,33 @@ var cursorRE, _ = regexp.Compile(`^([^\s]+)[_\-]cursor_[0-9a-z]+([^\s]*)$`)
 // replace all temp tables in the parse tree with a constant temp table name
 var tempTableRE, _ = regexp.Compile(`([^\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\s]*)`)
 
+// Options control how Normalized groups queries. The zero value is the
+// default behavior.
+type Options struct {
+	// KeepSchemas turns schema collapsing off. By default, every table
+	// reference, qualified or not, gets the same placeholder schema, so
+	// users, public.users, and shard_1.users share a fingerprint. With
+	// KeepSchemas, schema names are left as written.
+	KeepSchemas bool
+}
+
 // Some helper functions for reflectwalk to traverse the protobuf-derived parse tree of a query
 type walker struct {
 	depth int
+	opts  Options
 }
 
+var rangeVarType = reflect.TypeOf(pg_query.RangeVar{})
+
 func (s *walker) Struct(v reflect.Value) error {
+	// Collapse schemas on table references (RangeVar) only, qualified or
+	// not, so bare users matches shard_1.users. StructField collapses
+	// other non-empty Schemaname fields, like CREATE SCHEMA's.
+	if !s.opts.KeepSchemas && v.Type() == rangeVarType {
+		if f := v.FieldByName("Schemaname"); f.CanSet() {
+			f.SetString("some_schema")
+		}
+	}
 	return nil
 }
 func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
@@ -72,7 +93,9 @@ func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 	case "Portalname":
 		v.SetString(cursorRE.ReplaceAllString(v.String(), "${1}_cursor_x${2}"))
 	case "Schemaname":
-		if len(v.String()) > 0 {
+		// Struct also fills in empty RangeVar schemas. Here, collapse any
+		// non-empty Schemaname, like CREATE SCHEMA's.
+		if !s.opts.KeepSchemas && len(v.String()) > 0 {
 			v.SetString("some_schema")
 		}
 	default:
@@ -96,7 +119,7 @@ func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 // fingerprints, and returns a short fingerprint of the query as determined by postgres'
 // fingerprint logic.
 // e.g. "SELECT 1" -> "02a281c251c3a43d2fe7457dff01f76c5cc523f8c8"
-func Normalized(query string) (fingerprint string, err error) {
+func Normalized(query string, opts Options) (fingerprint string, err error) {
 	/* This logic is a noble cause but I don't think it's robust enough for prime time
 	    modified_query := inRE.ReplaceAllString(
 			valuesRE.ReplaceAllString(
@@ -113,7 +136,7 @@ func Normalized(query string) (fingerprint string, err error) {
 
 	// Now that we have our query tree, munge it to normalize queries as defined in our StructField walker above
 	for _, statement := range tree.Stmts {
-		var w = &walker{depth: 0}
+		var w = &walker{depth: 0, opts: opts}
 		err := reflectwalk.Walk(statement.Stmt, w)
 		if err != nil {
 			log.Println("couldn't walk tree", modified_query, reflect.ValueOf(statement.Stmt), err)

@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/identity"
 	"github.com/benchub/rotten/internal/worker"
 )
@@ -46,6 +47,9 @@ type Configuration struct {
 	ContextController   string
 	ContextAction       string
 	ContextJob          string
+	// KeepSchemas is optional. Leaving it out (false) collapses schema
+	// names in fingerprints. True keeps them apart.
+	KeepSchemas bool
 }
 
 func remakeSSLCertConfig(connectionString string, host string) (*tls.Config, error) {
@@ -274,6 +278,7 @@ func main() {
 		status_interval = configuration.StatusInterval
 		cfg.ObservationInterval = configuration.ObservationInterval
 		cfg.SanityCheck = configuration.SanityCheck
+		cfg.Fingerprint = fingerprint.Options{KeepSchemas: configuration.KeepSchemas}
 		fqdn := configuration.FQDN
 		project := configuration.Project
 		environment := configuration.Environment

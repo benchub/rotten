@@ -459,3 +459,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Tests pass.
 - **Needs:** -12.
 
+### 20261001-131002-1: Collapse schemas inside qualified column refs, function names, and DROP name lists.
+- **Do:** Today, `public.users.id` and `users.id`, `shard_1.f()` and `shard_2.f()`, and `DROP TABLE shard_1.t` and `DROP TABLE t` each get different fingerprints, because those schemas live in String lists, not in a `Schemaname` field. Collapse them the same way as table references, unless `KeepSchemas` is set.
+- **Red test:** Golden cases for each pair that share a fingerprint by default, plus schema test cases that show they differ with `KeepSchemas` on.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** -112142-3.
+
