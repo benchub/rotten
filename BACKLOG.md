@@ -162,12 +162,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-42: Seed a report fixture dataset.
-- **Do:** Add `internal/testdb.SeedReports(t, db)`. It loads a small, deterministic data set: two projects, primary and replica roles, known calls and times, contexts, and `fingerprint_stats`.
-- **Red test:** Sanity checks that the seeded counts match the spec.
-- **Done when:** Passes.
-- **Needs:** -26.
-
 ### 20261001-103222-43: Report on top queries by call count.
 - **Do:** Add `reports/top_by_calls.sql`, with parameters for source filter, time range, and limit. Fix the window filter (use `observed_window_start` and `observed_window_end`, and allow partition pruning).
 - **Red test:** On the fixture, it returns the expected order, totals, and top five contexts.
@@ -182,6 +176,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ### 20261001-103222-45: Report on queries slower than their history.
 - **Do:** Add `reports/outliers.sql`. Add the missing `ORDER BY` before `LIMIT`, and define how source 0 compares with each source's own stats.
+- **Fixture:** `fingerprint_stats.type` has no `time` value. Use `mean_time`. The fixture's outlier history has mean 5 on source 0 and mean 8 on its own source.
 - **Red test:** The fixture's planted outlier gets returned, along with its overall mean and deviation.
 - **Done when:** Passes.
 - **Needs:** -43.

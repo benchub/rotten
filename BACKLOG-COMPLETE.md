@@ -294,3 +294,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and the generated code is committed under `gen/`.
 - **Needs:** -14.
 - Completed: October 1, 2026, 1c58225. buf breaking starts guarding after this lands. Batches carry their own source IDs, and -30 and -33 must check them against the key.
+
+### 20261001-103222-42: Seed a report fixture dataset.
+- **Do:** Add `internal/testdb.SeedReports(t, db)`. It loads a small, deterministic data set: two projects, primary and replica roles, known calls and times, contexts, and `fingerprint_stats`.
+- **Red test:** Sanity checks that the seeded counts match the spec.
+- **Done when:** Passes.
+- **Needs:** -26.
+- Completed: October 1, 2026, 8ecda4e. Roles are primary and replica. Pass Anchor to reports instead of now().
