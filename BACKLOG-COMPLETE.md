@@ -203,3 +203,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -19.
 - Completed: October 1, 2026, 20c6a18. Stddev is flagged unreliable when the window is tiny next to its history (M2 ratio below 1e-6).
+
+### 20261001-103222-17: Match Postgres 18 IN-list fingerprints to older versions.
+- **Do:** Add cases to the corpus: `IN ($1 /*, ... */)`, `IN ($1)`, and `IN ($1,$2,$3)`. Add squashed VALUES cases if 18 squashes them too.
+- **Red test:** Run the same workload on 16 and on 18. Each query should get the same fingerprint.
+- **Done when:** Passes. If it doesn't, normalize before fingerprinting.
+- **Needs:** -16.
+- Completed: October 1, 2026, b495019. Passed on its first run, because pg_query already ignores list length. Postgres 18 squashes IN lists of two or more items but not VALUES. Follow-ups are 20261001-134632-1 and -2.

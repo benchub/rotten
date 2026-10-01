@@ -20,12 +20,17 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase B: Postgres 14 through 18 (item 4).
 
-### 20261001-103222-17: Match Postgres 18 IN-list fingerprints to older versions.
-- **Do:** Add cases to the corpus: `IN ($1 /*, ... */)`, `IN ($1)`, and `IN ($1,$2,$3)`. Add squashed VALUES cases if 18 squashes them too.
-- **Red test:** Run the same workload on 16 and on 18. Each query should get the same fingerprint.
-- **Done when:** Passes. If it doesn't, normalize before fingerprinting.
-- **Needs:** -16.
+### 20261001-134632-1: Give `= ANY(ARRAY[...])` and `IN (...)` the same fingerprint.
+- **Do:** On Postgres 18, `id = any(array[1,2,3])` shares a queryid with the squashed `id in ($1 /*, ... */)`, and pg_stat_statements keeps whichever text arrived first. pg_query fingerprints the two forms differently, so the same queryid can land on different rotten fingerprints, and grouping can differ from Postgres 16. Normalize the two forms to one fingerprint, unless that would merge queries that really differ.
+- **Red test:** Add `= ANY(ARRAY[...])` with several lengths to the cross-version workload and golden corpus. It should share a fingerprint with the IN-list form on both 16 and 18.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** -17.
 
+### 20261001-134632-2: Skip comment lines in the fingerprint corpus parser.
+- **Do:** `loadCorpus` appends `--` lines that aren't case headers to the previous case's query. That's harmless today, because fingerprints ignore comments, but it would quietly change a case where comments matter. Skip those lines, or document the behavior.
+- **Red test:** A corpus with a comment line between two cases loads the earlier case's query without that line.
+- **Done when:** Passes, and the golden file is unchanged.
+- **Needs:** none.
 ### 20261001-103222-18: Cover Postgres 18 syntax and report parse failures.
 - **Do:** Add 18-only syntax to the corpus, such as `RETURNING OLD/NEW`, virtual generated columns, and `WITHOUT OVERLAPS`. Record which ones fail under the Postgres 17 parser. Keep a count of parse failures, along with up to N sample queries, so they're visible.
 - **Red test:** Expect parse failures to show up as counted and sampled, not silently dropped.
