@@ -36,15 +36,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -26.
 
-### 20261001-103222-14: Split the code into packages.
-- **Do:** Move the code into `cmd/rotten-worker` and `internal/{fingerprint,identity,worker,testdb}`. Replace the globals with structs. This is a pure refactor with no behavior change.
-- **Red test:** None needed. The existing suite is the check, and the tests move with the code.
-- **Also:** When the globals become structs, give `reportProgress` a stop hook. The end-to-end test's progress goroutine never returns today. Also make sure goroutines started by `run` can't read `statsWait` after a later test swaps it.
-- **Done when:** The suite and golden file are unchanged and green.
-- **Needs:** -13.
-
-## Phase B: Postgres 14 through 18 (item 4).
-
 ### 20261001-103222-15: Write the observer setup SQL.
 - **Do:** Add `schema/observer.sql`. It creates the observer role (with a configurable name), grants `pg_read_all_stats`, and on 17+ grants EXECUTE on `pg_stat_statements_reset(oid,oid,bigint,boolean)`.
 - **Red test:** On each of Postgres 14 through 18, the observer can:
@@ -466,8 +457,3 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Tests pass.
 - **Needs:** -12.
 
-### 20261001-120501-3: Inject the stats wait instead of using a global.
-- **Do:** Replace the `statsWait` package global with a dependency passed to `reportSamples`, so tests don't swap a global and need the parking dance in `parkStats`.
-- **Red test:** None needed. The existing stats and worker tests are the check.
-- **Done when:** The suite is green with no `statsWait` global.
-- **Needs:** -14 (do it during or after).
