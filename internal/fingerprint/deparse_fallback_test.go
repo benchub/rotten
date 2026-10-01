@@ -18,7 +18,7 @@ func TestDeparseFallbackFingerprintsRawQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pg_query.Fingerprint: %v", err)
 	}
-	got, err := deparseFallback(query, errFakeDeparse)
+	got, err := deparseFallback(query, defaultPatterns, errFakeDeparse)
 	if err != nil {
 		t.Fatalf("deparseFallback returned error: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestDeparseFallbackFingerprintsRawQuery(t *testing.T) {
 }
 
 func TestDeparseFallbackFingerprintFailure(t *testing.T) {
-	got, err := deparseFallback("SELEC nonsense ((", errFakeDeparse)
+	got, err := deparseFallback("SELEC nonsense ((", defaultPatterns, errFakeDeparse)
 	if err == nil || err.Error() != "failed to deparse and fingerprint fallback" {
 		t.Errorf("err = %v, want fingerprint fallback failure", err)
 	}
@@ -44,7 +44,7 @@ func TestDeparseFallbackRefusesCursorAndTempTable(t *testing.T) {
 	}
 	for name, query := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := deparseFallback(query, errFakeDeparse)
+			got, err := deparseFallback(query, defaultPatterns, errFakeDeparse)
 			if err == nil || err.Error() != "failed to deparse; no fingerprint fallback" {
 				t.Errorf("err = %v, want refusal", err)
 			}

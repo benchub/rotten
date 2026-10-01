@@ -3,6 +3,7 @@ package fingerprint
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"reflect"
 	"regexp"
@@ -27,30 +28,106 @@ var randomIndexRE, _ = regexp.Compile(`^index_\d+$`)
 // replace random table names that repack might generate with a constant name
 var randomTableRE, _ = regexp.Compile(`^table_\d+$`)
 
-// replace all cursors in the parse tree with a constant cursor
-var cursorRE, _ = regexp.Compile(`^([^\s]+)[_\-]cursor_[0-9a-z]+([^\s]*)$`)
+// DefaultCursorPattern matches generated cursor names, like
+// users_cursor_ab12. It's unanchored. The walker anchors it to whole
+// identifiers, and the deparse fallback uses it as is to find a cursor name
+// anywhere in a statement. Group 1 is the prefix and group 2 the suffix kept
+// around the collapsed name.
+const DefaultCursorPattern = `([^\s]+)[_\-]cursor_[0-9a-z]+([^\s]*)`
 
-// cursorInQueryRE is cursorRE without the anchors, so the deparse fallback
-// can find a cursor name anywhere in a whole statement.
-var cursorInQueryRE, _ = regexp.Compile(`([^\s]+)[_\-]cursor_[0-9a-z]+([^\s]*)`)
+// DefaultTempTablePattern matches generated temp-table names with a random
+// suffix of six or more characters, like users_temp_table_qwerty. Groups work
+// like DefaultCursorPattern's.
+const DefaultTempTablePattern = `([^\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\s]*)`
 
-// replace all temp tables in the parse tree with a constant temp table name
-var tempTableRE, _ = regexp.Compile(`([^\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\s]*)`)
+var defaultPatterns = mustPatterns(DefaultCursorPattern, DefaultTempTablePattern)
+
+// patterns holds the compiled cursor and temp-table regexes.
+type patterns struct {
+	cursor        *regexp.Regexp // anchored, for single identifiers in the tree
+	cursorInQuery *regexp.Regexp // unanchored, for whole statements
+	tempTable     *regexp.Regexp
+}
+
+func compilePatterns(cursor, tempTable string) (*patterns, error) {
+	if cursor == "" {
+		cursor = DefaultCursorPattern
+	}
+	if tempTable == "" {
+		tempTable = DefaultTempTablePattern
+	}
+	var p patterns
+	var err error
+	if p.cursorInQuery, err = compileGroups("CursorPattern", cursor); err != nil {
+		return nil, err
+	}
+	if p.cursor, err = regexp.Compile(`^(?:` + cursor + `)$`); err != nil {
+		return nil, fmt.Errorf("CursorPattern %q: %w", cursor, err)
+	}
+	if p.tempTable, err = compileGroups("TempTablePattern", tempTable); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+func compileGroups(name, pattern string) (*regexp.Regexp, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("%s %q is not a valid regex: %w", name, pattern, err)
+	}
+	if re.NumSubexp() != 2 {
+		return nil, fmt.Errorf("%s %q needs exactly two capture groups (prefix and suffix), found %d; write any other grouping as (?:...)", name, pattern, re.NumSubexp())
+	}
+	if re.MatchString("") {
+		return nil, fmt.Errorf("%s %q matches the empty string, so it would rewrite every name", name, pattern)
+	}
+	return re, nil
+}
+
+func mustPatterns(cursor, tempTable string) *patterns {
+	p, err := compilePatterns(cursor, tempTable)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
 
 // Options control how Normalized groups queries. The zero value is the
-// default behavior.
+// default behavior. Build non-default patterns with NewOptions.
 type Options struct {
 	// KeepSchemas turns schema collapsing off. By default, every table
 	// reference, qualified or not, gets the same placeholder schema, so
 	// users, public.users, and shard_1.users share a fingerprint. With
 	// KeepSchemas, schema names are left as written.
 	KeepSchemas bool
+
+	// patterns is nil for the defaults.
+	patterns *patterns
+}
+
+// NewOptions builds Options with the given cursor and temp-table patterns.
+// An empty pattern means the default. It returns an error if a pattern
+// doesn't compile or has fewer than two capture groups.
+func NewOptions(keepSchemas bool, cursorPattern, tempTablePattern string) (Options, error) {
+	p, err := compilePatterns(cursorPattern, tempTablePattern)
+	if err != nil {
+		return Options{}, err
+	}
+	return Options{KeepSchemas: keepSchemas, patterns: p}, nil
+}
+
+func (o Options) pats() *patterns {
+	if o.patterns == nil {
+		return defaultPatterns
+	}
+	return o.patterns
 }
 
 // Some helper functions for reflectwalk to traverse the protobuf-derived parse tree of a query
 type walker struct {
 	depth int
 	opts  Options
+	pats  *patterns
 }
 
 var rangeVarType = reflect.TypeOf(pg_query.RangeVar{})
@@ -93,9 +170,9 @@ func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 		v.SetString(randomIndexRE.ReplaceAllString(v.String(), "some_index"))
 	case "Relname":
 		v.SetString(randomTableRE.ReplaceAllString(v.String(), "some_table"))
-		v.SetString(tempTableRE.ReplaceAllString(v.String(), "${1}_temp_table_x${2}"))
+		v.SetString(s.pats.tempTable.ReplaceAllString(v.String(), "${1}_temp_table_x${2}"))
 	case "Portalname":
-		v.SetString(cursorRE.ReplaceAllString(v.String(), "${1}_cursor_x${2}"))
+		v.SetString(s.pats.cursor.ReplaceAllString(v.String(), "${1}_cursor_x${2}"))
 	case "Schemaname":
 		// Struct also fills in empty RangeVar schemas. Here, collapse any
 		// non-empty Schemaname, like CREATE SCHEMA's.
@@ -107,8 +184,8 @@ func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 		// we don't have the energy to make an exhaustive list of where they might show up,
 		// and it's not *terrible* (at least in our case) to just try everywhere we can.
 		if v.CanSet() && v.Kind() == reflect.String {
-			v.SetString(cursorRE.ReplaceAllString(v.String(), "${1}_cursor_x${2}"))
-			v.SetString(tempTableRE.ReplaceAllString(v.String(), "${1}_temp_table_x${2}"))
+			v.SetString(s.pats.cursor.ReplaceAllString(v.String(), "${1}_cursor_x${2}"))
+			v.SetString(s.pats.tempTable.ReplaceAllString(v.String(), "${1}_temp_table_x${2}"))
 		}
 	}
 
@@ -140,7 +217,7 @@ func Normalized(query string, opts Options) (fingerprint string, err error) {
 
 	// Now that we have our query tree, munge it to normalize queries as defined in our StructField walker above
 	for _, statement := range tree.Stmts {
-		var w = &walker{depth: 0, opts: opts}
+		var w = &walker{depth: 0, opts: opts, pats: opts.pats()}
 		err := reflectwalk.Walk(statement.Stmt, w)
 		if err != nil {
 			log.Println("couldn't walk tree", modified_query, reflect.ValueOf(statement.Stmt), err)
@@ -151,13 +228,13 @@ func Normalized(query string, opts Options) (fingerprint string, err error) {
 	// Turn our munged tree back into a query
 	deparsed, err := pg_query.Deparse(tree)
 	if err != nil {
-		return deparseFallback(modified_query, err)
+		return deparseFallback(modified_query, opts.pats(), err)
 	}
 
 	fingerprint, err = pg_query.Fingerprint(deparsed)
 	if err != nil {
 		log.Println("couldn't fingerprint deparsed query:", modified_query, ", deparsed:", deparsed, ", error:", err)
-		return "", errors.New("failed to fingerprint depared query")
+		return "", errors.New("failed to fingerprint deparsed query")
 	}
 
 	return fingerprint, nil
@@ -165,11 +242,11 @@ func Normalized(query string, opts Options) (fingerprint string, err error) {
 
 // deparseFallback handles a query whose munged parse tree couldn't be
 // deparsed. deparseErr is the Deparse error, used only for logging.
-func deparseFallback(query string, deparseErr error) (string, error) {
+func deparseFallback(query string, pats *patterns, deparseErr error) (string, error) {
 	// we can't seem to use our golang parse tree, so let's just see if we can't fingerprint it straight.
 	// This might end up in a lot of fingerprints that are only different based on their schema name,
 	// but it's the best we can do.
-	if cursorInQueryRE.MatchString(query) || tempTableRE.MatchString(query) {
+	if pats.cursorInQuery.MatchString(query) || pats.tempTable.MatchString(query) {
 		// EXCEPT - if the query matches our cursor or temp table RE, that's just going to grow as a function of usage, not of schema count.
 		// So actually _don't_ fingerprint something that matches either of those regexes.
 		log.Println("couldn't fingerprint non-deparsable query involving cursors or temp tables: ", query, deparseErr)

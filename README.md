@@ -99,6 +99,22 @@ How to use it
      names when it fingerprints queries, so `users`, `public.users`, and `shard_1.users`
      all group together. Set it to `true` if your schemas mean different things and you
      want their queries kept apart.
+  8. `CursorPattern` and `TempTablePattern` are optional. They're regexes that match the
+     cursor and temp-table names your app or ORM generates, so a fresh random name doesn't
+     make a fresh fingerprint. Leave them out to use the defaults shown in `conf`:
+     cursors look like `users_cursor_ab12`, and temp tables look like
+     `users_temp_table_qwerty`, with a random suffix of six or more characters. Each
+     pattern needs exactly two capture groups: the prefix before the generated part and the
+     suffix after it. Write any other grouping as `(?:...)`. A pattern that matches the
+     empty string is rejected. Rotten keeps those and replaces the middle with `_cursor_x` or
+     `_temp_table_x`. Write `CursorPattern` unanchored. Rotten anchors it to whole names
+     when it walks the parse tree and uses it as is to search whole statements. To match
+     your generator, look at real names in `pg_stat_statements` and fit the random part.
+     For example, if temp tables get a three-character suffix like `users_temp_table_abc`,
+     use `([^\\s]+)_temp_table_[0-9a-z]{3}[0-9a-z]*([^\\s]*)`. That's the JSON form, with each backslash doubled.
+     Changing a pattern changes fingerprints for the names it matches, so
+     history from before and after the change won't line up for those queries. An invalid
+     regex stops the worker at startup with an error that names the setting.
 
 Known Issues
 ============

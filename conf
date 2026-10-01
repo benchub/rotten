@@ -12,6 +12,8 @@
 	"ContextController": "A regex to find the controller in a maginalia comment, such as: /\\*.*controller(_with_namespace)?:([^,]+).*\\*/",
 	"ContextAction": "A regex to find the action in a maginalia comment, such as: /\\*.*action:([^,]+).*\\*/",
 	"ContextJob": "A regex to find the job in a maginalia comment, such as: /\\*.*job(_tag)?:([^,]+).*\\*/",
-	"KeepSchemas": false
+	"KeepSchemas": false,
+	"CursorPattern": "([^\\s]+)[_\\-]cursor_[0-9a-z]+([^\\s]*)",
+	"TempTablePattern": "([^\\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\\s]*)"
 }
 

@@ -50,6 +50,10 @@ type Configuration struct {
 	// KeepSchemas is optional. Leaving it out (false) collapses schema
 	// names in fingerprints. True keeps them apart.
 	KeepSchemas bool
+	// CursorPattern and TempTablePattern are optional. Leaving them out
+	// keeps the built-in patterns. See the README.
+	CursorPattern    string
+	TempTablePattern string
 }
 
 func remakeSSLCertConfig(connectionString string, host string) (*tls.Config, error) {
@@ -278,7 +282,11 @@ func main() {
 		status_interval = configuration.StatusInterval
 		cfg.ObservationInterval = configuration.ObservationInterval
 		cfg.SanityCheck = configuration.SanityCheck
-		cfg.Fingerprint = fingerprint.Options{KeepSchemas: configuration.KeepSchemas}
+		cfg.Fingerprint, err = fingerprint.NewOptions(configuration.KeepSchemas, configuration.CursorPattern, configuration.TempTablePattern)
+		if err != nil {
+			log.Fatalln("bad fingerprint pattern in config:", err)
+			// will now exit because Fatal
+		}
 		fqdn := configuration.FQDN
 		project := configuration.Project
 		environment := configuration.Environment
