@@ -115,6 +115,10 @@ How to use it
      Changing a pattern changes fingerprints for the names it matches, so
      history from before and after the change won't line up for those queries. An invalid
      regex stops the worker at startup with an error that names the setting.
+  9. `MinmaxResetSchema` is optional and defaults to `rotten`. On Postgres 17 and later, it's
+     the schema where `schema/observer.sql` created `pg_stat_statements_minmax_reset()`. Set
+     it to match the `observer_schema` you passed to that script. Postgres 14 through 16
+     ignore it.
 
 Known Issues
 ============

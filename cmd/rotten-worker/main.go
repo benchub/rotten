@@ -24,6 +24,7 @@ import (
 
 	"github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/identity"
+	"github.com/benchub/rotten/internal/pgss"
 	"github.com/benchub/rotten/internal/worker"
 )
 
@@ -54,6 +55,9 @@ type Configuration struct {
 	// keeps the built-in patterns. See the README.
 	CursorPattern    string
 	TempTablePattern string
+	// MinmaxResetSchema is optional. It's the schema schema/observer.sql
+	// put the 17+ min/max reset wrapper in. Leaving it out means "rotten".
+	MinmaxResetSchema string
 }
 
 func remakeSSLCertConfig(connectionString string, host string) (*tls.Config, error) {
@@ -282,6 +286,10 @@ func main() {
 		status_interval = configuration.StatusInterval
 		cfg.ObservationInterval = configuration.ObservationInterval
 		cfg.SanityCheck = configuration.SanityCheck
+		cfg.MinmaxResetSchema = configuration.MinmaxResetSchema
+		if cfg.MinmaxResetSchema == "" {
+			cfg.MinmaxResetSchema = pgss.DefaultMinmaxResetSchema
+		}
 		cfg.Fingerprint, err = fingerprint.NewOptions(configuration.KeepSchemas, configuration.CursorPattern, configuration.TempTablePattern)
 		if err != nil {
 			log.Fatalln("bad fingerprint pattern in config:", err)

@@ -80,6 +80,9 @@ type Config struct {
 	ReAction            *regexp.Regexp
 	ReJobTag            *regexp.Regexp
 	Fingerprint         fingerprinting.Options
+	// MinmaxResetSchema holds <schema>.pg_stat_statements_minmax_reset()
+	// on 17+. Not used yet; -25 decides when to call it.
+	MinmaxResetSchema string
 }
 
 // Clock is Run's source of time. Sleep returns ctx.Err() if ctx ends first.

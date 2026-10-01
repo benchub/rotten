@@ -27,8 +27,8 @@ type Snapshot struct {
 // Cumulative counters (see counters) hold the window's change. Everything
 // else (Query, MinTime, MaxTime, MeanTime, StddevTime, StatsSince,
 // MinmaxStatsSince) is the current value, passed through unchanged; mean and
-// stddev for the window are worked out from deltas elsewhere (-20), and min
-// and max are handled by -21.
+// stddev for the window come from WindowStats, and min
+// and max from WindowMinMax.
 //
 // New is true when the entry was treated as new (global reset, entry reset, a
 // counter went down, or no snapshot entry), so the counters are the entry's

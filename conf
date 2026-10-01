@@ -14,6 +14,7 @@
 	"ContextJob": "A regex to find the job in a maginalia comment, such as: /\\*.*job(_tag)?:([^,]+).*\\*/",
 	"KeepSchemas": false,
 	"CursorPattern": "([^\\s]+)[_\\-]cursor_[0-9a-z]+([^\\s]*)",
-	"TempTablePattern": "([^\\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\\s]*)"
+	"TempTablePattern": "([^\\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\\s]*)",
+	"MinmaxResetSchema": "rotten"
 }
 
