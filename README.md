@@ -13,8 +13,8 @@ pgBadger provides excellent analytics in a readable format,
    drill in on a subset of data, that doesn't work.
 
 rotten attemps to address these things. It does so by frequently looking at the helpful
-data gathered by pg_stat_statements, and then resetting those counters to get a fresh
-sample for the next interation. This has shortcomings, but it gets us 95% of the
+data gathered by pg_stat_statements and recording how much each counter grew since the
+last look. This has shortcomings, but it gets us 95% of the
 usefulness of logging all queries in order to see which are problematic, without any of
 the firehose problems that full logging can bring.
 
@@ -27,15 +27,17 @@ Assumptions
 ===========
 As a young project rotten makes a lot of assumptions. Among them:
 
-1. You are using pg_stat_statements and have no qualms about frequently resetting them.
+1. You are using pg_stat_statements. Rotten doesn't reset its counters, so other tools that
+   read them keep working. On Postgres 17 and later, it does reset min and max after each
+   harvest.
 2. You are ok with not getting everything from pg_stat_statements, but rather the "most"
    interesting queries. Getting *everything* is orders of magnitude too expensive to be
    useful on busy systems, and anyway, this project is only trying to find the worst 
    offenders, not an exhaustive snapshot.
 3. You are ok with a SQL prompt as a UI for now.
 4. You will have an observer role on your monitored dbs (default `rotten_observer`) that
-   reads pg_stat_statements directly through `pg_read_all_stats`, and for now resets it
-   through one security definer function in a "dba" schema.
+   reads pg_stat_statements directly through `pg_read_all_stats`. On Postgres 17 and later,
+   it can also call one security definer function that resets only min and max.
 5. Your monitored databases have distinct identifiers of some kind (fqdn, IP, etc) as well
    as some logical identification ("the primary production server" or "cluster38 secondary").
 
@@ -93,7 +95,9 @@ How to use it
  - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
  - run `CREATE EXTENSION pg_stat_statements` in the monitored database
 6. As a superuser on each monitored database (Postgres 14 through 18), run `schema/observer.sql`
-   and then `schema/legacy_reset.sql` with psql. The reset function goes away once diffing lands.
+   with psql. The worker never resets pg_stat_statements' counters. It saves a snapshot after
+   each harvest and reports the difference. On Postgres 17 and later, it resets only min and
+   max after each harvest, through the wrapper that script creates.
    Note: min, max, mean, and stddev times are now exec time only (planning time isn't
    mixed in), while total time is still plan + exec.
 7. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
@@ -145,6 +149,15 @@ How to use it
      the schema where `schema/observer.sql` created `pg_stat_statements_minmax_reset()`. Set
      it to match the `observer_schema` you passed to that script. Postgres 14 through 16
      ignore it.
+  10. `StateDir` is optional and defaults to `/var/lib/rotten-worker`. It's the directory
+     where the worker keeps its local state file, the snapshot of pg_stat_statements from
+     its last harvest. The worker creates it if it's missing, so it must be writable by the
+     worker's user. Each worker needs its own `StateDir`, since a second worker on the same
+     directory refuses to start. If the state is lost, the next harvest is a baseline that
+     records nothing, and reporting picks up one window later.
+  11. `MaxSnapshotAge` is optional, in seconds, and defaults to three times
+     `ObservationInterval`. If the saved snapshot is older than this, say after the worker
+     was down for a while, the next harvest is a baseline instead of one huge window.
 
 Known Issues
 ============

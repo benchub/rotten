@@ -117,8 +117,12 @@ func crossFingerprints(t *testing.T, version int) map[string]map[string][]string
 		t.Fatal(err)
 	}
 	defer obs.Close(ctx)
-	stats, err := pgss.NewReader(obs).Read(ctx)
+	r := pgss.NewReader(obs)
+	stats, err := r.ReadStats(ctx)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pgss.NewTextCache(r).Fill(ctx, stats); err != nil {
 		t.Fatal(err)
 	}
 	out := map[string]map[string][]string{}

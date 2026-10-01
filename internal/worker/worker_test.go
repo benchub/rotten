@@ -82,16 +82,13 @@ func parkStats(t *testing.T, w *Worker) {
 	t.Cleanup(func() { close(done) })
 }
 
-// startObservedForWorker starts Postgres 16 with schema/observer.sql and
-// schema/legacy_reset.sql loaded, so rotten_observer reads pg_stat_statements
-// directly and may only full-reset through the legacy dba function.
+// startObservedForWorker starts Postgres 16 with schema/observer.sql loaded,
+// so rotten_observer reads pg_stat_statements directly and can't reset it.
 func startObservedForWorker(t *testing.T) *testdb.DB {
 	t.Helper()
 	db := testdb.StartObserved(t, 16)
-	for _, f := range []string{"observer.sql", "legacy_reset.sql"} {
-		if out, err := db.PSQL(t, filepath.Join(testdb.RepoRoot(), "schema", f), nil); err != nil {
-			t.Fatalf("%s: %v\n%s", f, err, out)
-		}
+	if out, err := db.PSQL(t, filepath.Join(testdb.RepoRoot(), "schema", "observer.sql"), nil); err != nil {
+		t.Fatalf("observer.sql: %v\n%s", err, out)
 	}
 	conn := db.Connect(t)
 	ctx := context.Background()
@@ -214,7 +211,7 @@ func TestWorkerEndToEnd(t *testing.T) {
 	cfg := Config{
 		RottenDB:            pool,
 		ObservedDB:          observerConn(t, obsDSN),
-		ObservedDBReset:     observerConn(t, obsDSN),
+		State:               openStore(t, t.TempDir()),
 		ObservationInterval: 2,
 		SanityCheck:         "select true",
 		LogicalID:           logical,
@@ -249,10 +246,11 @@ func TestWorkerEndToEnd(t *testing.T) {
 	})
 	go func() { ran <- w.Run(ctx) }()
 
-	// The first sleep follows the initial reset, so the window is open.
-	if d := clk.waitSleep(t); d != 2*time.Second {
-		t.Errorf("first sleep = %v, want the 2s window", d)
+	// The first sleep follows the baseline harvest, so the window is open.
+	if d := clk.waitSleep(t); d <= 0 || d > 2*time.Second {
+		t.Errorf("first sleep = %v, want in (0, 2s]", d)
 	}
+	wantStart := w.lastHarvest.Load()
 	workload := observed.Connect(t)
 	runWorkload(t, workload)
 	clk.proceed <- struct{}{}
@@ -261,14 +259,7 @@ func TestWorkerEndToEnd(t *testing.T) {
 	if d := clk.waitSleep(t); d <= 0 || d > 2*time.Second {
 		t.Errorf("slackoff = %v, want in (0, 2s]", d)
 	}
-
-	// Now calls: window start, window end, next window start, then the
-	// slackoff check and computation.
-	nows := clk.times()
-	if len(nows) < 3 {
-		t.Fatalf("clock read %d times, want at least 3", len(nows))
-	}
-	wantStart, wantEnd := nows[0], nows[1]
+	wantEnd := w.lastHarvest.Load()
 	if wantEnd <= wantStart {
 		t.Fatalf("window [%d,%d] is empty", wantStart, wantEnd)
 	}

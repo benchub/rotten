@@ -47,9 +47,12 @@ func TestReaderMatrix(t *testing.T) {
 			defer obs.Close(ctx)
 			r := pgss.NewReader(obs)
 
-			stats, err := r.Read(ctx)
+			stats, err := r.ReadStats(ctx)
 			if err != nil {
-				t.Fatalf("Read: %v", err)
+				t.Fatalf("ReadStats: %v", err)
+			}
+			if err := pgss.NewTextCache(r).Fill(ctx, stats); err != nil {
+				t.Fatalf("Fill: %v", err)
 			}
 			var sel, ins *pgss.Stat
 			for i := range stats {

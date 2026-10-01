@@ -377,3 +377,15 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A burst of unknown-key calls from one client causes at most a bounded number of lookups, and a key created during the burst works right away.
 - **Done when:** Passes.
 - **Needs:** 20261001-103222-30.
+
+### 20261001-143630-1: Keep lifetime min and max out of fingerprint_stats.
+- **Do:** On 14 through 16 (and 17+ when the min/max reset fails), `pgss.WindowMinMax` returns lifetime values. The worker flags them on the event (`minmax_lifetime`) but still pushes them into the `min_time` and `max_time` samples, so one old outlier shows up in every window. Leave them out the way an absent stddev is left out, or carry the flag to the server (see -29 and -34).
+- **Red test:** A lifetime max from a diffed delta doesn't change `fingerprint_stats` for `max_time`, and a window-only one does.
+- **Done when:** Passes.
+- **Needs:** 20261001-103222-25.
+
+### 20261001-143630-2: Don't lose a window when the text fetch fails.
+- **Do:** If `TextCache.Fill` fails, the worker skips the top entries without cached text, but still saves the snapshot, so their activity for that window is lost. Decide whether to retry the fetch, or to send what it can and carry the skipped entries into the next window.
+- **Red test:** A failed text fetch, then a good one, sends every call exactly once.
+- **Done when:** Passes.
+- **Needs:** 20261001-103222-25.

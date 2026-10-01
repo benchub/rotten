@@ -37,6 +37,11 @@ var knownStatsDomains = [19]string{"calls",
 type Samples struct {
 	metrics map[string]float64
 
+	// absent lists domains with no value this window (stddev_time when its
+	// window stddev is unreliable). consumeSamples doesn't push them, so
+	// they don't drag the fingerprint's stats toward 0.
+	absent map[string]bool
+
 	// when
 	unixtime int64
 }
@@ -170,6 +175,9 @@ func (w *Worker) processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, 
 	sample.metrics["max_time"] = event.max_time
 	sample.metrics["mean_time"] = event.mean_time
 	sample.metrics["stddev_time"] = event.stddev_time
+	if event.stddev_absent {
+		sample.absent = map[string]bool{"stddev_time": true}
+	}
 	sample.metrics["rows"] = event.rows
 	sample.metrics["shared_blks_hit"] = event.shared_blks_hit
 	sample.metrics["shared_blks_read"] = event.shared_blks_read
@@ -307,7 +315,12 @@ func (w *Worker) reportSamples(rottenDB *pgxpool.Pool, f *Fingerprint, logical_s
 					for _, stats_domain := range knownStatsDomains {
 						// verify query_stats_domain is a domain we know about
 						_, present := f.stats[stats_domain]
-						if present {
+						if present && f.stats[stats_domain].RunningStatCount() == 0 {
+							// Every sample since the last report left this
+							// domain out (an absent stddev). Nothing to
+							// merge, and merging two empty stats gives NaN.
+							continue
+						} else if present {
 							combined.Init(f.stats[stats_domain].RunningStatCount(), f.stats[stats_domain].RunningStatMean(), f.stats[stats_domain].RunningStatDeviation())
 							combined.Merge(dbStats[stats_domain])
 
@@ -360,6 +373,9 @@ func consumeSamples(f *Fingerprint) {
 		f.time_since_start += sample.metrics["total_time"]
 
 		for _, stats_domain := range knownStatsDomains {
+			if sample.absent[stats_domain] {
+				continue
+			}
 			f.stats[stats_domain].Push(sample.metrics[stats_domain])
 		}
 		f.statsLock.Unlock()

@@ -73,8 +73,11 @@ func TestMinmaxResetWindow(t *testing.T) {
 			}
 			harvest := func(prev pgss.Snapshot) ([]pgss.Delta, pgss.Snapshot) {
 				t.Helper()
-				stats, err := r.Read(ctx)
+				stats, err := r.ReadStats(ctx)
 				if err != nil {
+					t.Fatal(err)
+				}
+				if err := pgss.NewTextCache(r).Fill(ctx, stats); err != nil {
 					t.Fatal(err)
 				}
 				info, err := r.Info(ctx)

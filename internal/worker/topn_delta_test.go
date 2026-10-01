@@ -2,49 +2,109 @@ package worker
 
 import (
 	"math"
-	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/benchub/rotten/internal/pgss"
 )
 
-// TestTopNDeltasMatchesTopN builds rows with distinct values in every metric
-// (so there are no ties at the cutoff), wraps them as New deltas, and checks
-// that topNDeltas picks exactly what topN picks from the same rows.
-func TestTopNDeltasMatchesTopN(t *testing.T) {
-	if len(deltaMetrics) != len(topMetrics) {
-		t.Fatalf("got %d delta metrics, want %d", len(deltaMetrics), len(topMetrics))
-	}
-	r := rand.New(rand.NewSource(1))
-	const rows = 400
-	stats := make([]pgss.Stat, rows)
-	for i := range stats {
-		stats[i].QueryID = int64(i + 1)
-		stats[i].Calls = 1 // MeanTime is set directly; Calls only needs to be nonzero.
-	}
-	for _, set := range metricSetters {
-		for i, v := range r.Perm(rows) {
-			set(&stats[i], int64(v+1))
+// metricSetters set each of the 19 ranked metrics, in deltaMetrics order.
+var metricSetters = []func(*pgss.Stat, int64){
+	func(s *pgss.Stat, v int64) { s.Calls = v },
+	func(s *pgss.Stat, v int64) { s.TotalTime = float64(v) },
+	func(s *pgss.Stat, v int64) { s.MinTime = float64(v) },
+	func(s *pgss.Stat, v int64) { s.MaxTime = float64(v) },
+	func(s *pgss.Stat, v int64) { s.MeanTime = float64(v) },
+	func(s *pgss.Stat, v int64) { s.StddevTime = float64(v) },
+	func(s *pgss.Stat, v int64) { s.Rows = v },
+	func(s *pgss.Stat, v int64) { s.SharedBlksHit = v },
+	func(s *pgss.Stat, v int64) { s.SharedBlksRead = v },
+	func(s *pgss.Stat, v int64) { s.SharedBlksWritten = v },
+	func(s *pgss.Stat, v int64) { s.SharedBlksDirtied = v },
+	func(s *pgss.Stat, v int64) { s.LocalBlksHit = v },
+	func(s *pgss.Stat, v int64) { s.LocalBlksRead = v },
+	func(s *pgss.Stat, v int64) { s.LocalBlksWritten = v },
+	func(s *pgss.Stat, v int64) { s.LocalBlksDirtied = v },
+	func(s *pgss.Stat, v int64) { s.TempBlksRead = v },
+	func(s *pgss.Stat, v int64) { s.TempBlksWritten = v },
+	func(s *pgss.Stat, v int64) { s.SharedBlkWriteTime = float64(v) },
+	func(s *pgss.Stat, v int64) { s.SharedBlkReadTime = float64(v) },
+}
+
+// TestEventFromDeltaNew: on a New delta every field is the entry's current
+// value, and min and max aren't lifetime.
+func TestEventFromDeltaNew(t *testing.T) {
+	s := pgss.Stat{Query: "q", Calls: 1, TotalTime: 2, MinTime: 3, MaxTime: 4, MeanTime: 5, StddevTime: 6,
+		Rows: 7, SharedBlksHit: 8, SharedBlksRead: 9, SharedBlksDirtied: 10, SharedBlksWritten: 11,
+		LocalBlksHit: 12, LocalBlksRead: 13, LocalBlksDirtied: 14, LocalBlksWritten: 15,
+		TempBlksRead: 16, TempBlksWritten: 17, SharedBlkReadTime: 18, SharedBlkWriteTime: 19}
+	e := eventFromDelta(pgss.Delta{Stat: s, New: true})
+	got := []float64{e.calls, e.total_time, e.min_time, e.max_time, e.mean_time, e.stddev_time,
+		e.rows, e.shared_blks_hit, e.shared_blks_read, e.shared_blks_dirtied, e.shared_blks_written,
+		e.local_blks_hit, e.local_blks_read, e.local_blks_dirtied, e.local_blks_written,
+		e.temp_blks_read, e.temp_blks_written, e.blk_read_time, e.blk_write_time}
+	for i, v := range got {
+		if v != float64(i+1) {
+			t.Errorf("field %d = %v, want %d", i, v, i+1)
 		}
 	}
-	deltas := make([]pgss.Delta, rows)
-	for i, s := range stats {
-		deltas[i] = pgss.Delta{Stat: s, New: true}
+	if e.query != "q" || e.stddev_absent || e.minmax_lifetime {
+		t.Errorf("query %q, stddev_absent %v, minmax_lifetime %v; want q, false, false", e.query, e.stddev_absent, e.minmax_lifetime)
 	}
-	for _, n := range []int{1, 5, 100} {
-		want := map[int64]bool{}
-		for _, s := range topN(stats, n) {
-			want[s.QueryID] = true
-		}
-		got := topNDeltas(deltas, n)
-		if len(got) != len(want) {
-			t.Errorf("n=%d: kept %d, want %d", n, len(got), len(want))
-		}
-		for _, d := range got {
-			if !want[d.QueryID] {
-				t.Errorf("n=%d: kept query %d, topN didn't", n, d.QueryID)
-			}
-		}
+}
+
+// TestEventFromDeltaWindow: on a diffed delta, the counters are the deltas,
+// mean and stddev are the window's, and min and max are lifetime unless a
+// min/max reset moved minmax_stats_since.
+func TestEventFromDeltaWindow(t *testing.T) {
+	// Prev: 4 calls of 10ms. Window: 2 calls of 10ms and 2 of 30ms, so the
+	// window mean is 20 and its population stddev 10.
+	prev := pgss.Stat{Calls: 4, TotalExecTime: 40, MeanTime: 10, StddevTime: 0}
+	cur := pgss.Stat{Calls: 8, TotalExecTime: 120, MeanTime: 15}
+	// Current M2 = M2_prev + M2_win + δ²·n_prev·n_win/n = 0 + 400 + 100·4·4/8 = 600.
+	cur.StddevTime = math.Sqrt(600.0 / 8)
+	cur.MinTime, cur.MaxTime = 10, 30
+	d := pgss.Delta{Stat: cur, Prev: &prev}
+	d.Calls, d.TotalExecTime, d.TotalTime = 4, 80, 80
+	e := eventFromDelta(d)
+	if e.calls != 4 || e.total_time != 80 {
+		t.Errorf("calls, total = %v, %v; want 4, 80", e.calls, e.total_time)
+	}
+	approx(t, "mean", e.mean_time, 20)
+	approx(t, "stddev", e.stddev_time, 10)
+	if e.stddev_absent {
+		t.Error("stddev_absent on a clean window")
+	}
+	if !e.minmax_lifetime || e.min_time != 10 || e.max_time != 30 {
+		t.Errorf("min, max, lifetime = %v, %v, %v; want 10, 30, true", e.min_time, e.max_time, e.minmax_lifetime)
+	}
+
+	// A min/max reset since the snapshot makes them window-only.
+	t0 := time.Unix(100, 0)
+	t1 := t0.Add(time.Minute)
+	d.Prev = &pgss.Stat{Calls: 4, TotalExecTime: 40, MeanTime: 10, MinmaxStatsSince: &t0}
+	d.MinmaxStatsSince = &t1
+	if e := eventFromDelta(d); e.minmax_lifetime {
+		t.Error("minmax_lifetime after a min/max reset, want false")
+	}
+}
+
+// TestEventFromDeltaUnreliableStddev: when WindowStats says the stddev can't
+// be trusted, the event records it as absent instead of passing it on.
+func TestEventFromDeltaUnreliableStddev(t *testing.T) {
+	// A huge history and a tiny window: the subtraction is all noise.
+	prev := pgss.Stat{Calls: 1e9, TotalExecTime: 1e10, MeanTime: 10, StddevTime: 5}
+	cur := prev
+	cur.Calls += 2
+	cur.TotalExecTime += 20
+	d := pgss.Delta{Stat: cur, Prev: &prev}
+	d.Calls, d.TotalExecTime, d.TotalTime = 2, 20, 20
+	if _, _, ok := pgss.WindowStats(d); ok {
+		t.Fatal("WindowStats trusts this stddev; the fixture needs a noisier window")
+	}
+	e := eventFromDelta(d)
+	if !e.stddev_absent || e.stddev_time != 0 {
+		t.Errorf("stddev_absent %v, stddev_time %v; want true, 0", e.stddev_absent, e.stddev_time)
 	}
 }
 

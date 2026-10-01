@@ -162,6 +162,24 @@ func checkStats(t *testing.T, pool *pgxpool.Pool, fp uint64, source uint32, n in
 	}
 }
 
+// TestConsumeSamplesSkipsAbsent: a domain a sample marks absent isn't
+// pushed, so an unreliable stddev doesn't count as a 0.
+func TestConsumeSamplesSkipsAbsent(t *testing.T) {
+	f := &Fingerprint{stats: make(map[string]*runningstat.RunningStat)}
+	for _, d := range knownStatsDomains {
+		f.stats[d] = &runningstat.RunningStat{}
+	}
+	absent := sampleOf(2, 200)
+	absent.absent = map[string]bool{"stddev_time": true}
+	feed(f, sampleOf(1, 100), absent)
+	if n := f.stats["stddev_time"].RunningStatCount(); n != 1 {
+		t.Errorf("stddev_time count = %d, want 1", n)
+	}
+	if n := f.stats["mean_time"].RunningStatCount(); n != 2 {
+		t.Errorf("mean_time count = %d, want 2", n)
+	}
+}
+
 func TestConsumeSamplesPushesEveryDomain(t *testing.T) {
 	f := &Fingerprint{stats: make(map[string]*runningstat.RunningStat)}
 	for _, d := range knownStatsDomains {
@@ -222,6 +240,36 @@ func TestReportSamplesInsertsThenMerges(t *testing.T) {
 	s.step(t)
 	for _, src := range []uint32{0, pf.logical} {
 		checkStats(t, pf.pool, f.db_id, src, 6, 4, 2, 2002)
+	}
+}
+
+// TestReportSamplesAbsentStddev: windows whose stddev is absent leave the
+// stddev_time row alone (no NaN from merging two empty stats), and the other
+// domains merge as usual.
+func TestReportSamplesAbsentStddev(t *testing.T) {
+	pf := startProcessDB(t)
+	s := installStepper(t, pf.w)
+	f := newTestFingerprint(t, pf.pool, "select absent")
+	startReport(t, s, pf.w, pf.pool, f, pf.logical, 7)
+	defer s.stop(t)
+
+	absent := func(v float64, at int64) *Samples {
+		x := sampleOf(v, at)
+		x.absent = map[string]bool{"stddev_time": true}
+		return x
+	}
+	feed(f, absent(1, 1000), absent(3, 1001))
+	s.step(t)
+	feed(f, absent(5, 2000))
+	s.step(t)
+	for _, src := range []uint32{0, pf.logical} {
+		got := statRows(t, pf.pool, f.db_id, src)
+		if r := got["stddev_time"]; r.count != 0 || r.mean != 0 || r.dev != 0 {
+			t.Errorf("source %d stddev_time = %+v, want count 0, mean 0, dev 0", src, r)
+		}
+		if r := got["calls"]; r.count != 3 || !near(r.mean, 3) {
+			t.Errorf("source %d calls = %+v, want count 3, mean 3", src, r)
+		}
 	}
 }
 

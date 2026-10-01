@@ -14,7 +14,7 @@ import (
 //
 //	stats, _ := r.ReadStats(ctx)
 //	c.Retain(stats)          // drop text for evicted keys
-//	picked := topN(stats)
+//	picked := topNDeltas(deltas, 100) // the rows to send
 //	c.Fill(ctx, picked)      // set Query, fetching only misses
 //
 // A TextCache is not safe for concurrent use.
@@ -32,7 +32,7 @@ func (c *TextCache) TextFetches() int { return c.fetches }
 func NewTextCache(r *Reader) *TextCache { return &TextCache{r: r, text: map[Key]string{}} }
 
 // Retain drops text for every key not in all, the full set of rows from the
-// current Read. Those entries were evicted from pg_stat_statements.
+// current ReadStats. Those entries were evicted from pg_stat_statements.
 func (c *TextCache) Retain(all []Stat) {
 	live := make(map[Key]struct{}, len(all))
 	for i := range all {

@@ -25,6 +25,7 @@ import (
 	"github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/identity"
 	"github.com/benchub/rotten/internal/pgss"
+	"github.com/benchub/rotten/internal/state"
 	"github.com/benchub/rotten/internal/worker"
 )
 
@@ -58,6 +59,30 @@ type Configuration struct {
 	// MinmaxResetSchema is optional. It's the schema schema/observer.sql
 	// put the 17+ min/max reset wrapper in. Leaving it out means "rotten".
 	MinmaxResetSchema string
+	// StateDir is optional. It's where the worker keeps its snapshot
+	// between harvests. Leaving it out means DefaultStateDir.
+	StateDir string
+	// MaxSnapshotAge is optional, in seconds. A saved snapshot older than
+	// this is a baseline. Leaving it out (0) means three observation
+	// intervals.
+	MaxSnapshotAge uint32
+}
+
+// DefaultStateDir is StateDir when the config leaves it out.
+const DefaultStateDir = "/var/lib/rotten-worker"
+
+// stateSettings returns the state dir and max snapshot age for c, with the
+// defaults filled in.
+func stateSettings(c *Configuration) (dir string, maxAge time.Duration) {
+	dir = c.StateDir
+	if dir == "" {
+		dir = DefaultStateDir
+	}
+	maxAge = time.Duration(c.MaxSnapshotAge) * time.Second
+	if maxAge == 0 {
+		maxAge = 3 * time.Duration(c.ObservationInterval) * time.Second
+	}
+	return dir, maxAge
 }
 
 func remakeSSLCertConfig(connectionString string, host string) (*tls.Config, error) {
@@ -242,8 +267,8 @@ func main() {
 		}
 		cfg.RottenDB = rottenDB
 
-		// Now build up the two connections we're going to use for the observed db
-		// First, make the config, then reuse it twice (2 connections to the same db)
+		// Now build up the connection we're going to use for the observed db
+		// It reads the stats and, on 17+, runs the min/max reset.
 		observedDBConfig, err := pgx.ParseConfig(configuration.ObservedDBConn[0])
 		if err != nil {
 			log.Fatalln("couldn't create observedDBConfig", err)
@@ -275,13 +300,17 @@ func main() {
 		defer observedDB.Close(context.Background())
 		cfg.ObservedDB = observedDB
 
-		observedDBReset, err := pgx.ConnectConfig(context.Background(), observedDBConfig)
+		stateDir, maxAge := stateSettings(configuration)
+		store, err := state.Open(stateDir, state.Options{MaxSnapshotAge: maxAge})
 		if err != nil {
-			log.Fatalln("couldn't connect to observed db for resets", err)
+			log.Fatalln("couldn't open the state store:", err)
 			// will now exit because Fatal
 		}
-		defer observedDBReset.Close(context.Background())
-		cfg.ObservedDBReset = observedDBReset
+		if store.MovedAside != "" {
+			log.Println("the state store was corrupt; moved it to", store.MovedAside, "and started fresh")
+		}
+		defer store.Close()
+		cfg.State = store
 
 		status_interval = configuration.StatusInterval
 		cfg.ObservationInterval = configuration.ObservationInterval

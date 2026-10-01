@@ -1,105 +1,53 @@
 package worker
 
 import (
-	"context"
-	"log"
 	"sort"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/benchub/rotten/internal/pgss"
 )
 
-// resetWindow starts a new observation window with a full reset, through the
-// legacy dba.pg_stat_statements_user_reset() from schema/legacy_reset.sql.
-//
-// TODO(20261001-103222-25): drop the full reset once diffing replaces it.
-// On 17+, call the observer's min/max wrapper instead (see -21).
-func resetWindow(conn *pgx.Conn) {
-	if _, err := conn.Exec(context.Background(), `select dba.pg_stat_statements_user_reset()`); err != nil {
-		log.Fatalln("couldn't reset pg_stat_statements", err)
+// eventFromDelta maps a window's delta onto the worker's event fields. The
+// counters are the window's changes. Mean and stddev come from
+// pgss.WindowStats; a stddev it flags as unreliable is recorded as absent
+// (stddev_absent true, stddev_time 0). Min and max come from pgss.WindowMinMax,
+// flagged when they're lifetime values.
+func eventFromDelta(d pgss.Delta) QueryEvent {
+	mean, stddev, stddevOK := pgss.WindowStats(d)
+	if !stddevOK {
+		stddev = 0
 	}
-}
-
-// topMetrics are the metrics the worker ranks entries by, the same 19 the old
-// SQL UNION used.
-var topMetrics = []func(*pgss.Stat) float64{
-	func(s *pgss.Stat) float64 { return float64(s.Calls) },
-	func(s *pgss.Stat) float64 { return s.TotalTime },
-	func(s *pgss.Stat) float64 { return s.MinTime },
-	func(s *pgss.Stat) float64 { return s.MaxTime },
-	func(s *pgss.Stat) float64 { return s.MeanTime },
-	func(s *pgss.Stat) float64 { return s.StddevTime },
-	func(s *pgss.Stat) float64 { return float64(s.Rows) },
-	func(s *pgss.Stat) float64 { return float64(s.SharedBlksHit) },
-	func(s *pgss.Stat) float64 { return float64(s.SharedBlksRead) },
-	func(s *pgss.Stat) float64 { return float64(s.SharedBlksWritten) },
-	func(s *pgss.Stat) float64 { return float64(s.SharedBlksDirtied) },
-	func(s *pgss.Stat) float64 { return float64(s.LocalBlksHit) },
-	func(s *pgss.Stat) float64 { return float64(s.LocalBlksRead) },
-	func(s *pgss.Stat) float64 { return float64(s.LocalBlksWritten) },
-	func(s *pgss.Stat) float64 { return float64(s.LocalBlksDirtied) },
-	func(s *pgss.Stat) float64 { return float64(s.TempBlksRead) },
-	func(s *pgss.Stat) float64 { return float64(s.TempBlksWritten) },
-	func(s *pgss.Stat) float64 { return s.SharedBlkWriteTime },
-	func(s *pgss.Stat) float64 { return s.SharedBlkReadTime },
-}
-
-// topN returns the union of the top n entries for each metric, each entry
-// once, in input order. Ties at the cutoff are broken arbitrarily, as the old
-// SQL LIMIT did. Task -22 owns the rewrite of this selection.
-func topN(stats []pgss.Stat, n int) []pgss.Stat {
-	keep := make([]bool, len(stats))
-	idx := make([]int, len(stats))
-	for _, m := range topMetrics {
-		for i := range idx {
-			idx[i] = i
-		}
-		sort.Slice(idx, func(a, b int) bool { return m(&stats[idx[a]]) > m(&stats[idx[b]]) })
-		for _, i := range idx[:min(n, len(idx))] {
-			keep[i] = true
-		}
-	}
-	var out []pgss.Stat
-	for i, k := range keep {
-		if k {
-			out = append(out, stats[i])
-		}
-	}
-	return out
-}
-
-// eventFromStat maps a Stat onto the worker's event fields.
-func eventFromStat(s pgss.Stat) QueryEvent {
+	mn, mx, lifetime := pgss.WindowMinMax(d)
 	return QueryEvent{
-		query:               s.Query,
-		calls:               float64(s.Calls),
-		total_time:          s.TotalTime,
-		min_time:            s.MinTime,
-		max_time:            s.MaxTime,
-		mean_time:           s.MeanTime,
-		stddev_time:         s.StddevTime,
-		rows:                float64(s.Rows),
-		shared_blks_hit:     float64(s.SharedBlksHit),
-		shared_blks_read:    float64(s.SharedBlksRead),
-		shared_blks_dirtied: float64(s.SharedBlksDirtied),
-		shared_blks_written: float64(s.SharedBlksWritten),
-		local_blks_hit:      float64(s.LocalBlksHit),
-		local_blks_read:     float64(s.LocalBlksRead),
-		local_blks_dirtied:  float64(s.LocalBlksDirtied),
-		local_blks_written:  float64(s.LocalBlksWritten),
-		temp_blks_read:      float64(s.TempBlksRead),
-		temp_blks_written:   float64(s.TempBlksWritten),
-		blk_read_time:       s.SharedBlkReadTime,
-		blk_write_time:      s.SharedBlkWriteTime,
+		query:               d.Query,
+		calls:               float64(d.Calls),
+		total_time:          d.TotalTime,
+		min_time:            mn,
+		max_time:            mx,
+		minmax_lifetime:     lifetime,
+		mean_time:           mean,
+		stddev_time:         stddev,
+		stddev_absent:       !stddevOK,
+		rows:                float64(d.Rows),
+		shared_blks_hit:     float64(d.SharedBlksHit),
+		shared_blks_read:    float64(d.SharedBlksRead),
+		shared_blks_dirtied: float64(d.SharedBlksDirtied),
+		shared_blks_written: float64(d.SharedBlksWritten),
+		local_blks_hit:      float64(d.LocalBlksHit),
+		local_blks_read:     float64(d.LocalBlksRead),
+		local_blks_dirtied:  float64(d.LocalBlksDirtied),
+		local_blks_written:  float64(d.LocalBlksWritten),
+		temp_blks_read:      float64(d.TempBlksRead),
+		temp_blks_written:   float64(d.TempBlksWritten),
+		blk_read_time:       d.SharedBlkReadTime,
+		blk_write_time:      d.SharedBlkWriteTime,
 	}
 }
 
-// deltaMetrics are the same 19 metrics as topMetrics, in the same order, read
-// from a Delta. The counters rank by their delta. Min, max, mean, and stddev
-// aren't counters, so they rank by their window value: WindowMinMax for min
-// and max, WindowStats for mean and stddev. On a New delta all four are the
-// entry's current values, the same ones topN ranks.
+// deltaMetrics are the 19 metrics the worker ranks entries by, the same ones
+// the old SQL UNION used, read from a Delta. The counters rank by their
+// delta. Min, max, mean, and stddev aren't counters, so they rank by their
+// window value: WindowMinMax for min and max, WindowStats for mean and
+// stddev. On a New delta all four are the entry's current values.
 //
 // A value that doesn't describe this window ranks as 0, so it can't win a
 // slot: a stddev that WindowStats flags as unreliable (rounding noise), and a
@@ -147,8 +95,6 @@ var deltaMetrics = []func(*pgss.Delta) float64{
 // deltaMetrics, each delta once, in input order, with New and Prev intact.
 // Ties break by key (QueryID, then UserID, DBID, and TopLevel), so the
 // selection doesn't depend on input order.
-//
-// TODO(20261001-103222-25): switch the worker to this and delete topN.
 func topNDeltas(deltas []pgss.Delta, n int) []pgss.Delta {
 	keep := make([]bool, len(deltas))
 	idx := make([]int, len(deltas))

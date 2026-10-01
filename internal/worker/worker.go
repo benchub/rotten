@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -18,6 +19,7 @@ import (
 	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/identity"
 	"github.com/benchub/rotten/internal/pgss"
+	"github.com/benchub/rotten/internal/state"
 )
 
 type PoorMansTime struct {
@@ -38,11 +40,20 @@ type QueryEvent struct {
 	stddev_time float64
 	total_time  float64
 
+	// stddev_absent is true when stddev_time can't be trusted for this window
+	// (pgss.WindowStats said so). stddev_time is 0 then, and processEvent
+	// leaves it out of fingerprint_stats.
+	stddev_absent bool
+
 	// the fastest time this query ran in this window
 	min_time float64
 
 	// the longest time this query ran in this window
 	max_time float64
+
+	// minmax_lifetime is true when min_time and max_time reach back before
+	// this window (pgss.WindowMinMax). Nothing stores it yet.
+	minmax_lifetime bool
 
 	rows                float64
 	shared_blks_hit     float64
@@ -71,7 +82,6 @@ type QueryEvent struct {
 type Config struct {
 	RottenDB            *pgxpool.Pool
 	ObservedDB          *pgx.Conn
-	ObservedDBReset     *pgx.Conn
 	ObservationInterval uint32
 	SanityCheck         string
 	LogicalID           uint32
@@ -81,8 +91,17 @@ type Config struct {
 	ReJobTag            *regexp.Regexp
 	Fingerprint         fingerprinting.Options
 	// MinmaxResetSchema holds <schema>.pg_stat_statements_minmax_reset()
-	// on 17+. Not used yet; -25 decides when to call it.
+	// on 17+. Run calls it right after each harvest's read. Empty means
+	// pgss.DefaultMinmaxResetSchema.
 	MinmaxResetSchema string
+	// State holds the snapshot between harvests. main opens a *state.Store.
+	State StateStore
+}
+
+// StateStore is the part of *state.Store that Run uses.
+type StateStore interface {
+	Load(ctx context.Context) (state.Loaded, error)
+	Save(ctx context.Context, snap pgss.Snapshot, takenAt time.Time) error
 }
 
 // Clock is Run's source of time. Sleep returns ctx.Err() if ctx ends first.
@@ -117,12 +136,19 @@ type Worker struct {
 	identities *identity.Caches
 
 	// Progress stats. Run writes them and ReportProgress reads them from
-	// another goroutine, so they're atomics. lastWindowEnd holds
-	// PoorMansTime.sec.
+	// another goroutine, so they're atomics. lastWindowEnd holds the last
+	// harvest's time in Unix seconds.
 	eventCount    atomic.Uint64
 	lastWindowEnd atomic.Int64
 	parseFailures atomic.Uint32
 	eventsPending atomic.Uint32
+
+	// lastHarvest is the last harvest's time in Unix seconds.
+	lastHarvest atomic.Int64
+
+	// staleState is set when the last Save failed, so the stored snapshot
+	// is behind what was sent. Only Run's goroutine touches it.
+	staleState bool
 
 	// The fingerprints we've seen since startup and are currently processing.
 	fingerprintsMu sync.RWMutex
@@ -154,143 +180,193 @@ func New(cfg Config, clk Clock) *Worker {
 	}
 }
 
-// Run is the worker's main loop. It returns only when ctx ends, and only at
-// one of its sleeps. Database calls still use context.Background(), and
+// Run is the worker's main loop. Each pass runs the sanity check, then one
+// harvest (see harvest), then sleeps out the rest of the observation
+// interval. The first harvest happens right away; with no saved snapshot
+// it's a baseline and sends nothing. Run never resets pg_stat_statements'
+// counters.
+//
+// It returns only when ctx ends, and only at its sleep. Observed database
 // errors still exit through log.Fatalln, as they always have. main starts
 // ReportProgress before calling Run.
 func (w *Worker) Run(ctx context.Context) error {
 	cfg := w.cfg
-	clk := w.clk
-	rottenDB := cfg.RottenDB
-	observedDB := cfg.ObservedDB
-	observedDBReset := cfg.ObservedDBReset
-	observation_interval := cfg.ObservationInterval
-	sanity_check := cfg.SanityCheck
-	logical_id := cfg.LogicalID
-	physical_id := cfg.PhysicalID
-	re_controller := cfg.ReController
-	re_action := cfg.ReAction
-	re_job_tag := cfg.ReJobTag
-
-	reader := pgss.NewReader(observedDB)
-
-	// first things first, reset pg_stat_statement data so that we might have a clean observation window
-	var windowStart PoorMansTime
-
-	log.Println("Doing stats window inital reset")
-	resetWindow(observedDBReset)
-	windowStart.sec = clk.Now().Unix()
-
-	if err := clk.Sleep(ctx, time.Duration(observation_interval)*time.Second); err != nil {
-		return err
-	}
+	reader := pgss.NewReader(cfg.ObservedDB)
+	texts := pgss.NewTextCache(reader)
+	interval := time.Duration(cfg.ObservationInterval) * time.Second
 
 	for {
-		var windowEnd PoorMansTime
-		var nextWindowStart PoorMansTime
-		var eventHash map[string]QueryEvent
-		var doIt bool
-
-		eventHash = make(map[string]QueryEvent)
-
-		windowEnd.sec = clk.Now().Unix()
-		w.parseFailures.Store(0)
-		w.eventsPending.Store(0)
-		doIt = true
-
+		doIt := true
 		log.Println("Performing sanity check")
-		err := observedDB.QueryRow(context.Background(), sanity_check).Scan(&doIt)
-		if err != nil {
+		if err := cfg.ObservedDB.QueryRow(context.Background(), cfg.SanityCheck).Scan(&doIt); err != nil {
 			log.Fatalln("couldn't run sanity check test", err)
 		}
-
-		if doIt == false {
+		if !doIt {
 			log.Fatalln("sanity check fails; exiting")
 			// will now exit because Fatal
 		}
 
-		log.Println("retrieving stats results")
+		now := w.clk.Now()
+		w.harvest(reader, texts, now)
 
-		stats, err := reader.Read(context.Background())
-		if err != nil {
-			log.Fatalln("couldn't select from pg_stat_statements", err)
-			// will now exit because Fatal
-		}
-		// Now, while we process the results of what we saw, start a new window in the observed db
-		log.Println("stats window reset")
-		resetWindow(observedDBReset)
-		nextWindowStart.sec = clk.Now().Unix()
-
-		log.Println("walking stats results")
-		// Keep only the top 100 entries for each metric, as the old SQL did.
-		for _, st := range topN(stats, 100) {
-			newEvent := eventFromStat(st)
-			newEvent.observationTimeStart = windowStart
-			newEvent.observationTimeEnd = windowEnd
-
-			w.eventCount.Add(1)
-			w.lastWindowEnd.Store(newEvent.observationTimeEnd.sec)
-
-			fingerprint, err := fingerprinting.Normalized(newEvent.query, w.cfg.Fingerprint)
-			if err != nil {
-				//log.Println("failed to get fingerprint for event, so ignoring it")
-				w.parseFailures.Add(1)
-				continue
-			}
-
-			// If we have a context for this query, build out a hash for it
-			controller_id := w.identities.Controllers.Find(rottenDB, newEvent.query, re_controller)
-			action_id := w.identities.Actions.Find(rottenDB, newEvent.query, re_action)
-			job_tag_id := w.identities.JobTags.Find(rottenDB, newEvent.query, re_job_tag)
-
-			context_hash := ""
-			if controller_id > 0 {
-				context_hash = fmt.Sprintf("%scontroller:%d", context_hash, controller_id)
-			}
-			if action_id > 0 {
-				context_hash = fmt.Sprintf("%saction:%d", context_hash, action_id)
-			}
-			if job_tag_id > 0 {
-				context_hash = fmt.Sprintf("%sjob_tag:%d", context_hash, job_tag_id)
-			}
-
-			// If we've already seen this fingerprint in this observation window,
-			// then merge this event with what we've seen so far.
-			// If it's new, make a new entry in our event hash.
-			newEvent.context = map[string]uint32{context_hash: uint32(newEvent.calls)}
-			existingEvent, present := eventHash[fingerprint]
-			if present {
-				existingEvent = mergeEvent(existingEvent, newEvent)
-				eventHash[fingerprint] = existingEvent
-			} else {
-				eventHash[fingerprint] = newEvent
-				w.eventsPending.Add(1)
-			}
-		}
-
-		log.Printf("processing %d unique events", w.eventsPending.Load())
-
-		// now that we've hashed all the events by fingerprint, process each one in a goroutine
-		for fingerprint, event := range eventHash {
-			var eventToBeGCedLater = event
-			go w.processEvent(rottenDB, logical_id, physical_id, observation_interval, fingerprint, &eventToBeGCedLater)
-			w.eventsPending.Add(^uint32(0)) // decrement
-		}
-
-		if int64(observation_interval) > (clk.Now().Unix() - windowEnd.sec) {
-			slackoff := int64(observation_interval) - (clk.Now().Unix() - windowEnd.sec)
-			log.Println("doing nothing for", slackoff, "more seconds")
-
-			// sleep for the remaining time of the observation window
-			if err := clk.Sleep(ctx, time.Duration(slackoff)*time.Second); err != nil {
+		if elapsed := w.clk.Now().Sub(now); elapsed < interval {
+			slackoff := interval - elapsed
+			log.Println("doing nothing for", slackoff.Round(time.Millisecond), "more")
+			if err := w.clk.Sleep(ctx, slackoff); err != nil {
 				return err
 			}
 		} else {
-			log.Println("ruh oh, our observation window was", (clk.Now().Unix()-windowEnd.sec)-int64(observation_interval), "seconds too short to deal with what we saw")
+			log.Println("ruh oh, our harvest took", (elapsed - interval).Round(time.Millisecond), "longer than the observation window")
+		}
+		log.Println("main loop complete")
+	}
+}
+
+// emptyBaseline is a baseline Loaded with an empty snapshot.
+func emptyBaseline() state.Loaded {
+	return state.Loaded{Baseline: true, Snapshot: pgss.Snapshot{Entries: map[pgss.Key]pgss.Stat{}}}
+}
+
+// harvest reads pg_stat_statements, diffs it against the saved snapshot, and
+// sends the top entries' activity for the window from the snapshot's
+// taken_at to now. Then it saves the new snapshot, taken at now.
+//
+// A baseline harvest (no usable snapshot, a state store error on Load, or a
+// failed Save last time) saves the snapshot and sends nothing, because Diff
+// against it reports lifetime totals or counts a window twice.
+func (w *Worker) harvest(reader *pgss.Reader, texts *pgss.TextCache, now time.Time) {
+	ctx := context.Background()
+	cfg := w.cfg
+	w.parseFailures.Store(0)
+	w.eventsPending.Store(0)
+
+	log.Println("retrieving stats results")
+	info, err := reader.Info(ctx)
+	if err != nil {
+		log.Fatalln("couldn't read pg_stat_statements_info", err)
+	}
+	stats, err := reader.ReadStats(ctx)
+	if err != nil {
+		log.Fatalln("couldn't select from pg_stat_statements", err)
+		// will now exit because Fatal
+	}
+	// Right after the read, so the next window's min and max cover only
+	// that window. This resets min and max only, never the counters.
+	if err := reader.MinmaxReset(ctx, cfg.MinmaxResetSchema); err != nil && !errors.Is(err, pgss.ErrNoMinmaxReset) {
+		log.Println("min/max reset failed, so the next window reports lifetime min and max:", err)
+	}
+	w.lastWindowEnd.Store(now.Unix())
+	w.lastHarvest.Store(now.Unix())
+
+	loaded, err := cfg.State.Load(ctx)
+	if err != nil {
+		log.Println("couldn't load the snapshot, so this harvest is a baseline:", err)
+		loaded = emptyBaseline()
+	}
+	if w.staleState && !loaded.Baseline {
+		log.Println("the last snapshot save failed, so this harvest is a baseline")
+		loaded = emptyBaseline()
+	}
+	deltas, next := pgss.Diff(loaded.Snapshot, stats, info)
+	texts.Retain(stats)
+
+	if loaded.Baseline {
+		log.Println("baseline harvest: saving the snapshot and sending nothing")
+	} else {
+		w.send(ctx, texts, deltas, loaded.TakenAt, now)
+	}
+
+	if err := cfg.State.Save(ctx, next, now); err != nil {
+		log.Println("couldn't save the snapshot, so the next harvest is a baseline:", err)
+		w.staleState = true
+		return
+	}
+	w.staleState = false
+}
+
+// send picks the top deltas, fetches their text, fingerprints them, merges
+// them by fingerprint, and hands each merged event to processEvent.
+func (w *Worker) send(ctx context.Context, texts *pgss.TextCache, deltas []pgss.Delta, start, end time.Time) {
+	cfg := w.cfg
+	picked := topNDeltas(deltas, 100)
+	rows := make([]pgss.Stat, len(picked))
+	for i := range picked {
+		rows[i] = picked[i].Stat
+	}
+	if err := texts.Fill(ctx, rows); err != nil {
+		log.Println("couldn't fetch query text, so entries without cached text are skipped this window:", err)
+	}
+	windowStart := PoorMansTime{sec: start.Unix()}
+	windowEnd := PoorMansTime{sec: end.Unix()}
+
+	eventHash := make(map[string]QueryEvent)
+	hidden, noText := 0, 0
+	log.Println("walking stats results")
+	for i, d := range picked {
+		if d.Calls <= 0 {
+			continue
+		}
+		if d.QueryID == 0 {
+			hidden++
+			continue
+		}
+		d.Query = rows[i].Query
+		if d.Query == "" {
+			noText++
+			continue
+		}
+		newEvent := eventFromDelta(d)
+		newEvent.observationTimeStart = windowStart
+		newEvent.observationTimeEnd = windowEnd
+		w.eventCount.Add(1)
+
+		fingerprint, err := fingerprinting.Normalized(newEvent.query, cfg.Fingerprint)
+		if err != nil {
+			w.parseFailures.Add(1)
+			continue
 		}
 
-		log.Println("main loop complete")
-		windowStart = nextWindowStart
+		// If we have a context for this query, build out a hash for it
+		controller_id := w.identities.Controllers.Find(cfg.RottenDB, newEvent.query, cfg.ReController)
+		action_id := w.identities.Actions.Find(cfg.RottenDB, newEvent.query, cfg.ReAction)
+		job_tag_id := w.identities.JobTags.Find(cfg.RottenDB, newEvent.query, cfg.ReJobTag)
+
+		context_hash := ""
+		if controller_id > 0 {
+			context_hash = fmt.Sprintf("%scontroller:%d", context_hash, controller_id)
+		}
+		if action_id > 0 {
+			context_hash = fmt.Sprintf("%saction:%d", context_hash, action_id)
+		}
+		if job_tag_id > 0 {
+			context_hash = fmt.Sprintf("%sjob_tag:%d", context_hash, job_tag_id)
+		}
+
+		// If we've already seen this fingerprint in this observation window,
+		// then merge this event with what we've seen so far.
+		// If it's new, make a new entry in our event hash.
+		newEvent.context = map[string]uint32{context_hash: uint32(newEvent.calls)}
+		if existing, present := eventHash[fingerprint]; present {
+			eventHash[fingerprint] = mergeEvent(existing, newEvent)
+		} else {
+			eventHash[fingerprint] = newEvent
+			w.eventsPending.Add(1)
+		}
+	}
+	if hidden > 0 {
+		log.Println(hidden, "top entries are hidden from the observer (no queryid), so they're skipped")
+	}
+	if noText > 0 {
+		log.Println(noText, "top entries have no query text, so they're skipped")
+	}
+
+	log.Printf("processing %d unique events", w.eventsPending.Load())
+
+	// now that we've hashed all the events by fingerprint, process each one in a goroutine
+	for fingerprint, event := range eventHash {
+		var eventToBeGCedLater = event
+		go w.processEvent(cfg.RottenDB, cfg.LogicalID, cfg.PhysicalID, cfg.ObservationInterval, fingerprint, &eventToBeGCedLater)
+		w.eventsPending.Add(^uint32(0)) // decrement
 	}
 }
 
@@ -298,8 +374,10 @@ func (w *Worker) Run(ctx context.Context) error {
 // same observation window, and returns the result. Counters and times are
 // summed, min and max are kept, mean and stddev are combined with
 // runningstat, and b's context histogram counts are added into a's. The
-// returned event shares a's context map, which is updated in place. Everything
-// else (query, window) comes from a.
+// merged stddev is absent (stddev_absent) if either side's is, and min and
+// max are lifetime if either side's are. The returned event shares a's
+// context map, which is updated in place. Everything else (query, window)
+// comes from a.
 func mergeEvent(a, b QueryEvent) QueryEvent {
 	a.calls += b.calls
 	a.total_time += b.total_time
@@ -309,6 +387,7 @@ func mergeEvent(a, b QueryEvent) QueryEvent {
 	if a.max_time < b.max_time {
 		a.max_time = b.max_time
 	}
+	a.minmax_lifetime = a.minmax_lifetime || b.minmax_lifetime
 
 	rs1 := runningstat.RunningStat{}
 	rs2 := runningstat.RunningStat{}
@@ -321,6 +400,12 @@ func mergeEvent(a, b QueryEvent) QueryEvent {
 
 	a.mean_time = rs1.RunningStatMean()
 	a.stddev_time = rs1.RunningStatDeviation()
+	// The merged stddev is built from both sides' stddevs, so it's only as
+	// good as the worse one. The mean doesn't use them.
+	a.stddev_absent = a.stddev_absent || b.stddev_absent
+	if a.stddev_absent {
+		a.stddev_time = 0
+	}
 
 	a.rows += b.rows
 	a.shared_blks_hit += b.shared_blks_hit
