@@ -6,7 +6,7 @@ require (
 	github.com/benchub/runningstat v0.2.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/mitchellh/reflectwalk v1.0.2
-	github.com/pganalyze/pg_query_go/v5 v5.1.0
+	github.com/pganalyze/pg_query_go/v6 v6.2.5
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	github.com/tj/go-pg-escape v1.1.0

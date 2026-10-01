@@ -46,8 +46,8 @@ How to use it
   ```bash
   go build github.com/benchub/rotten
   ```
-   Native macOS builds don't work yet (pg_query_go v5 fails on `strchrnul`). They'll work
-   after the pg_query_go upgrade. Until then, `make test` runs the build in Docker.
+   Native builds work on macOS and Linux. `make test-unit` runs natively, and `make test`
+   runs the full suite in Docker.
 3. Install pg_partman in the rotten db. See https://github.com/pgpartman/pg_partman. tldr:
  - download pg_partman and `make install`
  - add `pg_partman_bgw` to `shared_preload_libraries` in postgresql.conf

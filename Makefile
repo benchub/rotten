@@ -1,6 +1,6 @@
 # Go tests run inside docker/test.Dockerfile so they behave the same on macOS
-# and Linux. pg_query_go v5 doesn't build natively on macOS yet, so test-unit
-# also runs in the container for now (no Docker socket, -short).
+# and Linux. test-unit runs natively with the host Go toolchain (-short, no
+# Docker needed); pg_query_go v6 builds natively on macOS.
 #
 # Sibling containers: the host Docker socket is mounted, so testcontainers in
 # the test container starts containers next to it, not inside it. Their
@@ -46,9 +46,9 @@ image:
 test: image
 	$(DOCKER_RUN) $(DOCKER_SOCK) $(IMAGE) go test -race $(GO_TEST_ARGS) ./...
 
-## test-unit: Go tests with -short and no Docker socket.
-test-unit: image
-	$(DOCKER_RUN) $(IMAGE) go test -short $(GO_TEST_ARGS) ./...
+## test-unit: Go tests with -short, run natively on the host. No Docker.
+test-unit:
+	go test -short $(GO_TEST_ARGS) ./...
 
 ## golden: regenerate the fingerprint golden file, owned by the host user.
 golden: image
