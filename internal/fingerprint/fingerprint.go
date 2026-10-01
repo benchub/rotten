@@ -124,23 +124,7 @@ func Normalized(query string) (fingerprint string, err error) {
 	// Turn our munged tree back into a query
 	deparsed, err := pg_query.Deparse(tree)
 	if err != nil {
-		// we can't seem to use our golang parse tree, so let's just see if we can't fingerprint it straight.
-		// This might end up in a lot of fingerprints that are only different based on their schema name,
-		// but it's the best we can do.
-		if cursorRE.MatchString(query) || tempTableRE.MatchString(query) {
-			// EXCEPT - if the query matches our cursor or temp table RE, that's just going to grow as a function of usage, not of schema count.
-			// So actually _don't_ fingerprint something that matches either of those regexes.
-			log.Println("couldn't fingerprint non-deparsable query involving cursors or temp tables: ", modified_query, err)
-			return "", errors.New("failed to deparse; no fingerprint fallback")
-		} else {
-			fingerprint, err = pg_query.Fingerprint(modified_query)
-			if err != nil {
-				log.Println("couldn't fingerprint non-deparsable query: ", modified_query, err)
-				return "", errors.New("failed to deparse and fingerprint fallback")
-			} else {
-				return fingerprint, nil
-			}
-		}
+		return deparseFallback(modified_query, err)
 	}
 
 	fingerprint, err = pg_query.Fingerprint(deparsed)
@@ -149,6 +133,26 @@ func Normalized(query string) (fingerprint string, err error) {
 		return "", errors.New("failed to fingerprint depared query")
 	}
 
+	return fingerprint, nil
+}
+
+// deparseFallback handles a query whose munged parse tree couldn't be
+// deparsed. deparseErr is the Deparse error, used only for logging.
+func deparseFallback(query string, deparseErr error) (string, error) {
+	// we can't seem to use our golang parse tree, so let's just see if we can't fingerprint it straight.
+	// This might end up in a lot of fingerprints that are only different based on their schema name,
+	// but it's the best we can do.
+	if cursorRE.MatchString(query) || tempTableRE.MatchString(query) {
+		// EXCEPT - if the query matches our cursor or temp table RE, that's just going to grow as a function of usage, not of schema count.
+		// So actually _don't_ fingerprint something that matches either of those regexes.
+		log.Println("couldn't fingerprint non-deparsable query involving cursors or temp tables: ", query, deparseErr)
+		return "", errors.New("failed to deparse; no fingerprint fallback")
+	}
+	fingerprint, err := pg_query.Fingerprint(query)
+	if err != nil {
+		log.Println("couldn't fingerprint non-deparsable query: ", query, err)
+		return "", errors.New("failed to deparse and fingerprint fallback")
+	}
 	return fingerprint, nil
 }
 
