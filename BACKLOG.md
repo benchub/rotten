@@ -34,14 +34,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -16, -22.
 
-### 20261001-103222-24: Add the worker state store and snapshot table.
-- **Do:** Add `internal/state` on SQLite (`modernc.org/sqlite`) in `StateDir`. It holds a `snapshot` table (key, counters, and `taken_at`) with `Load` and `Save`. Writes are atomic.
-  - Treat a snapshot older than `MaxSnapshotAge` as a baseline.
-- **Precision:** Store `stats_since`, `minmax_stats_since`, and `stats_reset` at full microsecond precision. If they get truncated, the next harvest will think a reset happened when none did.
-- **Red test:** Round-trip a snapshot. A stale snapshot becomes a baseline. A corrupt file gets moved aside, and the worker starts from a baseline.
-- **Done when:** Passes.
-- **Needs:** -19.
-
 ### 20261001-103222-25: Wire diffing into the worker and stop resetting.
 - **Do:** In the harvest loop:
   1. Read.

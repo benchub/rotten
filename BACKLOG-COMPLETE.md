@@ -260,3 +260,12 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** 20261001-134632-1.
 - Completed: October 1, 2026, 572c722. Follow-up: 20261001-140616-1 (nested element casts).
+
+### 20261001-103222-24: Add the worker state store and snapshot table.
+- **Do:** Add `internal/state` on SQLite (`modernc.org/sqlite`) in `StateDir`. It holds a `snapshot` table (key, counters, and `taken_at`) with `Load` and `Save`. Writes are atomic.
+  - Treat a snapshot older than `MaxSnapshotAge` as a baseline.
+- **Precision:** Store `stats_since`, `minmax_stats_since`, and `stats_reset` at full microsecond precision. If they get truncated, the next harvest will think a reset happened when none did.
+- **Red test:** Round-trip a snapshot. A stale snapshot becomes a baseline. A corrupt file gets moved aside, and the worker starts from a baseline.
+- **Done when:** Passes.
+- **Needs:** -19.
+- Completed: October 1, 2026, 760ef37. Review found SQLite deleting side files during a failed open, and a false corruption alarm after a crash mid-checkpoint. Both are fixed.
