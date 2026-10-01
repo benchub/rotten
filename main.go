@@ -385,6 +385,75 @@ func main() {
 	// We like stats
 	go reportProgress(*noIdleHandsFlag, status_interval, observation_interval)
 
+	run(context.Background(), workerConfig{
+		rottenDB:            rottenDB,
+		observedDB:          observedDB,
+		observedDBReset:     observedDBReset,
+		observationInterval: observation_interval,
+		sanityCheck:         sanity_check,
+		logicalID:           logical_id,
+		physicalID:          physical_id,
+		reController:        re_controller,
+		reAction:            re_action,
+		reJobTag:            re_job_tag,
+	}, realClock{})
+
+	// until we implement graceful exiting, we'll never get here
+	// AppCleanup()
+}
+
+// workerConfig is what run needs: the connections main opened and the
+// settings main read from the config file.
+type workerConfig struct {
+	rottenDB            *pgxpool.Pool
+	observedDB          *pgx.Conn
+	observedDBReset     *pgx.Conn
+	observationInterval uint32
+	sanityCheck         string
+	logicalID           uint32
+	physicalID          uint32
+	reController        *regexp.Regexp
+	reAction            *regexp.Regexp
+	reJobTag            *regexp.Regexp
+}
+
+// clock is run's source of time. Sleep returns ctx.Err() if ctx ends first.
+type clock interface {
+	Now() time.Time
+	Sleep(ctx context.Context, d time.Duration) error
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
+func (realClock) Sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// run is the worker's main loop. It returns only when ctx ends, and only at
+// one of its sleeps. Database calls still use context.Background(), and
+// errors still exit through log.Fatalln, as they always have. main starts
+// reportProgress before calling run.
+func run(ctx context.Context, cfg workerConfig, clk clock) error {
+	rottenDB := cfg.rottenDB
+	observedDB := cfg.observedDB
+	observedDBReset := cfg.observedDBReset
+	observation_interval := cfg.observationInterval
+	sanity_check := cfg.sanityCheck
+	logical_id := cfg.logicalID
+	physical_id := cfg.physicalID
+	re_controller := cfg.reController
+	re_action := cfg.reAction
+	re_job_tag := cfg.reJobTag
+
 	// first things first, reset pg_stat_statement data so that we might have a clean observation window
 	var windowStart PoorMansTime
 
@@ -393,9 +462,11 @@ func main() {
 		log.Fatalln("couldn't reset pg_stat_statements", err)
 		// will now exit because Fatal
 	}
-	windowStart.sec = time.Now().Unix()
+	windowStart.sec = clk.Now().Unix()
 
-	time.Sleep(time.Duration(observation_interval) * time.Second)
+	if err := clk.Sleep(ctx, time.Duration(observation_interval)*time.Second); err != nil {
+		return err
+	}
 
 	for {
 		var windowEnd PoorMansTime
@@ -405,7 +476,7 @@ func main() {
 
 		eventHash = make(map[string]QueryEvent)
 
-		windowEnd.sec = time.Now().Unix()
+		windowEnd.sec = clk.Now().Unix()
 		parseFailures = 0
 		eventsPending = 0
 		doIt = true
@@ -456,7 +527,7 @@ func main() {
 			log.Fatalln("couldn't reset pg_stat_statements", err)
 			// will now exit because Fatal
 		}
-		nextWindowStart.sec = time.Now().Unix()
+		nextWindowStart.sec = clk.Now().Unix()
 
 		log.Println("walking stats results")
 		for queries.Next() {
@@ -518,22 +589,21 @@ func main() {
 			eventsPending--
 		}
 
-		if int64(observation_interval) > (time.Now().Unix() - windowEnd.sec) {
-			slackoff := int64(observation_interval) - (time.Now().Unix() - windowEnd.sec)
+		if int64(observation_interval) > (clk.Now().Unix() - windowEnd.sec) {
+			slackoff := int64(observation_interval) - (clk.Now().Unix() - windowEnd.sec)
 			log.Println("doing nothing for", slackoff, "more seconds")
 
 			// sleep for the remaining time of the observation window
-			time.Sleep(time.Duration(slackoff) * time.Second)
+			if err := clk.Sleep(ctx, time.Duration(slackoff)*time.Second); err != nil {
+				return err
+			}
 		} else {
-			log.Println("ruh oh, our observation window was", (time.Now().Unix()-windowEnd.sec)-int64(observation_interval), "seconds too short to deal with what we saw")
+			log.Println("ruh oh, our observation window was", (clk.Now().Unix()-windowEnd.sec)-int64(observation_interval), "seconds too short to deal with what we saw")
 		}
 
 		log.Println("main loop complete")
 		windowStart = nextWindowStart
 	}
-
-	// until we implement graceful exiting, we'll never get here
-	// AppCleanup()
 }
 
 // mergeEvent folds b into a, for two events with the same fingerprint in the

@@ -464,3 +464,21 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** Let `consumeSamples` record a new fingerprint's first sample before `reportSamples` starts, step once, and expect 19 rows per source.
 - **Done when:** Tests pass.
 - **Needs:** -10.
+
+### 20261001-120501-1: Make in-flight event processing deterministic.
+- **Do:** In `run`, increment the processing counter (or add to a WaitGroup) before `go processEvent`, not inside it. Today the counter can read zero while spawned goroutines haven't started yet.
+- **Red test:** Right after `run` spawns its goroutines, the in-flight count equals the number of unique events in the window.
+- **Done when:** Tests pass, and `TestWorkerEndToEnd` can wait on the counter instead of polling the database.
+- **Needs:** -13.
+
+### 20261001-120501-2: Let `run` exit gracefully on errors and cancellation.
+- **Do:** Pass `ctx` into the worker loop's database calls. Replace the `log.Fatalln` calls in `run` with returned errors, and have `main` log them and exit.
+- **Red test:** Cancelling `ctx` mid-query makes `run` return promptly, and a failing sanity check makes `run` return an error instead of exiting the process.
+- **Done when:** Tests pass.
+- **Needs:** -12.
+
+### 20261001-120501-3: Inject the stats wait instead of using a global.
+- **Do:** Replace the `statsWait` package global with a dependency passed to `reportSamples`, so tests don't swap a global and need the parking dance in `parkStats`.
+- **Red test:** None needed. The existing stats and worker tests are the check.
+- **Done when:** The suite is green with no `statsWait` global.
+- **Needs:** -14 (do it during or after).
