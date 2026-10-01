@@ -228,10 +228,25 @@ func processEvent(rottenDB *pgxpool.Pool, logical_source_id uint32, physical_sou
 	// now that the event has been recorded and the stats updated, our work is done and this goroutine can end.
 }
 
+// statsWait blocks between reportSamples passes. Returning false makes
+// reportSamples return. Production always sleeps and returns true, so the
+// loop runs forever; tests swap in a stepper to drive and stop it.
+var statsWait = func(d time.Duration) bool {
+	time.Sleep(d)
+	return true
+}
+
 func reportSamples(rottenDB *pgxpool.Pool, f *Fingerprint, logical_source_id uint32, observation_interval uint32) {
+	wait := statsWait
+	// Read f.last under the lock, because consumeSamples may already be
+	// writing it.
+	f.statsLock.RLock()
 	lastReport := f.last
+	f.statsLock.RUnlock()
 	for {
-		time.Sleep(time.Duration(2*observation_interval) * time.Second)
+		if !wait(time.Duration(2*observation_interval) * time.Second) {
+			return
+		}
 		if f.last > lastReport {
 			// Let's record these stats we've been collecting for this fingerprint.
 			// As we walk through all of them for both this logical_source_id and logical_source_id=0, we
@@ -341,7 +356,11 @@ func reportSamples(rottenDB *pgxpool.Pool, f *Fingerprint, logical_source_id uin
 
 func consumeSamples(f *Fingerprint) {
 	for {
-		sample := <-f.samples
+		sample, ok := <-f.samples
+		if !ok {
+			// Production never closes the channel. Tests do, to stop this loop.
+			return
+		}
 
 		// lock the stats block for writing our update
 		f.statsLock.Lock()

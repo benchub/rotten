@@ -462,3 +462,15 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A URL-form connection string with `sslrootcert` builds the chain.
 - **Done when:** Tests pass.
 - **Needs:** -11.
+
+### 20261001-114554-1: Stop dropping stats when a fingerprint_stats flush rolls back.
+- **Do:** When `reportSamples` rolls back a source (for example, only some of the 19 types exist), it still resets the in-memory stats, so the source that rolled back loses those samples. The other source already committed them. Its "Only found" log line also prints `logical_source_id` instead of the `source_id` that failed. Decide whether to keep the stats for the next pass or repair the missing rows, and fix the log line.
+- **Red test:** `TestReportSamplesPartialRowsRollBack` in `stats_test.go` asserts the reset today. Flip it to the new behavior.
+- **Done when:** Tests pass.
+- **Needs:** -10.
+
+### 20261001-120544-1: Flush a new fingerprint's first sample.
+- **Do:** A new fingerprint's first sample can go unflushed until a second sample arrives. `reportSamples` copies `f.last` into `lastReport` when it starts. If `consumeSamples` has already recorded the first sample, no pass sees a change until another sample comes in.
+- **Red test:** Let `consumeSamples` record a new fingerprint's first sample before `reportSamples` starts, step once, and expect 19 rows per source.
+- **Done when:** Tests pass.
+- **Needs:** -10.
