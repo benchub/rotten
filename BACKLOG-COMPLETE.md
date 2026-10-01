@@ -90,3 +90,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Tests pass.
 - **Needs:** -1.
 - Completed: October 1, 2026, 46606a0. Follow-ups are 20261001-114433-1 and -2.
+
+### 20261001-103222-10: Characterize the fingerprint_stats merge.
+- **Do:** Test `reportSamples` and `consumeSamples` with an injectable sleep or clock:
+  - On the first flush, insert 19 rows for both the source and source 0.
+  - On a later flush, merge with what's already in the database.
+  - When only some types are present, roll back.
+- **Red test:** You can't inject the sleep yet. Add the seam.
+- **Also:** Once the sleep seam exists, test `processEvent`'s new-fingerprint branch without pre-registering the fingerprint. Check that it registers the fingerprint, starts the goroutines, delivers the sample without blocking, and stores the right `normalized` text. Task -9's tests skip this branch to avoid the `f.last` race that -13 fixes.
+- **Done when:** Tests pass, with numbers checked against hand-computed means and deviations.
+- **Needs:** -2.
+- Completed: October 1, 2026, 96c70f3. Found the rollback bug (20261001-114554-1) and the unflushed first sample (20261001-120544-1).

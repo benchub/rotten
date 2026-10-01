@@ -36,16 +36,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -26.
 
-### 20261001-103222-10: Characterize the fingerprint_stats merge.
-- **Do:** Test `reportSamples` and `consumeSamples` with an injectable sleep or clock:
-  - On the first flush, insert 19 rows for both the source and source 0.
-  - On a later flush, merge with what's already in the database.
-  - When only some types are present, roll back.
-- **Red test:** You can't inject the sleep yet. Add the seam.
-- **Also:** Once the sleep seam exists, test `processEvent`'s new-fingerprint branch without pre-registering the fingerprint. Check that it registers the fingerprint, starts the goroutines, delivers the sample without blocking, and stores the right `normalized` text. Task -9's tests skip this branch to avoid the `f.last` race that -13 fixes.
-- **Done when:** Tests pass, with numbers checked against hand-computed means and deviations.
-- **Needs:** -2.
-
 ### 20261001-103222-12: Characterize the worker end to end.
 - **Do:** Pull the loop out of `main()` into `run(ctx, cfg, clock)`. Point the worker at `StartObserved(t, 16)` (the current helpers only work up to 16) and `StartRotten`, with a two-second window. Generate a known workload with marginalia comments.
 - **Red test:** Assert on the events, contexts, and fingerprints the worker writes. Assert that cancelling `ctx` stops the worker.
