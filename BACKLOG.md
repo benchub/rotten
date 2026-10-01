@@ -32,7 +32,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   - min, max, mean, and stddev come from exec only.
   - Also read `pg_stat_statements_info`.
 - **Red test:** Run a known workload against each of versions 14 through 18 and assert on the fields. Expect 17 and 18 to fail first.
-- **Also:** On 17+, call the min/max wrapper from `schema/observer.sql` (`<schema>.pg_stat_statements_minmax_reset()`) instead of the raw reset function. Add one optional worker setting for the wrapper's schema, defaulting to `rotten`.
+- **Bridge:** The observer can't do a full reset, so until -25 the worker keeps only the old `dba` reset function, in `schema/legacy_reset.sql`. Reads go through the observer. The min/max wrapper and its schema setting move to -21.
 - **Done when:** The matrix passes, the worker uses `Reader`, and `schema/functions*.sql` are deleted.
 - **Needs:** -14, -15.
 
@@ -64,6 +64,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ### 20261001-103222-21: Handle min and max for each window.
 - **Do:** On 17+, the worker runs a min/max-only reset after each harvest. On 14 through 16, it reports lifetime min and max with a `minmax_lifetime` flag.
+- **Also:** Call the wrapper `<schema>.pg_stat_statements_minmax_reset()` from `schema/observer.sql`. Add one optional worker setting for its schema, defaulting to `rotten`.
 - **Red test:** Run on 17 and 18. The second window's max reflects only that window. Run on 16. The flag gets set.
 - **Done when:** Passes.
 - **Needs:** -19, -15.
@@ -96,7 +97,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   5. Send.
   6. Save the snapshot.
 
-  The window runs from the snapshot's `taken_at` to now. The worker never runs a full reset. Delete the reset code.
+  The window runs from the snapshot's `taken_at` to now. The worker never runs a full reset. Delete the reset code and `schema/legacy_reset.sql`, the temporary bridge from -16.
 - **Red test:** End to end on 18:
   - `stats_reset` never changes because of the worker.
   - An outside `pg_stat_statements_reset()` mid-run gets handled per the rules.
