@@ -488,53 +488,12 @@ func main() {
 			// If we've already seen this fingerprint in this observation window,
 			// then merge this event with what we've seen so far.
 			// If it's new, make a new entry in our event hash.
+			newEvent.context = map[string]uint32{context_hash: uint32(newEvent.calls)}
 			existingEvent, present := eventHash[fingerprint]
 			if present {
-				existingEvent.calls += newEvent.calls
-				existingEvent.total_time += newEvent.total_time
-				if existingEvent.min_time > newEvent.min_time {
-					existingEvent.min_time = newEvent.min_time
-				}
-				if existingEvent.max_time < newEvent.max_time {
-					existingEvent.max_time = newEvent.max_time
-				}
-
-				rs1 := runningstat.RunningStat{}
-				rs2 := runningstat.RunningStat{}
-
-				rs1.Init(int64(existingEvent.calls), existingEvent.mean_time, existingEvent.stddev_time)
-				rs2.Init(int64(newEvent.calls), newEvent.mean_time, newEvent.stddev_time)
-				rs1.Merge(rs2)
-
-				existingEvent.mean_time = rs1.RunningStatMean()
-				existingEvent.stddev_time = rs1.RunningStatDeviation()
-
-				existingEvent.rows += newEvent.rows
-				existingEvent.shared_blks_hit += newEvent.shared_blks_hit
-				existingEvent.shared_blks_read += newEvent.shared_blks_read
-				existingEvent.shared_blks_written += newEvent.shared_blks_written
-				existingEvent.shared_blks_dirtied += newEvent.shared_blks_dirtied
-				existingEvent.local_blks_written += newEvent.local_blks_written
-				existingEvent.local_blks_dirtied += newEvent.local_blks_dirtied
-				existingEvent.local_blks_read += newEvent.local_blks_read
-				existingEvent.local_blks_hit += newEvent.local_blks_hit
-				existingEvent.temp_blks_read += newEvent.temp_blks_read
-				existingEvent.temp_blks_written += newEvent.temp_blks_written
-				existingEvent.blk_read_time += newEvent.blk_read_time
-				existingEvent.blk_write_time += newEvent.blk_write_time
-
-				existingContextCount, present := existingEvent.context[context_hash]
-				if present {
-					existingEvent.context[context_hash] = existingContextCount + uint32(newEvent.calls)
-				} else {
-					existingEvent.context[context_hash] = uint32(newEvent.calls)
-				}
-
+				existingEvent = mergeEvent(existingEvent, newEvent)
 				eventHash[fingerprint] = existingEvent
 			} else {
-				newEvent.context = make(map[string]uint32)
-				newEvent.context[context_hash] = uint32(newEvent.calls)
-
 				eventHash[fingerprint] = newEvent
 				eventsPending++
 			}
@@ -566,6 +525,55 @@ func main() {
 
 	// until we implement graceful exiting, we'll never get here
 	// AppCleanup()
+}
+
+// mergeEvent folds b into a, for two events with the same fingerprint in the
+// same observation window, and returns the result. Counters and times are
+// summed, min and max are kept, mean and stddev are combined with
+// runningstat, and b's context histogram counts are added into a's. The
+// returned event shares a's context map, which is updated in place. Everything
+// else (query, window) comes from a.
+func mergeEvent(a, b QueryEvent) QueryEvent {
+	a.calls += b.calls
+	a.total_time += b.total_time
+	if a.min_time > b.min_time {
+		a.min_time = b.min_time
+	}
+	if a.max_time < b.max_time {
+		a.max_time = b.max_time
+	}
+
+	rs1 := runningstat.RunningStat{}
+	rs2 := runningstat.RunningStat{}
+
+	// Note: a.calls already includes b.calls here. That's how it's always
+	// worked, so this characterization keeps it.
+	rs1.Init(int64(a.calls), a.mean_time, a.stddev_time)
+	rs2.Init(int64(b.calls), b.mean_time, b.stddev_time)
+	rs1.Merge(rs2)
+
+	a.mean_time = rs1.RunningStatMean()
+	a.stddev_time = rs1.RunningStatDeviation()
+
+	a.rows += b.rows
+	a.shared_blks_hit += b.shared_blks_hit
+	a.shared_blks_read += b.shared_blks_read
+	a.shared_blks_written += b.shared_blks_written
+	a.shared_blks_dirtied += b.shared_blks_dirtied
+	a.local_blks_written += b.local_blks_written
+	a.local_blks_dirtied += b.local_blks_dirtied
+	a.local_blks_read += b.local_blks_read
+	a.local_blks_hit += b.local_blks_hit
+	a.temp_blks_read += b.temp_blks_read
+	a.temp_blks_written += b.temp_blks_written
+	a.blk_read_time += b.blk_read_time
+	a.blk_write_time += b.blk_write_time
+
+	for hash, count := range b.context {
+		a.context[hash] += count
+	}
+
+	return a
 }
 
 func reportProgress(noIdleHands bool, interval uint32, observation_interval uint32) {

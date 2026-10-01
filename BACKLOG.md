@@ -471,3 +471,15 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A docs smoke check that every config key in `conf`, the server config, and every `ENV` the UI reads appears in the docs. A small Go test can do this.
 - **Done when:** Passes, and someone who isn't the author can follow the setup.
 - **Needs:** -41, -50.
+
+### 20261001-113241-1: Fix the mean and stddev merge in mergeEvent.
+- **Do:** `mergeEvent` adds `b.calls` to `a.calls` before it builds the first `RunningStat`, so the first side is weighted by both call counts. For two events of two calls each (means 10 and 20), it gives a mean of 13.33 instead of 15. Also, `runningstat.Init` treats the stddev as a sample stddev (`sd^2*(n-1)`), but pg_stat_statements reports a population stddev. And when `n <= 1`, `Init` stores `sd` unsquared in `m_newS` and sets `m_oldS` to 0. `Merge` reads the second side's `m_oldS`, so a one-call second event's stddev is dropped. An unsquared `sd` only reaches `Merge` on the first side. Use the original count and the right variance formula.
+- **Red test:** Change the expected values in `TestMergeEventRunningStat` to the correct ones (mean 15 for the example above).
+- **Done when:** Tests pass with correct pooled mean and stddev.
+- **Needs:** -8.
+
+### 20261001-113241-2: Guard the uint32 context counts.
+- **Do:** The context histogram stores `uint32(calls)`. That truncates fractional values, and a call count above 4,294,967,295 overflows (out-of-range float-to-int conversion is implementation-defined in Go). Sums of counts can also wrap. Decide on a wider type or a clamp.
+- **Red test:** A `mergeEvent` test with counts near the uint32 limit.
+- **Done when:** Tests pass, and large counts don't wrap.
+- **Needs:** -8.
