@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -83,25 +82,21 @@ func parkStats(t *testing.T, w *Worker) {
 	t.Cleanup(func() { close(done) })
 }
 
-// startObservedForWorker starts Postgres 16 with the dba functions from
-// schema/functions-pg13.sql, owned by postgres, and an unprivileged
-// rotten_observer login that may only call them.
+// startObservedForWorker starts Postgres 16 with schema/observer.sql and
+// schema/legacy_reset.sql loaded, so rotten_observer reads pg_stat_statements
+// directly and may only full-reset through the legacy dba function.
 func startObservedForWorker(t *testing.T) *testdb.DB {
 	t.Helper()
 	db := testdb.StartObserved(t, 16)
-	conn := db.Connect(t)
-	sql, err := os.ReadFile(filepath.Join(testdb.RepoRoot(), "schema", "functions-pg13.sql"))
-	if err != nil {
-		t.Fatal(err)
+	for _, f := range []string{"observer.sql", "legacy_reset.sql"} {
+		if out, err := db.PSQL(t, filepath.Join(testdb.RepoRoot(), "schema", f), nil); err != nil {
+			t.Fatalf("%s: %v\n%s", f, err, out)
+		}
 	}
+	conn := db.Connect(t)
 	ctx := context.Background()
 	for _, s := range []string{
-		"create schema dba",
-		"set search_path = dba, public",
-		string(sql),
-		"reset search_path",
-		"create role rotten_observer login password 'rotten_observer'",
-		"grant usage on schema dba to rotten_observer",
+		"alter role rotten_observer password 'rotten_observer'",
 		"create table widgets (id int primary key, name text)",
 		"insert into widgets select g, 'w' || g from generate_series(1, 10) g",
 	} {

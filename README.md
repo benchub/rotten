@@ -33,8 +33,9 @@ As a young project rotten makes a lot of assumptions. Among them:
    useful on busy systems, and anyway, this project is only trying to find the worst 
    offenders, not an exhaustive snapshot.
 3. You are ok with a SQL prompt as a UI for now.
-4. You will have a role on your monitored dbs called "rotten-observer" and it will call
-   some security definer functions (to query and reset pg_stat_statments in a "dba" schema.
+4. You will have an observer role on your monitored dbs (default `rotten_observer`) that
+   reads pg_stat_statements directly through `pg_read_all_stats`, and for now resets it
+   through one security definer function in a "dba" schema.
 5. Your monitored databases have distinct identifiers of some kind (fqdn, IP, etc) as well
    as some logical identification ("the primary production server" or "cluster38 secondary").
 
@@ -65,8 +66,10 @@ How to use it
 5. Install `pg_stat_statements` in the monitored database:
  - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
  - run `CREATE EXTENSION pg_stat_statements` in the monitored database
-6. Install the `rotten-observer` role in your monitored databases and the `schema/function.sql`
-   in the `dba` schema on those databases. Use `schema/function-pg13.sql` if you're on PG 13 or newer. 
+6. As a superuser on each monitored database (Postgres 14 through 18), run `schema/observer.sql`
+   and then `schema/legacy_reset.sql` with psql. The reset function goes away once diffing lands.
+   Note: min, max, mean, and stddev times are now exec time only (planning time isn't
+   mixed in), while total time is still plan + exec.
 7. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
 8. Modify the conf to fit your environment.
   1. `RottenDBConn` and `ObservedDBConn` are hopefully self-explanatory. Extra care has been

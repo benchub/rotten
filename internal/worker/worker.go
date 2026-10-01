@@ -17,6 +17,7 @@ import (
 
 	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/identity"
+	"github.com/benchub/rotten/internal/pgss"
 )
 
 type PoorMansTime struct {
@@ -168,14 +169,13 @@ func (w *Worker) Run(ctx context.Context) error {
 	re_action := cfg.ReAction
 	re_job_tag := cfg.ReJobTag
 
+	reader := pgss.NewReader(observedDB)
+
 	// first things first, reset pg_stat_statement data so that we might have a clean observation window
 	var windowStart PoorMansTime
 
 	log.Println("Doing stats window inital reset")
-	if _, err := observedDBReset.Exec(context.Background(), `select dba.pg_stat_statements_user_reset()`); err != nil {
-		log.Fatalln("couldn't reset pg_stat_statements", err)
-		// will now exit because Fatal
-	}
+	resetWindow(observedDBReset)
 	windowStart.sec = clk.Now().Unix()
 
 	if err := clk.Sleep(ctx, time.Duration(observation_interval)*time.Second); err != nil {
@@ -208,48 +208,20 @@ func (w *Worker) Run(ctx context.Context) error {
 
 		log.Println("retrieving stats results")
 
-		// instead of getting all of pg_stat_statements, we get the top 100 queries for each metric
-		// (getting everything can take several minutes; this only takes a few seconds)
-		queries, err := observedDB.Query(context.Background(), `select query,calls,total_time,min_time,max_time,mean_time,stddev_time,rows,shared_blks_hit,shared_blks_read,shared_blks_dirtied,shared_blks_written,local_blks_hit,local_blks_read,local_blks_dirtied,local_blks_written,temp_blks_written,temp_blks_read,blk_write_time,blk_read_time from (
-                                        with raw as (select * from dba.pg_stat_statements())
-                                        select * from (select * from raw order by calls desc limit 100) calls union distinct 
-                                        select * from (select * from raw order by total_time desc limit 100) total_time union distinct 
-                                        select * from (select * from raw order by min_time desc limit 100) min_time union distinct 
-                                        select * from (select * from raw order by max_time desc limit 100) max_time union distinct 
-                                        select * from (select * from raw order by mean_time desc limit 100) mean_time union distinct 
-                                        select * from (select * from raw order by stddev_time desc limit 100) stddev_time union distinct 
-                                        select * from (select * from raw order by rows desc limit 100) rows union distinct 
-                                        select * from (select * from raw order by shared_blks_hit desc limit 100) shared_blks_hit union distinct 
-                                        select * from (select * from raw order by shared_blks_read desc limit 100) shared_blks_read union distinct 
-                                        select * from (select * from raw order by shared_blks_written desc limit 100) shared_blks_written union distinct 
-                                        select * from (select * from raw order by shared_blks_dirtied desc limit 100) shared_blks_dirtied union distinct 
-                                        select * from (select * from raw order by local_blks_hit desc limit 100) local_blks_hit union distinct 
-                                        select * from (select * from raw order by local_blks_read desc limit 100) local_blks_read union distinct 
-                                        select * from (select * from raw order by local_blks_written desc limit 100) local_blks_written union distinct 
-                                        select * from (select * from raw order by local_blks_dirtied desc limit 100) local_blks_dirtied union distinct 
-                                        select * from (select * from raw order by temp_blks_read desc limit 100) temp_blks_read union distinct 
-                                        select * from (select * from raw order by temp_blks_written desc limit 100) temp_blks_written union distinct
-                                        select * from (select * from raw order by blk_write_time desc limit 100) blk_write_time union distinct 
-                                        select * from (select * from raw order by blk_read_time desc limit 100) blk_read_time) foo`)
+		stats, err := reader.Read(context.Background())
 		if err != nil {
 			log.Fatalln("couldn't select from pg_stat_statements", err)
 			// will now exit because Fatal
 		}
 		// Now, while we process the results of what we saw, start a new window in the observed db
 		log.Println("stats window reset")
-		if _, err := observedDBReset.Exec(context.Background(), `select dba.pg_stat_statements_user_reset()`); err != nil {
-			log.Fatalln("couldn't reset pg_stat_statements", err)
-			// will now exit because Fatal
-		}
+		resetWindow(observedDBReset)
 		nextWindowStart.sec = clk.Now().Unix()
 
 		log.Println("walking stats results")
-		for queries.Next() {
-			newEvent := QueryEvent{}
-			if err := queries.Scan(&newEvent.query, &newEvent.calls, &newEvent.total_time, &newEvent.min_time, &newEvent.max_time, &newEvent.mean_time, &newEvent.stddev_time, &newEvent.rows, &newEvent.shared_blks_hit, &newEvent.shared_blks_read, &newEvent.shared_blks_dirtied, &newEvent.shared_blks_written, &newEvent.local_blks_hit, &newEvent.local_blks_read, &newEvent.local_blks_dirtied, &newEvent.local_blks_written, &newEvent.temp_blks_written, &newEvent.temp_blks_read, &newEvent.blk_write_time, &newEvent.blk_read_time); err != nil {
-				log.Fatalln("couldn't parse query row", err)
-				// will now exit because Fatal
-			}
+		// Keep only the top 100 entries for each metric, as the old SQL did.
+		for _, st := range topN(stats, 100) {
+			newEvent := eventFromStat(st)
 			newEvent.observationTimeStart = windowStart
 			newEvent.observationTimeEnd = windowEnd
 
@@ -292,7 +264,6 @@ func (w *Worker) Run(ctx context.Context) error {
 				w.eventsPending.Add(1)
 			}
 		}
-		queries.Close()
 
 		log.Printf("processing %d unique events", w.eventsPending.Load())
 

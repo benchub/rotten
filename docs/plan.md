@@ -8,7 +8,7 @@ Written October 1, 2026. Updated the same day with answers to the open questions
 
 These came from reading the code and probing real Postgres containers on October 1, 2026.
 
-- **The worker can't read Postgres 17 or 18 today.** Postgres 17 renamed `blk_read_time` and `blk_write_time` to `shared_blk_read_time` and `shared_blk_write_time`. `schema/functions-pg13.sql` installs on 17 and 18, but every call fails with `column ex.blk_read_time does not exist`. So item 4 isn't only about 18. It's about 17, too.
+- **The worker can't read Postgres 17 or 18 today.** Postgres 17 renamed `blk_read_time` and `blk_write_time` to `shared_blk_read_time` and `shared_blk_write_time`. The old `schema/functions-pg13.sql` installed on 17 and 18, but every call failed with `column ex.blk_read_time does not exist`. (Fixed by `internal/pgss.Reader`; the dba read functions are gone.) So item 4 isn't only about 18. It's about 17, too.
 - **It doesn't build on current macOS.** `pg_query_go` v5 fails to compile against the current macOS SDK (`static declaration of 'strchrnul'`). v6.2.5 (released September 30, 2026) builds fine. It also carries a security fix for `Normalize`.
 - **No Go release of `pg_query` has the Postgres 18 parser yet.** `pg_query_go` v6 uses the Postgres 17 parser. `libpg_query` has an `18-latest` branch, but there's no `pg_query_go/v7` release. Queries that use 18-only syntax will fail to parse. Today that means they get counted and skipped, not that the worker crashes.
 - **Postgres 18 squashes IN lists.** `IN (1,2,3,4)` shows up in pg_stat_statements as `IN ($1 /*, ... */)`. `pg_query_go` v6 gives that the same fingerprint as `IN ($1)` and `IN ($1,$2,$3)`, so history should line up across versions. A test will lock that in.
