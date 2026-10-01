@@ -32,21 +32,13 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase B: Postgres 14 through 18 (item 4).
 
-### 20261001-103222-15: Write the observer setup SQL.
-- **Do:** Add `schema/observer.sql`. It creates the observer role (with a configurable name), grants `pg_read_all_stats`, and on 17+ grants EXECUTE on `pg_stat_statements_reset(oid,oid,bigint,boolean)`.
-- **Red test:** On each of Postgres 14 through 18, the observer can:
-  - See query text from another role's queries.
-  - On 17+, run a min/max-only reset.
-  - Not run a full reset.
-- **Done when:** The matrix passes.
-- **Needs:** -2.
-
 ### 20261001-103222-16: Build a pg_stat_statements reader that knows the version.
 - **Do:** Add `internal/pgss.Reader`. It reads `extversion`, maps columns into one `Stat` struct, and handles the 17 rename (`blk_*` to `shared_blk_*`). Optional fields include `local_blk_*`, WAL fields, `wal_buffers_full`, `parallel_workers_*`, `stats_since`, and `minmax_stats_since`.
   - `total_time` = plan + exec.
   - min, max, mean, and stddev come from exec only.
   - Also read `pg_stat_statements_info`.
 - **Red test:** Run a known workload against each of versions 14 through 18 and assert on the fields. Expect 17 and 18 to fail first.
+- **Also:** On 17+, call the min/max wrapper from `schema/observer.sql` (`<schema>.pg_stat_statements_minmax_reset()`) instead of the raw reset function. Add one optional worker setting for the wrapper's schema, defaulting to `rotten`.
 - **Done when:** The matrix passes, the worker uses `Reader`, and `schema/functions*.sql` are deleted.
 - **Needs:** -14, -15.
 

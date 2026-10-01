@@ -145,3 +145,13 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** -14.
 - Completed: October 1, 2026, aa9321a. Fingerprints for unqualified-table queries changed. Follow-up: 20261001-131002-1.
+
+### 20261001-103222-15: Write the observer setup SQL.
+- **Do:** Add `schema/observer.sql`. It creates the observer role (with a configurable name), grants `pg_read_all_stats`, and on 17+ grants EXECUTE on `pg_stat_statements_reset(oid,oid,bigint,boolean)`.
+- **Red test:** On each of Postgres 14 through 18, the observer can:
+  - See query text from another role's queries.
+  - On 17+, run a min/max-only reset.
+  - Not run a full reset.
+- **Done when:** The matrix passes.
+- **Needs:** -2.
+- Completed: October 1, 2026, 9a35d6c. Uses a min/max-only SECURITY DEFINER wrapper on 17+ (user decision). Review found and closed an overload hijack and a pre-owned-wrapper hole.
