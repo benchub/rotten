@@ -58,3 +58,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Tests pass, and `main.go` calls `mergeEvent`.
 - **Needs:** -1.
 - Completed: October 1, 2026, 4e5f014. Found the mean and stddev merge bug (20261001-113241-1) and the context count bug (20261001-113241-2).
+
+### 20261001-103222-6: Upgrade pg_query_go from v5 to v6.
+- **Do:** Bump to `pg_query_go/v6` 6.2.5 or later. Check that the reflectwalk skip list still matches the protobuf internals.
+- **Red test:** The golden corpus test. Every changed fingerprint is a failure to explain. Record the diff in `docs/decisions/fingerprint-v6.md`. We don't keep old data, so changes are fine. Just confirm each one is still a sensible grouping.
+- **Done when:**
+  - The golden file is updated, or confirmed the same.
+  - The native macOS `go build` works.
+  - `make test-unit` runs natively (no Docker).
+  - The decision record is written.
+- **Needs:** -4, -5.
+- Completed: October 1, 2026, aa1bb24. No fingerprint changes.
