@@ -34,12 +34,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase C: Diffing against a snapshot (item 2).
 
-### 20261001-103222-19: Build the diff engine.
-- **Do:** Add `internal/pgss.Diff(prev Snapshot, cur []Stat, info Info) (deltas, next Snapshot)`. It's pure code with no database. Use the rules in `docs/plan.md` (global reset, entry reset, any counter lower, new entry, evicted entry).
-- **Red test:** A table-driven test with one case per rule, plus a mix of rules in one harvest.
-- **Done when:** Passes.
-- **Needs:** -16.
-
 ### 20261001-103222-20: Work out mean and stddev for each window from deltas.
 - **Do:** Mean = Δtotal / Δcalls. Get stddev by removing the old sum of squares from the new one with the parallel-variance formula.
 - **Red test:** Generate two sample sets. Check that the diff of their cumulative stats matches the directly computed stats for the second set, within 1e-9. Δcalls = 0 should give no event.
@@ -82,6 +76,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   6. Save the snapshot.
 
   The window runs from the snapshot's `taken_at` to now. The worker never runs a full reset. Delete the reset code and `schema/legacy_reset.sql`, the temporary bridge from -16.
+- **Baseline:** Diff on an empty or stale snapshot returns everything as new. Discard that harvest as a baseline, and add a test that pins it.
 - **Red test:** End to end on 18:
   - `stats_reset` never changes because of the worker.
   - An outside `pg_stat_statements_reset()` mid-run gets handled per the rules.

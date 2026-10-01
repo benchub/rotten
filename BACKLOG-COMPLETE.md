@@ -189,3 +189,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes, and the golden file is unchanged under the defaults.
 - **Needs:** -14.
 - Completed: October 1, 2026, f6384cb.
+
+### 20261001-103222-19: Build the diff engine.
+- **Do:** Add `internal/pgss.Diff(prev Snapshot, cur []Stat, info Info) (deltas, next Snapshot)`. It's pure code with no database. Use the rules in `docs/plan.md` (global reset, entry reset, any counter lower, new entry, evicted entry).
+- **Red test:** A table-driven test with one case per rule, plus a mix of rules in one harvest.
+- **Done when:** Passes.
+- **Needs:** -16.
+- Completed: October 1, 2026, c963eee.
