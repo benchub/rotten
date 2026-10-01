@@ -25,7 +25,12 @@ import (
 
 // crossTables names one table per logical query, so each pg_stat_statements
 // row can be traced back to its logical query by the table it mentions.
-var crossTables = []string{"x_in_lit", "x_in_param", "x_values_lit", "x_values_param"}
+var crossTables = []string{"x_in_lit", "x_in_param", "x_in_cast_param", "x_any_lit", "x_any_param", "x_values_lit", "x_values_param"}
+
+// crossAlias pairs a table whose query should group with another table's.
+// The fingerprint is taken with the table name swapped for its alias, since
+// table names are part of the fingerprint.
+var crossAlias = map[string]string{"x_any_lit": "x_in_lit", "x_any_param": "x_in_cast_param"}
 
 // runCrossWorkload runs each logical query with several list lengths and
 // row counts, with literals (simple protocol) and with bind parameters.
@@ -41,11 +46,12 @@ func runCrossWorkload(t *testing.T, conn *pgx.Conn) {
 		t.Fatal(err)
 	}
 	for _, n := range []int{1, 2, 3, 7, 20} {
-		var lits, params, vlits, vparams []string
+		var lits, params, castParams, vlits, vparams []string
 		var args, vargs []any
 		for i := 1; i <= n; i++ {
 			lits = append(lits, fmt.Sprint(i))
 			params = append(params, fmt.Sprintf("$%d", i))
+			castParams = append(castParams, fmt.Sprintf("$%d::int", i))
 			args = append(args, i)
 			vlits = append(vlits, fmt.Sprintf("(%d, 'n%d')", i, i))
 			vparams = append(vparams, fmt.Sprintf("($%d::int, $%d::text)", 2*i-1, 2*i))
@@ -57,6 +63,11 @@ func runCrossWorkload(t *testing.T, conn *pgx.Conn) {
 		}{
 			{"select * from x_in_lit where id in (" + strings.Join(lits, ", ") + ")", nil},
 			{"select * from x_in_param where id in (" + strings.Join(params, ", ") + ")", args},
+			{"select * from x_any_lit where id = any(array[" + strings.Join(lits, ", ") + "])", nil},
+			// Postgres can't infer a type for array[$1], so the parameter
+			// forms cast each element, and the IN baseline casts too.
+			{"select * from x_in_cast_param where id in (" + strings.Join(castParams, ", ") + ")", args},
+			{"select * from x_any_param where id = any(array[" + strings.Join(castParams, ", ") + "])", args},
 			{"insert into x_values_lit (id, name) values " + strings.Join(vlits, ", "), nil},
 			{"insert into x_values_param (id, name) values " + strings.Join(vparams, ", "), vargs},
 		}
@@ -100,7 +111,11 @@ func crossFingerprints(t *testing.T, version int) map[string]map[string][]string
 			if !strings.Contains(s.Query, tbl+" ") || strings.HasPrefix(strings.ToLower(s.Query), "create") {
 				continue
 			}
-			fp, err := fingerprint.Normalized(s.Query, fingerprint.Options{})
+			q := s.Query
+			if alias, ok := crossAlias[tbl]; ok {
+				q = strings.ReplaceAll(q, tbl, alias)
+			}
+			fp, err := fingerprint.Normalized(q, fingerprint.Options{})
 			if err != nil {
 				fp = "error: " + err.Error()
 			}
@@ -145,7 +160,7 @@ func TestCrossVersionListFingerprints(t *testing.T) {
 				squashed = squashed || strings.Contains(q, "/*, ... */")
 			}
 		}
-		if wantSquash := strings.HasPrefix(tbl, "x_in_"); squashed != wantSquash {
+		if wantSquash := !strings.HasPrefix(tbl, "x_values_"); squashed != wantSquash {
 			t.Errorf("%s: pg18 squashed = %v, want %v: %v", tbl, squashed, wantSquash, byVersion[18][tbl])
 		}
 		if len(all) != 1 {
@@ -156,6 +171,19 @@ func TestCrossVersionListFingerprints(t *testing.T) {
 			}
 			sort.Strings(lines)
 			t.Errorf("%s: want one fingerprint across pg16 and pg18, got %d:\n%s", tbl, len(all), strings.Join(lines, "\n"))
+		}
+	}
+	// = ANY(ARRAY[...]) must group with the IN-list form on both versions.
+	for tbl, alias := range crossAlias {
+		for _, v := range []int{16, 18} {
+			if len(byVersion[v][tbl]) == 0 || len(byVersion[v][alias]) == 0 {
+				t.Errorf("%s/%s: pg%d recorded no statements to compare", tbl, alias, v)
+			}
+			for fp, qs := range byVersion[v][tbl] {
+				if _, ok := byVersion[v][alias][fp]; !ok {
+					t.Errorf("%s: pg%d fingerprint %s %v doesn't match %s: %v", tbl, v, fp, qs, alias, byVersion[v][alias])
+				}
+			}
 		}
 	}
 }

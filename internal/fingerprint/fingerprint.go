@@ -141,7 +141,67 @@ func (s *walker) Struct(v reflect.Value) error {
 			f.SetString("some_schema")
 		}
 	}
+	if v.CanAddr() {
+		switch n := v.Addr().Interface().(type) {
+		case *pg_query.A_Expr:
+			rewriteArrayToIn(n)
+		case *pg_query.SubLink:
+			// x = ANY (subquery) and x IN (subquery) are the same
+			// ANY_SUBLINK; IN just leaves the operator name out.
+			if n.SubLinkType == pg_query.SubLinkType_ANY_SUBLINK && isOp(n.OperName, "=") {
+				n.OperName = nil
+			}
+		}
+	}
 	return nil
+}
+
+// rewriteArrayToIn turns x = ANY(ARRAY[a, b]) into x IN (a, b), and
+// x <> ALL(ARRAY[a, b]) into x NOT IN (a, b). Postgres parses IN lists into
+// those same array forms, and Postgres 18 gives them one queryid. The new
+// list reuses the array's element nodes, so the walker's other rewrites
+// reach them whether it visits this struct before or after its fields.
+//
+// Two merges are accepted on purpose, since the forms are rare and close:
+// a row-constructor element, x = ANY(ARRAY[(1, 2)]), groups with the row IN
+// list x IN ((1, 2)), and a scalar-subquery element,
+// x = ANY(ARRAY[(SELECT ...)]), becomes x IN ((SELECT ...)), which
+// fingerprints like x IN (subquery) even though the scalar subquery errors
+// on more than one row.
+//
+// It leaves alone: other operators (< ANY, = ALL, <> ANY), schema-qualified
+// OPERATOR(...) syntax, a non-literal array (= ANY($1) already fingerprints
+// like = $1), a cast array (ARRAY[...]::bigint[] can change the element type
+// and operator, so it isn't the same query as the uncast IN list), an empty
+// array (IN () isn't valid SQL), and multidimensional arrays (IN ((1, 2))
+// would mean a row comparison).
+func rewriteArrayToIn(e *pg_query.A_Expr) {
+	var op string
+	switch {
+	case e.Kind == pg_query.A_Expr_Kind_AEXPR_OP_ANY && isOp(e.Name, "="):
+		op = "="
+	case e.Kind == pg_query.A_Expr_Kind_AEXPR_OP_ALL && isOp(e.Name, "<>"):
+		op = "<>"
+	default:
+		return
+	}
+	arr := e.Rexpr.GetAArrayExpr()
+	if arr == nil || len(arr.Elements) == 0 {
+		return
+	}
+	for _, el := range arr.Elements {
+		if el.GetAArrayExpr() != nil {
+			return
+		}
+	}
+	e.Kind = pg_query.A_Expr_Kind_AEXPR_IN
+	e.Name = []*pg_query.Node{pg_query.MakeStrNode(op)}
+	e.Rexpr = pg_query.MakeListNode(arr.Elements)
+}
+
+// isOp reports whether name is the single unqualified operator op.
+func isOp(name []*pg_query.Node, op string) bool {
+	return len(name) == 1 && name[0].GetString_() != nil && name[0].GetString_().Sval == op
 }
 func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 	// Skip over all the protobuf fields we couldn't care less about

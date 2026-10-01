@@ -80,6 +80,47 @@ SELECT * FROM users WHERE id IN ($1 /*, ... */)
 SELECT * FROM users WHERE id IN ($1)
 -- case: in_list_f
 SELECT * FROM users WHERE id IN ($1,$2,$3)
+-- = ANY(ARRAY[...]) shares a Postgres 18 queryid with IN (...), so it groups too.
+-- case: in_list_any_a
+SELECT * FROM users WHERE id = ANY(ARRAY[1])
+-- case: in_list_any_b
+SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3])
+-- case: in_list_any_c
+SELECT * FROM users WHERE id = any(array[4, 5, 6, 7, 8, 9, 10])
+-- case: in_list_any_d
+SELECT * FROM users WHERE id = ANY(ARRAY[$1 /*, ... */])
+-- case: in_list_any_e
+SELECT * FROM users WHERE id = ANY(ARRAY[$1, $2, $3])
+-- case: in_list_any_param
+SELECT * FROM users WHERE id = ANY($1)
+
+-- NOT IN (...) and <> ALL(ARRAY[...]) group with each other (and with <> 1).
+-- case: not_in_list_a
+SELECT * FROM users WHERE id NOT IN (1, 2, 3)
+-- case: not_in_list_b
+SELECT * FROM users WHERE id <> ALL(ARRAY[1, 2, 3])
+-- case: not_in_list_c
+SELECT * FROM users WHERE id != ALL(ARRAY[$1 /*, ... */])
+
+-- Other ANY/ALL forms stay distinct from IN and from each other.
+-- case: any_lt_array
+SELECT * FROM users WHERE id < ANY(ARRAY[1, 2, 3])
+-- case: all_eq_array
+SELECT * FROM users WHERE id = ALL(ARRAY[1, 2, 3])
+-- case: any_ne_array
+SELECT * FROM users WHERE id <> ANY(ARRAY[1, 2, 3])
+-- case: any_array_cast
+SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3]::bigint[])
+-- case: any_nested_array
+SELECT * FROM users WHERE id = ANY(ARRAY[[1, 2], [3, 4]])
+
+-- IN (subquery) and = ANY(subquery) are the same SubLink to Postgres.
+-- case: in_subquery_a
+SELECT * FROM users WHERE id IN (SELECT user_id FROM accounts)
+-- case: in_subquery_b
+SELECT * FROM users WHERE id = ANY(SELECT user_id FROM accounts)
+-- case: any_lt_subquery
+SELECT * FROM users WHERE id < ANY(SELECT user_id FROM accounts)
 
 -- case: values_a
 INSERT INTO users (id, name) VALUES (1, 'a')
