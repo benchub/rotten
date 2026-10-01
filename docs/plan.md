@@ -118,7 +118,7 @@ We'll use **unary calls over a long-lived, kept-alive connection**, not long str
   - Observed databases: Postgres 14 through 18, with `pg_stat_statements` preloaded and `track_planning` on.
   - Rotten database: Postgres 18 with pg_partman.
 - **Characterization tests first.** Before changing behavior, we pin what the code does today, including a golden file of fingerprints from `pg_query_go` v5. Then we upgrade and refactor under those tests. We're not keeping old data, so a fingerprint change from the upgrade gets noted, not migrated.
-- **Make targets:** `make test` (Go, in Docker, race detector on), `make test-unit` (no Docker), `make test-ui` (RSpec, in Docker), and `make test-all`. There's no CI. These targets are the gate, and every task runs them before it's done.
+- **Make targets:** `make test` (Go, in Docker, race detector on), `make test-unit` (`-short`, in Docker without the Docker socket, until the pg_query_go upgrade in -6 restores native builds), `make test-ui` (RSpec, in Docker), and `make test-all`. There's no CI. These targets are the gate, and every task runs them before it's done.
 
 ### Network layout in tests and dev.
 

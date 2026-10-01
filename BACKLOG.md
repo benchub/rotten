@@ -53,6 +53,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:**
   - The golden file is updated, or confirmed the same.
   - The native macOS `go build` works.
+  - `make test-unit` runs natively (no Docker).
   - The decision record is written.
 - **Needs:** -4, -5.
 
