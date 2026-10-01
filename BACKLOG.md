@@ -46,17 +46,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-30: Add pass key auth and the keys CLI.
-- **Do:**
-  - Add `rotten-server keys create|list|revoke`. It connects as `rotten_owner` (`ROTTEN_ADMIN_DSN`), since the ingest role can't create or revoke keys. `create` prints the secret once.
-  - Add a Connect interceptor that checks `Authorization: Bearer`.
-  - Cache key lookups with a TTL, and update `last_used_at` (throttled).
-- **Grants:** `rotten_ingest` can only read `id, name, secret_hash, fqdn, revoked_at` on `api_keys`, so name those columns instead of using `select *` or `RETURNING *`.
-- **Source binding:** Batches carry their own source IDs. Reject any batch whose physical source (and its logical source) doesn't match the pass key's source. Also decide what a key without a pinned fqdn is allowed to do.
-- **Red test:** Unknown, malformed, and revoked keys all get `Unauthenticated`. A key revoked mid-connection gets rejected within the TTL. The secret never shows up in logs.
-- **Done when:** Passes.
-- **Needs:** -28, -29.
-
 ### 20261001-103222-31: Set up server TLS.
 - **Do:** Require TLS 1.3 at minimum. Load the cert and key from files, and reload them on SIGHUP or when the files change.
 - **Red test:**

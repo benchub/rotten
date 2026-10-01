@@ -301,3 +301,15 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -26.
 - Completed: October 1, 2026, 8ecda4e. Roles are primary and replica. Pass Anchor to reports instead of now().
+
+### 20261001-103222-30: Add pass key auth and the keys CLI.
+- **Do:**
+  - Add `rotten-server keys create|list|revoke`. It connects as `rotten_owner` (`ROTTEN_ADMIN_DSN`), since the ingest role can't create or revoke keys. `create` prints the secret once.
+  - Add a Connect interceptor that checks `Authorization: Bearer`.
+  - Cache key lookups with a TTL, and update `last_used_at` (throttled).
+- **Grants:** `rotten_ingest` can only read `id, name, secret_hash, fqdn, revoked_at` on `api_keys`, so name those columns instead of using `select *` or `RETURNING *`.
+- **Source binding:** Batches carry their own source IDs. Reject any batch whose physical source (and its logical source) doesn't match the pass key's source. Also decide what a key without a pinned fqdn is allowed to do.
+- **Red test:** Unknown, malformed, and revoked keys all get `Unauthenticated`. A key revoked mid-connection gets rejected within the TTL. The secret never shows up in logs.
+- **Done when:** Passes.
+- **Needs:** -28, -29.
+- Completed: October 1, 2026, f205fb8. Unpinned keys fail closed: -32 and -33 must call Key.AllowsFQDN. Review caught the admin DSN leaking in help output. Rate limiting is 20261001-143308-1.
