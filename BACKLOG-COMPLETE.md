@@ -343,3 +343,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes. Add a note to the plan's ideas list about the `pg_query_go` v7 upgrade.
 - **Needs:** -16.
 - Completed: October 2, 2026, f27d26f. Parse failures are counted and reported with up to five query samples, each bounded to 1,024 bytes. PostgreSQL 18 corpus cases document the current parser's acceptance and failures; the parser version and worker configuration are unchanged.
+
+
+### 20261001-103222-31: Set up server TLS.
+- **Do:** Require TLS 1.3 at minimum. Load the cert and key from files, and reload them on SIGHUP or when the files change.
+- **Red test:**
+  - A plaintext client gets refused.
+  - A client that trusts a different CA fails.
+  - After rotation, new connections see the new cert, and existing connections keep working.
+- **Done when:** Passes.
+- **Needs:** -29.
+- **Completed:** 2026-10-02, be62523244111b146020d91e1baafca57ff41cde

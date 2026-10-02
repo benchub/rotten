@@ -18,15 +18,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-31: Set up server TLS.
-- **Do:** Require TLS 1.3 at minimum. Load the cert and key from files, and reload them on SIGHUP or when the files change.
-- **Red test:**
-  - A plaintext client gets refused.
-  - A client that trusts a different CA fails.
-  - After rotation, new connections see the new cert, and existing connections keep working.
-- **Done when:** Passes.
-- **Needs:** -29.
-
 ### 20261001-103222-32: Add the Register call.
 - **Do:** Upsert `logical_sources` and `physical_sources`, moving that logic from the worker's `main`. If a key is pinned to an `fqdn`, reject any other `fqdn`.
 - **Red test:** A new source gets created. An existing source gets reused. Two concurrent registrations end up with one row. A pinned key with the wrong `fqdn` gets `PermissionDenied`.
