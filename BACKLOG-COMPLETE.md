@@ -373,3 +373,13 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -32.
 - **Completed:** 2026-10-02, d770adf. Overlap is checked per physical source (replicas share a logical source but harvest unaligned windows) and returns `FailedPrecondition`. Physical sources stay one row per fqdn; the new `logical_physical_sources` link table records which logical sources a host serves. Identity names are resolved in sorted order to avoid deadlocks. A duplicate `batch_id` with different content logs a warning and still acks.
+
+### 20261001-103222-34: Merge fingerprint_stats on the server.
+- **Do:** Merge into `fingerprint_stats` for the source and for source 0 in the same transaction. Take locks in `fingerprint_id` order.
+- **Red test:**
+  - Results match the hand-computed values from -10.
+  - Merging one batch at a time gives the same answer as accumulating first.
+  - 10 concurrent workers sharing fingerprints don't deadlock.
+- **Done when:** Passes.
+- **Needs:** -33.
+- **Completed:** 2026-10-02, 540df26. Stats rows are pre-inserted with zero counts and then locked, so concurrent first inserts don't collide. A batch that repeats a fingerprint is rejected with `InvalidArgument`, since clients merge duplicates before sending. The worker's matching race is 20261002-171500-1.
