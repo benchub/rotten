@@ -67,3 +67,9 @@ parse_error_garbage	error: failed to parse
 parse_error_truncated	error: failed to parse
 parse_error_pgss_ellipsis	error: failed to parse
 pgss_normalized_param	142a5dbdb9d2f157
+pg18_returning_old_new	92dd47df08f2de71
+pg18_returning_with_aliases	error: failed to parse
+pg18_generated_virtual	error: failed to parse
+pg18_generated_default_virtual	error: failed to parse
+pg18_without_overlaps_primary	error: failed to parse
+pg18_without_overlaps_unique	error: failed to parse

@@ -140,8 +140,12 @@ type Worker struct {
 	// harvest's time in Unix seconds.
 	eventCount    atomic.Uint64
 	lastWindowEnd atomic.Int64
-	parseFailures atomic.Uint32
 	eventsPending atomic.Uint32
+
+	// Count and samples are one snapshot for the progress goroutine.
+	parseFailuresMu     sync.Mutex
+	parseFailures       uint32
+	parseFailureSamples []string
 
 	// lastHarvest is the last harvest's time in Unix seconds.
 	lastHarvest atomic.Int64
@@ -237,7 +241,7 @@ func emptyBaseline() state.Loaded {
 func (w *Worker) harvest(reader *pgss.Reader, texts *pgss.TextCache, now time.Time) {
 	ctx := context.Background()
 	cfg := w.cfg
-	w.parseFailures.Store(0)
+	w.resetParseFailures()
 	w.eventsPending.Store(0)
 
 	log.Println("retrieving stats results")
@@ -322,7 +326,7 @@ func (w *Worker) send(ctx context.Context, texts *pgss.TextCache, deltas []pgss.
 
 		fingerprint, err := fingerprinting.Normalized(newEvent.query, cfg.Fingerprint)
 		if err != nil {
-			w.parseFailures.Add(1)
+			w.recordParseFailure(newEvent.query)
 			continue
 		}
 
@@ -358,6 +362,10 @@ func (w *Worker) send(ctx context.Context, texts *pgss.TextCache, deltas []pgss.
 	}
 	if noText > 0 {
 		log.Println(noText, "top entries have no query text, so they're skipped")
+	}
+	failures, samples := w.parseFailureSnapshot()
+	if failures > 0 {
+		log.Printf("window fingerprint failures: %d; fingerprint failure samples (up to %d): %q", failures, parseFailureSampleLimit, samples)
 	}
 
 	log.Printf("processing %d unique events", w.eventsPending.Load())
@@ -441,8 +449,12 @@ func (w *Worker) ReportProgress(ctx context.Context, noIdleHands bool, interval 
 	for {
 		closed := time.Now().Unix() - w.lastWindowEnd.Load()
 		processed := w.eventCount.Load()
+		failures, samples := w.parseFailureSnapshot()
 
-		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", w.eventsPending.Load(), "unique events queued,", w.parseFailures.Load(), "fingerprints failed,", w.stillProcessing(), "still being recorded. Overall,", processed, "processed,", w.fingerprintCount(), "fingerprints seen")
+		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", w.eventsPending.Load(), "unique events queued,", failures, "fingerprints failed,", w.stillProcessing(), "still being recorded. Overall,", processed, "processed,", w.fingerprintCount(), "fingerprints seen")
+		if failures > 0 {
+			log.Printf("fingerprint failure samples (up to %d): %q", parseFailureSampleLimit, samples)
+		}
 		if noIdleHands && lastProcessed == processed {
 			if almostDead {
 				var m map[string]int

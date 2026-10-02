@@ -10,7 +10,18 @@ These came from reading the code and probing real Postgres containers on October
 
 - **The worker can't read Postgres 17 or 18 today.** Postgres 17 renamed `blk_read_time` and `blk_write_time` to `shared_blk_read_time` and `shared_blk_write_time`. The old `schema/functions-pg13.sql` installed on 17 and 18, but every call failed with `column ex.blk_read_time does not exist`. (Fixed by `internal/pgss.Reader`; the dba read functions are gone.) So item 4 isn't only about 18. It's about 17, too.
 - **It doesn't build on current macOS.** `pg_query_go` v5 fails to compile against the current macOS SDK (`static declaration of 'strchrnul'`). v6.2.5 (released September 30, 2026) builds fine. It also carries a security fix for `Normalize`.
-- **No Go release of `pg_query` has the Postgres 18 parser yet.** `pg_query_go` v6 uses the Postgres 17 parser. `libpg_query` has an `18-latest` branch, but there's no `pg_query_go/v7` release. Queries that use 18-only syntax will fail to parse. Today that means they get counted and skipped, not that the worker crashes.
+- **No Go release of `pg_query` has the Postgres 18 parser yet.** `pg_query_go` v6 uses the Postgres 17 parser. `libpg_query` has an `18-latest` branch, but there's no `pg_query_go/v7` release. Queries that use 18-only grammar fail to parse. They get counted and skipped rather than crashing the worker. The corpus now pins these results under v6.2.5; an integration test executes all six cases on real Postgres 18 so malformed fixtures can't masquerade as parser limitations:
+
+  | Corpus case | Postgres 17 parser result |
+  | --- | --- |
+  | `pg18_returning_old_new` (`RETURNING OLD.name, NEW.name`) | Parses as qualified column references; the parser doesn't validate the new OLD/NEW semantics |
+  | `pg18_returning_with_aliases` (`RETURNING WITH (OLD AS o, NEW AS n)`) | `failed to parse` |
+  | `pg18_generated_virtual` (explicit `VIRTUAL`) | `failed to parse` |
+  | `pg18_generated_default_virtual` (omitted storage kind) | `failed to parse` |
+  | `pg18_without_overlaps_primary` | `failed to parse` |
+  | `pg18_without_overlaps_unique` | `failed to parse` |
+
+  The worker's existing `fingerprints failed` counter counts failed fingerprint attempts among the top 100 selected entries, not calls or every pg_stat_statements row. Count and samples reset at the start of each harvest. It keeps the first five failed query texts, capped at 1,024 bytes each plus `...` when truncated. The window-end summary logs the count and quoted samples even if the next harvest runs before the progress reporter. Progress reports also show the current harvest's count and samples. These bounded summaries supplement the existing individual parser error logs; they don't change the worker config. Samples are query text and may contain sensitive literals, so treat the worker logs accordingly.
 - **Postgres 18 squashes IN lists.** `IN (1,2,3,4)` shows up in pg_stat_statements as `IN ($1 /*, ... */)`. `pg_query_go` v6 gives that the same fingerprint as `IN ($1)` and `IN ($1,$2,$3)`, so history should line up across versions. A test will lock that in.
 - **The example queries don't match the schema.** They filter on `observed_window`, but `events` only has `observed_window_start` and `observed_window_end`. The "most expensive" query also has `LIMIT 20` with no `ORDER BY`, so it returns an arbitrary 20. The replica-utilization queries use inner joins, so a job that only runs on one side disappears from the results.
 - **`schema/tables.sql` used the pg_partman 4 API.** pg_partman 5 dropped the `'native'` argument to `create_parent`. Task -2 fixed it, and the schema now lives in `migrations/0001_baseline.sql`.
@@ -212,4 +223,4 @@ These answer the open questions from the first draft (October 1, 2026).
 - Handle primary and replica role changes. The worker could detect `pg_is_in_recovery()` and report its role itself. That's more reliable than a static `Role` config.
 - Address the `fingerprint_stats` hot rows. Every worker updates the shared `logical_source_id = 0` rows, which means 19 rows per fingerprint. If lock waits show up, fold the 19 types into one row per fingerprint and source.
 - Expose Prometheus metrics from the server and worker (batches queued, lag, parse failures).
-- Upgrade to `pg_query_go` v7 when it ships the Postgres 18 parser.
+- Upgrade to `pg_query_go` v7 when it ships the Postgres 18 parser and the user confirms the release is out; regenerate and review the fingerprint golden file, including the `pg18_*` cases above.

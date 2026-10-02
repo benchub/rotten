@@ -159,3 +159,18 @@ SELECT * FROM users WHERE id =
 SELECT * FROM users WHERE id IN ($1, $2, ...)
 -- case: pgss_normalized_param
 SELECT * FROM users WHERE id = $1
+
+-- Postgres 18 syntax. The PG17 parser accepts OLD/NEW column references
+-- (without understanding their new semantics), but rejects the other cases.
+-- case: pg18_returning_old_new
+UPDATE users SET name = 'updated' WHERE id = 1 RETURNING OLD.name, NEW.name
+-- case: pg18_returning_with_aliases
+UPDATE users SET name = 'updated' WHERE id = 1 RETURNING WITH (OLD AS o, NEW AS n) o.name, n.name
+-- case: pg18_generated_virtual
+CREATE TABLE virtual_explicit (id int, doubled int GENERATED ALWAYS AS (id * 2) VIRTUAL)
+-- case: pg18_generated_default_virtual
+CREATE TABLE virtual_default (id int, doubled int GENERATED ALWAYS AS (id * 2))
+-- case: pg18_without_overlaps_primary
+CREATE TABLE temporal_primary (id int, valid_at daterange, PRIMARY KEY (id, valid_at WITHOUT OVERLAPS))
+-- case: pg18_without_overlaps_unique
+CREATE TABLE temporal_unique (id int, valid_at daterange, UNIQUE (id, valid_at WITHOUT OVERLAPS))
