@@ -150,7 +150,7 @@ The report SQL lives in `reports/*.sql`, tested against a seeded rotten DB from 
 **Auth is generic, with the mode picked by config.** `ROTTEN_UI_AUTH=oidc|password`.
 
 - **`oidc`** uses `omniauth_openid_connect`. Everything specific to an org comes from env, with no defaults baked in: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_GROUPS_CLAIM`, `ROTTEN_UI_VIEWER_GROUP`, and `ROTTEN_UI_ADMIN_GROUP`.
-  - Okta is just one issuer. Instructure's Okta settings live in the deploy repo, not here.
+  - Okta is just one issuer. Okta settings live in the deploy repo, not here.
   - We provision users at login: match on `sub`, then on email, then create a new user.
   - A local `active` flag acts as a kill switch.
   - Group membership resyncs on every login, and it fails closed. If `ROTTEN_UI_VIEWER_GROUP` isn't set, any authenticated user is a viewer.
