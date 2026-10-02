@@ -92,11 +92,6 @@ func (h *Handler) Register(ctx context.Context, req *connect.Request[rottenv1.Re
 	}), nil
 }
 
-// SubmitHarvest is wired in a later task.
-func (h *Handler) SubmitHarvest(context.Context, *connect.Request[rottenv1.SubmitHarvestRequest]) (*connect.Response[rottenv1.SubmitHarvestResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("rotten.v1.IngestService.SubmitHarvest is not implemented"))
-}
-
 // RegisterSource atomically creates or reuses logical_sources and
 // physical_sources rows. It is shared by the server and, until the worker
 // switches to RPC, the direct-DB worker startup path.
@@ -126,6 +121,10 @@ func RegisterSource(ctx context.Context, db Beginner, src Source) (Registration,
 	if err != nil {
 		return Registration{}, registerError{op: "upsert physical source", err: err}
 	}
+	if _, err := tx.Exec(ctx, `insert into rotten.logical_physical_sources(logical_source_id, physical_source_id)
+		values ($1, $2) on conflict do nothing`, logical, physical); err != nil {
+		return Registration{}, registerError{op: "link logical physical source", err: err}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Registration{}, registerError{op: "commit", err: err}
 	}
@@ -145,12 +144,16 @@ func isUnavailable(err error) bool {
 	if errors.As(err, &e) && (e.op == "begin" || e.op == "commit") {
 		return true
 	}
+	var submit submitError
+	if errors.As(err, &submit) && (submit.op == "begin" || submit.op == "commit") {
+		return true
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.Code == "08000" || strings.HasPrefix(pgErr.Code, "08")
+		return pgErr.Code == "08000" || strings.HasPrefix(pgErr.Code, "08") || pgErr.Code == "40P01" || pgErr.Code == "40001"
 	}
 	return false
 }

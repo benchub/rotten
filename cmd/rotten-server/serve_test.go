@@ -27,6 +27,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	"github.com/benchub/rotten/gen/rotten/v1/rottenv1connect"
@@ -363,6 +364,31 @@ func TestServeTLS(t *testing.T) {
 			}
 			if resp.Msg.GetLogicalSourceId() == 0 || resp.Msg.GetPhysicalSourceId() == 0 {
 				t.Fatalf("Register returned zero IDs: %v", resp.Msg)
+			}
+			if !grpc {
+				start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+				end := start.Add(30 * time.Second)
+				harvest := connect.NewRequest(&rottenv1.SubmitHarvestRequest{
+					BatchId:          fmt.Sprintf("%d:%d:%d", resp.Msg.GetPhysicalSourceId(), start.UnixMicro(), end.UnixMicro()),
+					LogicalSourceId:  resp.Msg.GetLogicalSourceId(),
+					PhysicalSourceId: resp.Msg.GetPhysicalSourceId(),
+					WindowStart:      timestamppb.New(start),
+					WindowEnd:        timestamppb.New(end),
+					Aggregates: []*rottenv1.FingerprintAggregate{{
+						Fingerprint: "serve-fingerprint",
+						Normalized:  "select $1",
+						Contexts:    []*rottenv1.QueryContext{{Controller: "serve", Action: "show", Count: 1}},
+						Metrics:     &rottenv1.Metrics{Calls: 1, TotalTime: 2},
+					}},
+				})
+				harvest.Header().Set("Authorization", "Bearer "+key.Token)
+				got, err := api.SubmitHarvest(context.Background(), harvest)
+				if err != nil {
+					t.Fatalf("valid key SubmitHarvest: %v", err)
+				}
+				if got.Msg.GetStatus() != rottenv1.SubmitHarvestResponse_STATUS_ACCEPTED {
+					t.Fatalf("SubmitHarvest status = %v, want ACCEPTED", got.Msg.GetStatus())
+				}
 			}
 		})
 	}

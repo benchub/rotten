@@ -45,8 +45,8 @@ func startProcessDB(t *testing.T) processFixture {
 	t.Helper()
 	_, pool := startIdentityDB(t)
 	f := processFixture{w: New(Config{}, nil), pool: pool}
-	scan := func(q string, dst *uint32) {
-		if err := pool.QueryRow(context.Background(), q).Scan(dst); err != nil {
+	scan := func(q string, dst *uint32, args ...any) {
+		if err := pool.QueryRow(context.Background(), q, args...).Scan(dst); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}

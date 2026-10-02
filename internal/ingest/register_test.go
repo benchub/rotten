@@ -87,6 +87,33 @@ func TestRegisterCreatesAndReusesSource(t *testing.T) {
 	wantSourceRows(t, f.owner, "billing", "prod", "east", "primary", "db1.example.com", 1, 1)
 }
 
+func TestRegisterReusesPhysicalSourceAcrossLogicalSources(t *testing.T) {
+	f := setupRegister(t, "db1.example.com")
+	first, err := f.handler.Register(f.ctx, registerRequest("billing", "prod", "east", "primary", "db1.example.com"))
+	if err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	second, err := f.handler.Register(f.ctx, registerRequest("billing", "prod", "east", "replica", "db1.example.com"))
+	if err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+	if first.Msg.GetLogicalSourceId() == second.Msg.GetLogicalSourceId() {
+		t.Fatalf("logical source IDs both %d, want distinct logical sources", first.Msg.GetLogicalSourceId())
+	}
+	if first.Msg.GetPhysicalSourceId() != second.Msg.GetPhysicalSourceId() {
+		t.Fatalf("physical source IDs = %d and %d, want one row per host", first.Msg.GetPhysicalSourceId(), second.Msg.GetPhysicalSourceId())
+	}
+	var links int
+	if err := f.owner.QueryRow(context.Background(), `
+		select count(*) from rotten.logical_physical_sources
+		where physical_source_id = $1`, first.Msg.GetPhysicalSourceId()).Scan(&links); err != nil {
+		t.Fatal(err)
+	}
+	if links != 2 {
+		t.Fatalf("logical_physical_sources links = %d, want 2", links)
+	}
+}
+
 func TestRegisterConcurrentCallsCreateOneSource(t *testing.T) {
 	f := setupRegister(t, "db2.example.com")
 	req := registerRequest("checkout", "prod", "west", "replica", "db2.example.com")

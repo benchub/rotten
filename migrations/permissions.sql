@@ -43,11 +43,11 @@ grant usage on schema rotten to rotten_ingest, rotten_ui, rotten_readonly;
 -- The event tables. Everyone reads them. Only rotten_ingest writes them,
 -- and it never deletes: pg_partman retention drops old partitions.
 grant select on rotten.controllers, rotten.actions, rotten.job_tags,
-    rotten.logical_sources, rotten.physical_sources, rotten.fingerprints,
+    rotten.logical_sources, rotten.physical_sources, rotten.logical_physical_sources, rotten.fingerprints,
     rotten.events, rotten.event_context, rotten.fingerprint_stats
     to rotten_ingest, rotten_ui, rotten_readonly;
 grant insert on rotten.controllers, rotten.actions, rotten.job_tags,
-    rotten.logical_sources, rotten.physical_sources, rotten.fingerprints,
+    rotten.logical_sources, rotten.physical_sources, rotten.logical_physical_sources, rotten.fingerprints,
     rotten.events, rotten.event_context, rotten.fingerprint_stats
     to rotten_ingest;
 grant update (project) on rotten.logical_sources to rotten_ingest;

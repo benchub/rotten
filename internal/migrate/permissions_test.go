@@ -23,6 +23,7 @@ func seed(t *testing.T, conn *pgx.Conn) {
 	for _, q := range []string{
 		"insert into rotten.fingerprints (id, fingerprint, normalized) values (1, 'q', 'q')",
 		"insert into rotten.physical_sources (id, fqdn) values (1, 'h')",
+		"insert into rotten.logical_physical_sources (logical_source_id, physical_source_id) values (0, 1)",
 		// The first key gets id 1, which the tests rely on.
 		"insert into rotten.api_keys (name, secret_hash, created_by) values ('k', 'hash', 'admin')",
 		"insert into rotten.ingested_batches (batch_id, key_id) values ('b0', 1)",
@@ -103,6 +104,8 @@ func TestIngestRolePermissions(t *testing.T) {
 	wantAllowed(t, c, `insert into rotten.physical_sources (fqdn)
 		values ('h')
 		on conflict (fqdn) do update set fqdn = rotten.physical_sources.fqdn`)
+	wantAllowed(t, c, `insert into rotten.logical_physical_sources (logical_source_id, physical_source_id)
+		values (0, 1) on conflict do nothing`)
 	wantAllowed(t, c, "insert into rotten.ingested_batches (batch_id, key_id) values ('b1', 1)")
 	if _, err := su.Exec(context.Background(),
 		"insert into rotten.ingested_batches (batch_id, key_id, received_at) values ('old', 1, now() - interval '31 days')"); err != nil {

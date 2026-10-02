@@ -56,6 +56,9 @@ func (r *diffRig) source(t *testing.T, name string) (logical, physical uint32) {
 	if err := r.pool.QueryRow(ctx, `insert into physical_sources (fqdn) values ($1) returning id`, name).Scan(&physical); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := r.pool.Exec(ctx, `insert into logical_physical_sources (logical_source_id, physical_source_id) values ($1, $2)`, logical, physical); err != nil {
+		t.Fatal(err)
+	}
 	return logical, physical
 }
 

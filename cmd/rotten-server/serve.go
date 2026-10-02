@@ -114,6 +114,13 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		certificate.watch(watchCtx, hup, logger)
 	}()
 	defer func() { cancelWatch(); <-watchDone }()
+	pruneCtx, cancelPrune := context.WithCancel(ctx)
+	pruneDone := make(chan struct{})
+	go func() {
+		defer close(pruneDone)
+		ingest.RunPruner(pruneCtx, pool, time.Hour, logger)
+	}()
+	defer func() { cancelPrune(); <-pruneDone }()
 	served := make(chan error, 1)
 	go func() { served <- server.ServeTLS(listener, "", "") }()
 	fmt.Fprintf(stdout, "listening on https://%s\n", listener.Addr())

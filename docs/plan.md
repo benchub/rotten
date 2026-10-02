@@ -89,6 +89,7 @@ We'll use **unary calls over a long-lived, kept-alive connection**, not long str
 ### Fault tolerance.
 
 - **Exactly-once effect.** Each batch has a deterministic `batch_id` built from the source and the window. The server records it in `ingested_batches` in the same transaction as the data. A retried batch gets acked without writing anything twice.
+- **Source binding.** `physical_sources` stays unique by `fqdn`, so one host has one physical row even if it serves more than one logical source. `logical_physical_sources` links each logical source to the physical hosts that may report for it; SubmitHarvest accepts only linked pairs whose physical fqdn matches the pass key.
 - **Durable outbox.** The worker writes the batch and the new snapshot to its local store in one transaction, then sends it. It deletes the batch only after the server acks. If the server is down, batches pile up (with a size limit) and replay in order later. A crash at any point either leaves the window unsent, so it gets retried, or already sent, so it's deduplicated. It never gets counted twice.
 - **No `log.Fatal` on network errors.** Both connections retry with exponential backoff and jitter. A failed sanity check still exits on purpose (see the README's reasoning).
 
@@ -181,7 +182,7 @@ We're not keeping existing data, so we start fresh.
 | Role | Used by | Can do |
 |---|---|---|
 | `rotten_owner` | `migrate` only | Owns the schema and all DDL. |
-| `rotten_ingest` | Server | Inserts into and selects from the event tables, updates `fingerprint_stats`, updates only `project` on `logical_sources` and `fqdn` on `physical_sources` for atomic registration upserts, selects the auth columns of `api_keys` and updates only `last_used_at`, inserts into and selects from `ingested_batches`, and runs `prune_ingested_batches()`. Can't create or revoke keys, and can't delete anything. |
+| `rotten_ingest` | Server | Inserts into and selects from the event tables and `logical_physical_sources`, updates `fingerprint_stats`, updates only `project` on `logical_sources` and `fqdn` on `physical_sources` for atomic registration upserts, selects the auth columns of `api_keys` and updates only `last_used_at`, inserts into and selects from `ingested_batches` with source/window/content metadata, and runs `prune_ingested_batches()`. Can't create or revoke keys, and can't delete anything. |
 | `rotten_ui` | UI | Selects from the event tables. Has DML on `users`. Inserts into and selects from `api_keys` (never `secret_hash`) and `ui_audit_log`, and updates only `revoked_at` and `revoked_by` on `api_keys`. |
 | `rotten_readonly` | People at a SQL prompt | Selects from the event tables. |
 
