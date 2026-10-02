@@ -354,3 +354,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -29.
 - **Completed:** 2026-10-02, be62523244111b146020d91e1baafca57ff41cde
+
+### 20261001-103222-32: Add the Register call.
+- **Do:** Upsert `logical_sources` and `physical_sources`, moving that logic from the worker's `main`. If a key is pinned to an `fqdn`, reject any other `fqdn`.
+- **Red test:** A new source gets created. An existing source gets reused. Two concurrent registrations end up with one row. A pinned key with the wrong `fqdn` gets `PermissionDenied`.
+- **Done when:** Passes.
+- **Needs:** -30.
+- **Completed:** 2026-10-02, 33019c5

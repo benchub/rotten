@@ -18,12 +18,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-32: Add the Register call.
-- **Do:** Upsert `logical_sources` and `physical_sources`, moving that logic from the worker's `main`. If a key is pinned to an `fqdn`, reject any other `fqdn`.
-- **Red test:** A new source gets created. An existing source gets reused. Two concurrent registrations end up with one row. A pinned key with the wrong `fqdn` gets `PermissionDenied`.
-- **Done when:** Passes.
-- **Needs:** -30.
-
 ### 20261001-103222-33: Build the SubmitHarvest write path.
 - **Do:** Add `internal/ingest`. In one transaction, resolve fingerprint, controller, action, and job IDs (moving `identity` to the server), then insert `events` and `event_context` and record `batch_id`. Use parameterized SQL, not `Sprintf`.
 - **Pruning:** Call `rotten.prune_ingested_batches()` on a timer to drop dedupe rows older than 30 days.
@@ -60,6 +54,12 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Red test:** Health reports unhealthy when the database is down. SIGTERM during a call still commits or rolls back cleanly.
 - **Done when:** Passes.
 - **Needs:** -33.
+
+### 20261002-145000-1: Classify mid-transaction DB failures as Unavailable in Register.
+- **Do:** In `internal/ingest/register.go` `isUnavailable`, also treat `pgconn.SafeToRetry(err)`, `pgconn.Timeout(err)`, plain network errors, and SQLSTATE class `57P0x` (e.g. `57P01` admin shutdown) as `Unavailable`. Today a Postgres restart or failover after `begin` succeeds but before the upserts finish returns `Internal`, which a client won't retry. The upserts are idempotent, so retrying is safe. Keep permission and constraint errors as `Internal`.
+- **Red test:** Against real Postgres, terminate the backend (`pg_terminate_backend`) mid-transaction, and check that Register returns `Unavailable` with no DB text in the message.
+- **Done when:** Passes.
+- **Needs:** -32. Found in review of -32.
 
 ### 20261001-103222-37: Build the worker's server client.
 - **Do:** Use a Connect client with TLS (system roots or a configured CA), a bearer key from `PassKeyFile`, HTTP/2 keepalive, per-call timeouts, and exponential backoff with jitter.
