@@ -18,17 +18,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-33: Build the SubmitHarvest write path.
-- **Do:** Add `internal/ingest`. In one transaction, resolve fingerprint, controller, action, and job IDs (moving `identity` to the server), then insert `events` and `event_context` and record `batch_id`. Use parameterized SQL, not `Sprintf`.
-- **Pruning:** Call `rotten.prune_ingested_batches()` on a timer to drop dedupe rows older than 30 days.
-- **Batch checks:** `logical_source_id` must match the logical source of `physical_source_id`, and both must match the pass key's source. Put that pairing in the red test. Reject windows that overlap windows already ingested for the source but aren't identical to them. If a duplicate `batch_id` arrives with different content, log a warning; that may need a content hash in `ingested_batches`.
-- **Red test:**
-  - A batch produces the same rows the characterization test (-12) expects.
-  - Sending the same batch twice writes one set of rows and acks both.
-  - Two workers sending overlapping new fingerprints at once get no errors or duplicates.
-- **Done when:** Passes.
-- **Needs:** -32.
-
 ### 20261001-103222-34: Merge fingerprint_stats on the server.
 - **Do:** Merge into `fingerprint_stats` for the source and for source 0 in the same transaction. Take locks in `fingerprint_id` order.
 - **Red test:**
@@ -55,11 +44,11 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes.
 - **Needs:** -33.
 
-### 20261002-145000-1: Classify mid-transaction DB failures as Unavailable in Register.
-- **Do:** In `internal/ingest/register.go` `isUnavailable`, also treat `pgconn.SafeToRetry(err)`, `pgconn.Timeout(err)`, plain network errors, and SQLSTATE class `57P0x` (e.g. `57P01` admin shutdown) as `Unavailable`. Today a Postgres restart or failover after `begin` succeeds but before the upserts finish returns `Internal`, which a client won't retry. The upserts are idempotent, so retrying is safe. Keep permission and constraint errors as `Internal`.
-- **Red test:** Against real Postgres, terminate the backend (`pg_terminate_backend`) mid-transaction, and check that Register returns `Unavailable` with no DB text in the message.
+### 20261002-145000-1: Classify mid-transaction DB failures as Unavailable in Register and SubmitHarvest.
+- **Do:** In `internal/ingest/register.go` `isUnavailable` (shared by Register and SubmitHarvest), also treat `pgconn.SafeToRetry(err)`, `pgconn.Timeout(err)`, plain network errors, and SQLSTATE class `57P0x` (e.g. `57P01` admin shutdown) as `Unavailable`. Today a Postgres restart or failover after `begin` succeeds but before the writes finish returns `Internal`, which a client won't retry. Register's upserts are idempotent and SubmitHarvest dedupes by `batch_id`, so retrying is safe. Keep permission and constraint errors as `Internal`.
+- **Red test:** Against real Postgres, terminate the backend (`pg_terminate_backend`) mid-transaction for each call, and check that it returns `Unavailable` with no DB text in the message.
 - **Done when:** Passes.
-- **Needs:** -32. Found in review of -32.
+- **Needs:** -33. Found in review of -32.
 
 ### 20261001-103222-37: Build the worker's server client.
 - **Do:** Use a Connect client with TLS (system roots or a configured CA), a bearer key from `PassKeyFile`, HTTP/2 keepalive, per-call timeouts, and exponential backoff with jitter.

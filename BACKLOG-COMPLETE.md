@@ -361,3 +361,15 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -30.
 - **Completed:** 2026-10-02, 33019c5
+
+### 20261001-103222-33: Build the SubmitHarvest write path.
+- **Do:** Add `internal/ingest`. In one transaction, resolve fingerprint, controller, action, and job IDs (moving `identity` to the server), then insert `events` and `event_context` and record `batch_id`. Use parameterized SQL, not `Sprintf`.
+- **Pruning:** Call `rotten.prune_ingested_batches()` on a timer to drop dedupe rows older than 30 days.
+- **Batch checks:** `logical_source_id` must match the logical source of `physical_source_id`, and both must match the pass key's source. Put that pairing in the red test. Reject windows that overlap windows already ingested for the source but aren't identical to them. If a duplicate `batch_id` arrives with different content, log a warning; that may need a content hash in `ingested_batches`.
+- **Red test:**
+  - A batch produces the same rows the characterization test (-12) expects.
+  - Sending the same batch twice writes one set of rows and acks both.
+  - Two workers sending overlapping new fingerprints at once get no errors or duplicates.
+- **Done when:** Passes.
+- **Needs:** -32.
+- **Completed:** 2026-10-02, d770adf. Overlap is checked per physical source (replicas share a logical source but harvest unaligned windows) and returns `FailedPrecondition`. Physical sources stay one row per fqdn; the new `logical_physical_sources` link table records which logical sources a host serves. Identity names are resolved in sorted order to avoid deadlocks. A duplicate `batch_id` with different content logs a warning and still acks.
