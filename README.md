@@ -91,6 +91,43 @@ How to use it
    secrets. `--fqdn` pins a key to one worker host. The server refuses to register or
    accept harvests for any source with an unpinned key, so give every worker key `--fqdn`.
    A revoked key stops working within the server's key cache TTL, 30 seconds by default.
+
+   **HTTPS ingest server.** Run the listener as `rotten_ingest`, separately from
+   migrations and key administration:
+  ```bash
+  ROTTEN_INGEST_DSN='postgres://rotten_ingest@host/rotten' \
+    ./rotten-server serve -listen :8443 \
+    -tls-cert /path/to/server-chain.pem -tls-key /path/to/server-key.pem
+  ```
+   TLS 1.3 is the minimum; there is no plaintext listener or TLS 1.2 fallback.
+   Clients must trust the server's CA and verify its hostname. Worker bearer keys,
+   not client certificates, authenticate RPCs. The existing Connect API is mounted
+   with pass-key authentication, including HTTP/2 support. `Register` and
+   `SubmitHarvest` currently return `Unimplemented` after successful authentication;
+   their write paths are separate backlog tasks.
+
+   | Flag | Environment fallback | Default |
+   | --- | --- | --- |
+   | `-dsn` | `ROTTEN_INGEST_DSN` | Required; use `rotten_ingest` |
+   | `-listen` | `ROTTEN_LISTEN` | `:8443` |
+   | `-tls-cert` | `ROTTEN_TLS_CERT` | Required PEM certificate chain, leaf first |
+   | `-tls-key` | `ROTTEN_TLS_KEY` | Required matching PEM private key |
+
+   Explicit flags override env values. The certificate and key must load before
+   the server connects to the database or opens its listener; invalid files abort
+   startup. Keep the key file readable only by the server's service account.
+   Replace both files to rotate certificates. The server reads their contents every
+   second (including files replaced by rename or symlink swaps, even with unchanged
+   timestamps), and SIGHUP forces an immediate reload. Only a successfully parsed,
+   matching pair replaces the active certificate. Missing, malformed, or mismatched
+   files log reload errors and leave the last good pair active; polling retries
+   until the files are repaired. This does not validate certificate expiry or CA
+   trust on the server; clients still enforce those checks.
+   New TLS connections use the new certificate; existing connections remain open
+   with their original TLS session. TLS session resumption is disabled to ensure
+   reconnecting clients always verify the current certificate. SIGINT/SIGTERM stop
+   the listener and reload loop; in-flight request draining, health checks, and
+   operational configuration remain task -36.
 5. Install `pg_stat_statements` in the monitored database:
  - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
  - run `CREATE EXTENSION pg_stat_statements` in the monitored database
