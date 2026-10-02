@@ -14,12 +14,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase B: Postgres 14 through 18 (item 4).
 
-### 20261001-103222-18: Cover Postgres 18 syntax and report parse failures.
-- **Do:** Add 18-only syntax to the corpus, such as `RETURNING OLD/NEW`, virtual generated columns, and `WITHOUT OVERLAPS`. Record which ones fail under the Postgres 17 parser. Keep a count of parse failures, along with up to N sample queries, so they're visible.
-- **Red test:** Expect parse failures to show up as counted and sampled, not silently dropped.
-- **Done when:** Passes. Add a note to the plan's ideas list about the `pg_query_go` v7 upgrade.
-- **Needs:** -16.
-
 ## Phase C: Diffing against a snapshot (item 2).
 
 ## Phase D: Rotten server (item 1).

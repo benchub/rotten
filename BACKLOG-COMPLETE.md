@@ -336,3 +336,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes on every supported version.
 - **Needs:** -20, -21, -23, -24.
 - Completed: October 1, 2026, 491a5aa. Item 2 is done. The review mutation-checked all scenarios on 14 and 18. Follow-ups: 20261001-143630-1 and -2. The crash gap is noted on -38.
+
+### 20261001-103222-18: Cover Postgres 18 syntax and report parse failures.
+- **Do:** Add 18-only syntax to the corpus, such as `RETURNING OLD/NEW`, virtual generated columns, and `WITHOUT OVERLAPS`. Record which ones fail under the Postgres 17 parser. Keep a count of parse failures, along with up to N sample queries, so they're visible.
+- **Red test:** Expect parse failures to show up as counted and sampled, not silently dropped.
+- **Done when:** Passes. Add a note to the plan's ideas list about the `pg_query_go` v7 upgrade.
+- **Needs:** -16.
+- Completed: October 2, 2026, f27d26f. Parse failures are counted and reported with up to five query samples, each bounded to 1,024 bytes. PostgreSQL 18 corpus cases document the current parser's acceptance and failures; the parser version and worker configuration are unchanged.
