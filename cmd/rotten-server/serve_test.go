@@ -349,11 +349,20 @@ func TestServeTLS(t *testing.T) {
 			if connect.CodeOf(err) != connect.CodeUnauthenticated {
 				t.Fatalf("missing bearer key: %v", err)
 			}
-			req := connect.NewRequest(&rottenv1.RegisterRequest{})
+			req := connect.NewRequest(&rottenv1.RegisterRequest{
+				Project:     "tls",
+				Environment: "test",
+				Cluster:     "cluster",
+				Role:        "primary",
+				Fqdn:        "db.example",
+			})
 			req.Header().Set("Authorization", "Bearer "+key.Token)
-			_, err = api.Register(context.Background(), req)
-			if connect.CodeOf(err) != connect.CodeUnimplemented {
-				t.Fatalf("valid key should reach existing unimplemented handler: %v", err)
+			resp, err := api.Register(context.Background(), req)
+			if err != nil {
+				t.Fatalf("valid key Register: %v", err)
+			}
+			if resp.Msg.GetLogicalSourceId() == 0 || resp.Msg.GetPhysicalSourceId() == 0 {
+				t.Fatalf("Register returned zero IDs: %v", resp.Msg)
 			}
 		})
 	}

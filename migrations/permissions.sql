@@ -50,6 +50,8 @@ grant insert on rotten.controllers, rotten.actions, rotten.job_tags,
     rotten.logical_sources, rotten.physical_sources, rotten.fingerprints,
     rotten.events, rotten.event_context, rotten.fingerprint_stats
     to rotten_ingest;
+grant update (project) on rotten.logical_sources to rotten_ingest;
+grant update (fqdn) on rotten.physical_sources to rotten_ingest;
 grant update on rotten.fingerprint_stats to rotten_ingest;
 grant usage on rotten.controllers_id_seq, rotten.actions_id_seq, rotten.job_tags_id_seq,
     rotten.logical_sources_id_seq, rotten.physical_sources_id_seq,

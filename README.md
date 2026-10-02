@@ -64,7 +64,7 @@ How to use it
   ROTTEN_OWNER_DSN='postgres://rotten_owner@host/rotten' ./rotten-server migrate
   ```
    Running `migrate` again is safe; it applies only what's new. Grants for the other
-   roles aren't set up yet.
+   roles are reapplied on every run from `migrations/permissions.sql`.
 
    **Partition retention.** pg_partman drops `events` and `event_context` partitions
    older than the retention period. The default is 21 days. To change it, pass
@@ -102,9 +102,10 @@ How to use it
    TLS 1.3 is the minimum; there is no plaintext listener or TLS 1.2 fallback.
    Clients must trust the server's CA and verify its hostname. Worker bearer keys,
    not client certificates, authenticate RPCs. The existing Connect API is mounted
-   with pass-key authentication, including HTTP/2 support. `Register` and
-   `SubmitHarvest` currently return `Unimplemented` after successful authentication;
-   their write paths are separate backlog tasks.
+   with pass-key authentication, including HTTP/2 support. `Register` creates
+   or reuses source rows for the worker. `SubmitHarvest` currently returns
+   `Unimplemented` after successful authentication; its write path is a
+   separate backlog task.
 
    | Flag | Environment fallback | Default |
    | --- | --- | --- |
@@ -142,6 +143,10 @@ How to use it
   1. `RottenDBConn` and `ObservedDBConn` are hopefully self-explanatory. Extra care has been
      given in rotten to make sure that rotten will correct send a root ca with all the needed
      intermediate certs, if you are working with such an environment.
+     Until the worker switches to the ingest server, `RottenDBConn` still talks directly to the
+     rotten database. Its role must be able to run the source-registration upserts: `SELECT`,
+     `INSERT`, sequence `USAGE`, and column `UPDATE` on `logical_sources.project` and
+     `physical_sources.fqdn`, matching the `rotten_ingest` grants in `migrations/permissions.sql`.
   2. `SanityCheck` is a query that will be run against the Observed DB before each window.
      Returning a boolean True value will tell rotten to proceed; a False will cause rotten
      to quit. The assumption is that systemd will keep restarting rotten until SanityCheck

@@ -97,6 +97,12 @@ func TestIngestRolePermissions(t *testing.T) {
 	wantAllowed(t, c, "select count(*) from rotten.events")
 	wantAllowed(t, c, "select secret_hash, revoked_at from rotten.api_keys")
 	wantAllowed(t, c, "update rotten.api_keys set last_used_at = now() where id = 1")
+	wantAllowed(t, c, `insert into rotten.logical_sources (project, environment, cluster, role)
+		values ('all', 'all', 'all', 'all')
+		on conflict (cluster, role, project, environment) do update set project = rotten.logical_sources.project`)
+	wantAllowed(t, c, `insert into rotten.physical_sources (fqdn)
+		values ('h')
+		on conflict (fqdn) do update set fqdn = rotten.physical_sources.fqdn`)
 	wantAllowed(t, c, "insert into rotten.ingested_batches (batch_id, key_id) values ('b1', 1)")
 	if _, err := su.Exec(context.Background(),
 		"insert into rotten.ingested_batches (batch_id, key_id, received_at) values ('old', 1, now() - interval '31 days')"); err != nil {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/benchub/rotten/gen/rotten/v1/rottenv1connect"
 	"github.com/benchub/rotten/internal/auth"
+	"github.com/benchub/rotten/internal/ingest"
 )
 
 func runServe(args []string, stdout, stderr io.Writer) int {
@@ -89,10 +90,8 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
 	authenticator := auth.New(auth.NewPGStore(pool), auth.Options{Logger: logger})
-	// Register and SubmitHarvest remain explicitly unimplemented until their
-	// write-path tasks land, but already pass through the real auth interceptor.
 	path, handler := rottenv1connect.NewIngestServiceHandler(
-		rottenv1connect.UnimplementedIngestServiceHandler{},
+		ingest.NewHandler(pool, ingest.Options{Logger: logger}),
 		connect.WithInterceptors(authenticator.Interceptor()),
 	)
 	mux := http.NewServeMux()

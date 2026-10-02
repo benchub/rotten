@@ -24,6 +24,7 @@ import (
 
 	"github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/identity"
+	"github.com/benchub/rotten/internal/ingest"
 	"github.com/benchub/rotten/internal/pgss"
 	"github.com/benchub/rotten/internal/state"
 	"github.com/benchub/rotten/internal/worker"
@@ -335,35 +336,21 @@ func main() {
 			// will now exit because Fatal
 		}
 
-		// find out the logical source ID we will be using
-		if err := rottenDB.QueryRow(context.Background(), `select id from logical_sources where project=$1 and environment=$2 and cluster=$3 and role=$4`, project, environment, cluster, role).Scan(&cfg.LogicalID); err == nil {
-			// yay, we have our ID
-		} else if err == pgx.ErrNoRows {
-			if err := rottenDB.QueryRow(context.Background(), `insert into logical_sources(project,environment,cluster,role) values ($1,$2,$3,$4) returning id`, project, environment, cluster, role).Scan(&cfg.LogicalID); err == nil {
-				// yay, we have our ID
-			} else {
-				log.Fatalln("couldn't insert into logical_sources", err)
-				// will now exit because Fatal
-			}
-		} else {
-			log.Fatalln("couldn't select from logical_sources", err)
+		// The server owns source registration now. Until the worker switches
+		// to RPC, keep the direct-DB startup path on the shared implementation.
+		reg, err := ingest.RegisterSource(context.Background(), rottenDB, ingest.Source{
+			Project:     project,
+			Environment: environment,
+			Cluster:     cluster,
+			Role:        role,
+			FQDN:        fqdn,
+		})
+		if err != nil {
+			log.Fatalln("couldn't register source", err)
 			// will now exit because Fatal
 		}
-
-		// find out the physical source ID we will be using
-		if err := rottenDB.QueryRow(context.Background(), `select id from physical_sources where fqdn=$1`, fqdn).Scan(&cfg.PhysicalID); err == nil {
-			// yay, we have our ID
-		} else if err == pgx.ErrNoRows {
-			if err := rottenDB.QueryRow(context.Background(), `insert into physical_sources(fqdn) values ($1) returning id`, fqdn).Scan(&cfg.PhysicalID); err == nil {
-				// yay, we have our ID
-			} else {
-				log.Fatalln("couldn't insert into physical_sources", err)
-				// will now exit because Fatal
-			}
-		} else {
-			log.Fatalln("couldn't select from physical_sources", err)
-			// will now exit because Fatal
-		}
+		cfg.LogicalID = reg.LogicalSourceID
+		cfg.PhysicalID = reg.PhysicalSourceID
 	}
 
 	w := worker.New(cfg, worker.RealClock{})
