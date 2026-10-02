@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	runningstat "github.com/benchub/runningstat"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 
@@ -91,6 +92,9 @@ func (h *Handler) SubmitHarvest(ctx context.Context, req *connect.Request[rotten
 			return h.submitDBError(key.ID, msg.GetBatchId(), err)
 		}
 	}
+	if err := mergeFingerprintStats(ctx, tx, msg, ids, windowEnd); err != nil {
+		return h.submitDBError(key.ID, msg.GetBatchId(), err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return h.submitDBError(key.ID, msg.GetBatchId(), submitError{op: "commit", err: err})
 	}
@@ -144,10 +148,15 @@ func validateHarvestEnvelope(msg *rottenv1.SubmitHarvestRequest) (time.Time, tim
 	if msg.GetBatchId() != wantBatch {
 		return time.Time{}, time.Time{}, errors.New("batch_id does not match source and window")
 	}
+	seenFingerprints := map[string]struct{}{}
 	for _, aggregate := range msg.GetAggregates() {
 		if aggregate.GetFingerprint() == "" || aggregate.GetNormalized() == "" || aggregate.GetMetrics() == nil {
 			return time.Time{}, time.Time{}, errors.New("aggregate is missing required fields")
 		}
+		if _, ok := seenFingerprints[aggregate.GetFingerprint()]; ok {
+			return time.Time{}, time.Time{}, errors.New("aggregate fingerprints must be unique within a batch")
+		}
+		seenFingerprints[aggregate.GetFingerprint()] = struct{}{}
 		if aggregate.GetMetrics().GetCalls() > math.MaxInt32 {
 			return time.Time{}, time.Time{}, errors.New("aggregate calls exceed event storage range")
 		}
@@ -217,6 +226,28 @@ func hasOverlappingWindow(ctx context.Context, tx pgx.Tx, batchID string, physic
 }
 
 var errInvalidHarvest = errors.New("invalid harvest")
+
+var fingerprintStatDomains = [...]string{
+	"calls",
+	"total_time",
+	"min_time",
+	"max_time",
+	"mean_time",
+	"stddev_time",
+	"rows",
+	"shared_blks_hit",
+	"shared_blks_read",
+	"shared_blks_dirtied",
+	"shared_blks_written",
+	"local_blks_hit",
+	"local_blks_read",
+	"local_blks_dirtied",
+	"local_blks_written",
+	"temp_blks_read",
+	"temp_blks_written",
+	"blk_read_time",
+	"blk_write_time",
+}
 
 type harvestIDs struct {
 	fingerprints map[string]int64
@@ -317,6 +348,145 @@ func insertAggregate(ctx context.Context, tx pgx.Tx, msg *rottenv1.SubmitHarvest
 		}
 	}
 	return nil
+}
+
+type fingerprintStatsAccumulator struct {
+	fingerprintID int64
+	stats         map[string]*runningstat.RunningStat
+}
+
+func mergeFingerprintStats(ctx context.Context, tx pgx.Tx, msg *rottenv1.SubmitHarvestRequest, ids harvestIDs, windowEnd time.Time) error {
+	accumulators := map[int64]*fingerprintStatsAccumulator{}
+	var ordered []int64
+	for _, aggregate := range msg.GetAggregates() {
+		fingerprintID := ids.fingerprints[aggregate.GetFingerprint()]
+		accumulator := accumulators[fingerprintID]
+		if accumulator == nil {
+			accumulator = newFingerprintStatsAccumulator(fingerprintID)
+			accumulators[fingerprintID] = accumulator
+			ordered = append(ordered, fingerprintID)
+		}
+		accumulateFingerprintStats(accumulator, aggregate.GetMetrics())
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i] < ordered[j]
+	})
+	for _, fingerprintID := range ordered {
+		accumulator := accumulators[fingerprintID]
+		for _, sourceID := range [2]uint32{0, msg.GetLogicalSourceId()} {
+			if err := mergeFingerprintStatsForSource(ctx, tx, accumulator, sourceID, windowEnd.Unix()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func newFingerprintStatsAccumulator(fingerprintID int64) *fingerprintStatsAccumulator {
+	stats := make(map[string]*runningstat.RunningStat, len(fingerprintStatDomains))
+	for _, domain := range fingerprintStatDomains {
+		stats[domain] = &runningstat.RunningStat{}
+	}
+	return &fingerprintStatsAccumulator{fingerprintID: fingerprintID, stats: stats}
+}
+
+func accumulateFingerprintStats(accumulator *fingerprintStatsAccumulator, metrics *rottenv1.Metrics) {
+	calls := float64(metrics.GetCalls())
+	accumulator.stats["calls"].Push(calls)
+	accumulator.stats["total_time"].Push(metrics.GetTotalTime())
+	accumulator.stats["min_time"].Push(metrics.GetMinTime())
+	accumulator.stats["max_time"].Push(metrics.GetMaxTime())
+	if calls > 0 {
+		accumulator.stats["mean_time"].Push(metrics.GetTotalTime() / calls)
+	} else {
+		accumulator.stats["mean_time"].Push(metrics.GetMeanTime())
+	}
+	if metrics != nil && metrics.StddevTime != nil {
+		accumulator.stats["stddev_time"].Push(metrics.GetStddevTime())
+	}
+	accumulator.stats["rows"].Push(float64(metrics.GetRows()))
+	accumulator.stats["shared_blks_hit"].Push(float64(metrics.GetSharedBlksHit()))
+	accumulator.stats["shared_blks_read"].Push(float64(metrics.GetSharedBlksRead()))
+	accumulator.stats["shared_blks_dirtied"].Push(float64(metrics.GetSharedBlksDirtied()))
+	accumulator.stats["shared_blks_written"].Push(float64(metrics.GetSharedBlksWritten()))
+	accumulator.stats["local_blks_hit"].Push(float64(metrics.GetLocalBlksHit()))
+	accumulator.stats["local_blks_read"].Push(float64(metrics.GetLocalBlksRead()))
+	accumulator.stats["local_blks_dirtied"].Push(float64(metrics.GetLocalBlksDirtied()))
+	accumulator.stats["local_blks_written"].Push(float64(metrics.GetLocalBlksWritten()))
+	accumulator.stats["temp_blks_read"].Push(float64(metrics.GetTempBlksRead()))
+	accumulator.stats["temp_blks_written"].Push(float64(metrics.GetTempBlksWritten()))
+	accumulator.stats["blk_read_time"].Push(metrics.GetBlkReadTime())
+	accumulator.stats["blk_write_time"].Push(metrics.GetBlkWriteTime())
+}
+
+func mergeFingerprintStatsForSource(ctx context.Context, tx pgx.Tx, accumulator *fingerprintStatsAccumulator, sourceID uint32, last int64) error {
+	if err := ensureFingerprintStatsRows(ctx, tx, accumulator.fingerprintID, sourceID, last); err != nil {
+		return err
+	}
+	existing, err := lockedFingerprintStats(ctx, tx, accumulator.fingerprintID, sourceID)
+	if err != nil {
+		return err
+	}
+	if len(existing) != len(fingerprintStatDomains) {
+		return fmt.Errorf("fingerprint_stats has %d rows for fingerprint_id %d logical_source_id %d, want %d", len(existing), accumulator.fingerprintID, sourceID, len(fingerprintStatDomains))
+	}
+	for _, domain := range fingerprintStatDomains {
+		next := accumulator.stats[domain]
+		if next.RunningStatCount() == 0 {
+			continue
+		}
+		combined := runningstat.RunningStat{}
+		combined.Init(next.RunningStatCount(), next.RunningStatMean(), next.RunningStatDeviation())
+		combined.Merge(existing[domain])
+		if _, err := tx.Exec(ctx, `update rotten.fingerprint_stats
+			set last = $1, count = $2, mean = $3, deviation = $4
+			where fingerprint_id = $5 and logical_source_id = $6 and type = $7`,
+			last, combined.RunningStatCount(), combined.RunningStatMean(), combined.RunningStatDeviation(), accumulator.fingerprintID, sourceID, domain); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureFingerprintStatsRows(ctx context.Context, tx pgx.Tx, fingerprintID int64, sourceID uint32, last int64) error {
+	for _, domain := range fingerprintStatDomains {
+		if _, err := tx.Exec(ctx, `insert into rotten.fingerprint_stats
+			(fingerprint_id, logical_source_id, type, last, count, mean, deviation)
+			values ($1, $2, $3, $4, 0, 0, 0)
+			on conflict (fingerprint_id, logical_source_id, type) do nothing`, fingerprintID, sourceID, domain, last); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func lockedFingerprintStats(ctx context.Context, tx pgx.Tx, fingerprintID int64, sourceID uint32) (map[string]runningstat.RunningStat, error) {
+	rows, err := tx.Query(ctx, `select type::text, count, mean, deviation
+		from rotten.fingerprint_stats
+		where fingerprint_id = $1 and logical_source_id = $2
+		order by type
+		for update`, fingerprintID, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	existing := map[string]runningstat.RunningStat{}
+	for rows.Next() {
+		var domain string
+		var count int64
+		var mean float64
+		var deviation float64
+		if err := rows.Scan(&domain, &count, &mean, &deviation); err != nil {
+			return nil, err
+		}
+		stat := runningstat.RunningStat{}
+		stat.Init(count, mean, deviation)
+		existing[domain] = stat
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return existing, nil
 }
 
 func optionalID(ids map[string]int64, value string) *int64 {
