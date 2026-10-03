@@ -110,12 +110,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-44: Report on top queries by total time.
-- **Do:** Add `reports/top_by_total_time.sql`.
-- **Red test:** It returns the expected order on the fixture.
-- **Done when:** Passes.
-- **Needs:** -43.
-
 ### 20261001-103222-45: Report on queries slower than their history.
 - **Do:** Add `reports/outliers.sql`. Add the missing `ORDER BY` before `LIMIT`, and define how source 0 compares with each source's own stats.
 - **Fixture:** `fingerprint_stats.type` has no `time` value. Use `mean_time`. The fixture's outlier history has mean 5 on source 0 and mean 8 on its own source.

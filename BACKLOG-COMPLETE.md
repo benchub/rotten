@@ -403,3 +403,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -42.
 - **Completed:** 2026-10-02, 8b9e5ff. Only windows that fall fully inside the time range are counted, the same as the legacy query. Context sums are `bigint`. The filter covers project, environment and cluster, and adds up both roles.
+
+### 20261001-103222-44: Report on top queries by total time.
+- **Do:** Add `reports/top_by_total_time.sql`.
+- **Red test:** It returns the expected order on the fixture.
+- **Done when:** Passes.
+- **Needs:** -43.
+- **Completed:** 2026-10-02, 2e53c7b. Same filters and window rules as -43, ordered by total time, then calls, then fingerprint. The test works out both orderings from the fixture and checks that they differ.
