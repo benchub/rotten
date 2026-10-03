@@ -1,0 +1,17 @@
+{
+  "_comment": "Pass key test vectors shared by internal/auth/ui_contract_test.go and ui/spec/lib/rotten_ui/pass_key_spec.rb. secret is 32 bytes as unpadded URL-safe base64, hash is hex(sha256(secret)), token is rotten_<id>_<secret>.",
+  "vectors": [
+    {
+      "id": 1,
+      "secret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "hash": "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0",
+      "token": "rotten_1_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    },
+    {
+      "id": 9007199254740993,
+      "secret": "__vv__vv__vv__vv__vv__vv__vv__vv__vv__vv_r8",
+      "hash": "5f98c477fa155070643ecc5b549fd61bd225c4daa0b234f1cc69359bce5e037e",
+      "token": "rotten_9007199254740993___vv__vv__vv__vv__vv__vv__vv__vv__vv__vv_r8"
+    }
+  ]
+}

@@ -7,6 +7,11 @@ Rails.application.routes.draw do
   post "login" => "sessions#create"
   delete "logout" => "sessions#destroy"
   get "admin" => "admin#show"
+  scope "admin", format: false do
+    resources :api_keys, path: "keys", only: %i[index new create], constraints: { id: /[1-9][0-9]*/ } do
+      post :revoke, on: :member
+    end
+  end
   get "reports" => "reports#index", as: :reports, format: false
   get "reports/:id" => "reports#show", as: :report, format: false
   # Any id reaches the controller, which 404s the ones that aren't a

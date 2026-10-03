@@ -1,0 +1,28 @@
+<% content_for :title, "New pass key" %>
+<div class="api-keys">
+  <p><%= link_to "Back to pass keys", api_keys_path %></p>
+  <h1>New pass key</h1>
+  <% if @issue.errors.any? %>
+    <div class="report-errors" role="alert">
+      <ul>
+        <% @issue.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+  <%# Turbo is off so the response, which carries the only copy of the secret, renders in place with no redirect. %>
+  <%= form_with model: @issue, scope: :api_key, url: api_keys_path, method: :post, data: { turbo: false } do |form| %>
+    <p>
+      <%= form.label :name, "Name" %>
+      <%= form.text_field :name, required: true, maxlength: ApiKeyIssue::NAME_MAX, autocomplete: "off" %>
+    </p>
+    <p>
+      <%= form.label :fqdn, "FQDN" %>
+      <%= form.text_field :fqdn, required: true, maxlength: ApiKeyIssue::FQDN_MAX, autocomplete: "off",
+            placeholder: "db1.example.com" %>
+      <span>The worker host this key is pinned to, as the worker reports it.</span>
+    </p>
+    <%= form.submit "Create pass key" %>
+  <% end %>
+</div>

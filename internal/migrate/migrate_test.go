@@ -205,6 +205,56 @@ func TestUsersColumnCommentsDescribeValues(t *testing.T) {
 	}
 }
 
+func TestUIAuditLogSchema(t *testing.T) {
+	db := testdb.StartRotten(t)
+	conn := db.Connect(t)
+	ctx := context.Background()
+
+	var id int64
+	var stamped bool
+	var details string
+	if err := conn.QueryRow(ctx, `insert into rotten.ui_audit_log (actor_email, action)
+		values ('admin@example.com', 'api_key.create')
+		returning id, at between now() - interval '1 minute' and now(), details::text`).Scan(&id, &stamped, &details); err != nil {
+		t.Fatalf("insert minimal audit row: %v", err)
+	}
+	if id <= 0 || !stamped || details != "{}" {
+		t.Errorf("defaults: id %d, at stamped %v, details %s; want a positive id, now(), {}", id, stamped, details)
+	}
+	for what, q := range map[string]string{
+		"no actor email": `insert into rotten.ui_audit_log (action) values ('api_key.create')`,
+		"empty action":   `insert into rotten.ui_audit_log (actor_email, action) values ('a@example.com', '')`,
+		"odd action":     `insert into rotten.ui_audit_log (actor_email, action) values ('a@example.com', 'Drop Table')`,
+		"no action":      `insert into rotten.ui_audit_log (actor_email) values ('a@example.com')`,
+		"details array":  `insert into rotten.ui_audit_log (actor_email, action, details) values ('a@example.com', 'api_key.create', '[]')`,
+	} {
+		if _, err := conn.Exec(ctx, q); err == nil {
+			t.Errorf("%s: insert succeeded, want a constraint violation", what)
+		}
+	}
+	// The log has no foreign key to users, so deleting a user keeps the
+	// history, with the actor's email.
+	if _, err := conn.Exec(ctx, `insert into rotten.ui_audit_log (actor_user_id, actor_email, action, target_type, target_id)
+		values (424242, 'gone@example.com', 'api_key.revoke', 'api_key', 1)`); err != nil {
+		t.Errorf("audit row for a user and key that don't exist: %v", err)
+	}
+
+	for _, column := range []string{"id", "at", "actor_user_id", "actor_email", "action", "target_type", "target_id", "details"} {
+		var got *string
+		if err := conn.QueryRow(ctx, `
+			select col_description('rotten.ui_audit_log'::regclass, a.attnum)
+			from pg_attribute a
+			where a.attrelid = 'rotten.ui_audit_log'::regclass
+			  and a.attname = $1
+			  and not a.attisdropped`, column).Scan(&got); err != nil {
+			t.Fatalf("%s comment: %v", column, err)
+		}
+		if got == nil || *got == "" {
+			t.Errorf("ui_audit_log.%s has no comment", column)
+		}
+	}
+}
+
 func TestEventContextCountIsBigintEverywhere(t *testing.T) {
 	db := testdb.StartRotten(t)
 	conn := db.Connect(t)

@@ -281,6 +281,43 @@ shorter range or a narrower source.
 | --- | --- | --- |
 | `ROTTEN_UI_REPORT_TIMEOUT` | no | Statement timeout for each report query, in seconds; fractions such as `2.5` are allowed. Default `15`. The app refuses to boot if the value isn't a number from 0.001 to 2147483. |
 
+## Pass keys
+
+Admins manage worker pass keys at `/admin/keys`, linked from the home and
+admin pages. Viewers get a 403 on every pass key route, and signed-out users
+go to the login page.
+
+- **List.** `/admin/keys` shows each key's id, name, pinned FQDN, who created
+  it and when, when it was last used, and whether it's active or revoked.
+  It never shows secrets; `rotten_ui` can't read `secret_hash`.
+- **Create.** **New pass key** asks for a name and the FQDN of the worker
+  host the key is pinned to. The name is 1 to 64 characters of letters,
+  digits, `.`, `_` and `-`, starting with a letter or digit, and must be
+  unused, even by a revoked key. The FQDN is lowercased, loses a trailing
+  dot, and must be a host name of at most 253 characters. The response is a
+  page holding the whole key, `rotten_<id>_<secret>`, which is the only time
+  it's shown. It comes with `Cache-Control: no-store` and no redirect, and
+  tells Turbo not to snapshot it, so the secret never goes in the flash, the
+  session cookie, the browser's cache or Turbo's page cache. Only
+  `sha256(secret)` is stored.
+- **Revoke.** The **Revoke** button asks for confirmation. Revoking sets
+  `revoked_at` and `revoked_by`. Revoking a key that's already revoked
+  changes nothing and says so. The server caches pass key checks, so a
+  revoked key keeps working for up to the server's TTL, 30 seconds by
+  default.
+- **Audit log.** Each create and revoke adds a row to `ui_audit_log`, with
+  the admin's user id and email, the action (`api_key.create` or
+  `api_key.revoke`), the key id, the time, and the key's name and FQDN.
+  `rotten_ui` can only insert into and read that table.
+
+`rotten_ui` can insert only `name`, `secret_hash`, `fqdn` and `created_by`
+into `api_keys`, and update only `revoked_at` and `revoked_by`, so the models
+are read-only and the writes are SQL files in `app/sql/`. The Go tests run
+those same files as `rotten_ui` against the server's authenticator, and
+`spec/fixtures/pass_key_vectors.json` holds known secrets with their hashes
+and keys, checked by both the Go and Ruby tests. The `rotten-server keys`
+CLI still works alongside the UI.
+
 ## Production settings
 
 | Variable | Required | Meaning |

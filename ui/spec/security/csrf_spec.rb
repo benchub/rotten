@@ -16,7 +16,7 @@ module CsrfSpecRoutes
 
   # Values for path segments. A route with a segment missing here fails the
   # spec until one is added.
-  PATH_SAMPLES = { persona: "viewer" }.freeze
+  PATH_SAMPLES = { persona: "viewer", id: "1" }.freeze
 
   # Routes exempt from the check, as "VERB /path" => "reason". Keep this empty
   # unless a route really can't carry a token.
@@ -104,7 +104,8 @@ RSpec.describe "CSRF protection on every state-changing route", type: :request d
   end
 
   it "finds the app's state-changing routes" do
-    expect(routes.map(&:label)).to include("POST /login", "DELETE /logout", "POST /__test/sign_in")
+    expect(routes.map(&:label)).to include("POST /login", "DELETE /logout", "POST /__test/sign_in",
+                                           "POST /admin/keys", "POST /admin/keys/:id/revoke")
   end
 
   routes.each do |route|

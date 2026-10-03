@@ -9,8 +9,7 @@
 -- so rotten_owner doesn't need CREATEROLE. It touches only the rotten schema,
 -- so pg_partman and goose keep what they have in public.
 --
--- The UI's tables (users and ui_audit_log) get their grants here when their
--- migration lands.
+-- The UI's tables, users and ui_audit_log, are granted at the end.
 
 -- Fail clearly if the operator hasn't created a role yet.
 DO $$
@@ -77,3 +76,10 @@ grant execute on function rotten.prune_ingested_batches() to rotten_ingest;
 -- users. The Rails UI owns authentication and authorization state.
 grant select, insert, update, delete on rotten.users to rotten_ui;
 grant usage on rotten.users_id_seq to rotten_ui;
+
+-- ui_audit_log. Append-only for the UI: it names only the columns it fills,
+-- so the database stamps id and at, and it can never update or delete.
+grant select on rotten.ui_audit_log to rotten_ui;
+grant insert (actor_user_id, actor_email, action, target_type, target_id, details)
+    on rotten.ui_audit_log to rotten_ui;
+grant usage on rotten.ui_audit_log_id_seq to rotten_ui;

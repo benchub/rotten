@@ -1,0 +1,17 @@
+<% content_for :title, "Pass key created" %>
+<%# Keep this page, and its token, out of Turbo's snapshot cache, which no-store doesn't reach. %>
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+<% end %>
+<div class="api-keys">
+  <h1>Pass key created</h1>
+  <p>
+    Created <strong><%= @issued.api_key.name %></strong>, pinned to <%= @issued.api_key.fqdn %>.
+  </p>
+  <p role="alert">
+    Copy this pass key now and put it in the worker's config. It won't be shown again:
+    Rotten keeps only a hash of it. If it's lost, revoke the key and create another.
+  </p>
+  <pre><code id="pass-key-token"><%= @issued.token %></code></pre>
+  <p><%= link_to "Back to pass keys", api_keys_path %></p>
+</div>

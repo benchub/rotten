@@ -153,6 +153,38 @@ func TestUIRolePermissions(t *testing.T) {
 		active, last_login_at from rotten.users`)
 	wantAllowed(t, c, "update rotten.users set active = false where email = 'ui@example.com'")
 	wantAllowed(t, c, "delete from rotten.users where email = 'ui@example.com'")
+
+	// The UI's create returns the new id, which needs select on id.
+	var id int64
+	if err := c.QueryRow(context.Background(), `insert into rotten.api_keys (name, secret_hash, fqdn, created_by)
+		values ('k5', 'h5', 'db.example.com', 'admin') returning id`).Scan(&id); err != nil || id < 2 {
+		t.Errorf("insert into api_keys ... returning id: id %d, %v", id, err)
+	}
+	wantDenied(t, c, "insert into rotten.api_keys (name, secret_hash, created_by) values ('k6', 'h6', 'admin') returning secret_hash")
+	wantDenied(t, c, "insert into rotten.api_keys (name, secret_hash, created_by) values ('k7', 'h7', 'admin') returning *")
+	wantAllowed(t, c, "update rotten.api_keys set revoked_at = now(), revoked_by = 'admin' where id = 1 and revoked_at is null returning id")
+
+	// ui_audit_log is append-only for the UI, and the database stamps the
+	// row's id and time.
+	wantAllowed(t, c, `insert into rotten.ui_audit_log (actor_user_id, actor_email, action, target_type, target_id, details)
+		values (1, 'admin@example.com', 'api_key.revoke', 'api_key', 1, '{"name": "k"}')`)
+	wantAllowed(t, c, "select id, at, actor_user_id, actor_email, action, target_type, target_id, details from rotten.ui_audit_log")
+	wantDenied(t, c, "insert into rotten.ui_audit_log (at, actor_email, action) values (now() - interval '1 day', 'a@example.com', 'api_key.create')")
+	wantDenied(t, c, "insert into rotten.ui_audit_log (id, actor_email, action) values (999, 'a@example.com', 'api_key.create')")
+	wantDenied(t, c, "update rotten.ui_audit_log set actor_email = 'x' where true")
+	wantDenied(t, c, "update rotten.ui_audit_log set at = now() where false")
+	wantDenied(t, c, "delete from rotten.ui_audit_log")
+	wantDenied(t, c, "truncate rotten.ui_audit_log")
+}
+
+func TestOnlyUIRoleReachesAuditLog(t *testing.T) {
+	db := testdb.StartRotten(t)
+	seed(t, db.Connect(t))
+	for _, r := range []string{testdb.IngestRole, testdb.ReadonlyRole} {
+		c := db.ConnectAs(t, r)
+		wantDenied(t, c, "select * from rotten.ui_audit_log")
+		wantDenied(t, c, "insert into rotten.ui_audit_log (actor_email, action) values ('a@example.com', 'api_key.create')")
+	}
 }
 
 func TestReadonlyRoleCantWrite(t *testing.T) {

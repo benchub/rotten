@@ -1,0 +1,56 @@
+<% content_for :title, "Pass keys" %>
+<div class="api-keys">
+  <p><%= link_to "Home", root_path %> · <%= link_to "Admin", admin_path %></p>
+  <h1>Pass keys</h1>
+  <% if notice.present? %>
+    <p role="status"><%= notice %></p>
+  <% end %>
+  <p>
+    Workers send a pass key to the server. Each key is pinned to one worker host.
+    A revoked key is refused within the server's auth cache TTL, 30 seconds by default.
+  </p>
+  <p><%= link_to "New pass key", new_api_key_path %></p>
+  <% if @api_keys.empty? %>
+    <p>No pass keys yet.</p>
+  <% else %>
+    <table class="api-key-list">
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">Name</th>
+          <th scope="col">FQDN</th>
+          <th scope="col">Created</th>
+          <th scope="col">Created by</th>
+          <th scope="col">Last used</th>
+          <th scope="col">Status</th>
+          <th scope="col">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @api_keys.each do |api_key| %>
+          <tr data-key-id="<%= api_key.id %>">
+            <td><%= api_key.id %></td>
+            <td><%= api_key.name %></td>
+            <td><%= api_key.fqdn.presence || "(not pinned)" %></td>
+            <td><%= api_key.created_at.utc.strftime("%Y-%m-%d %H:%M UTC") %></td>
+            <td><%= api_key.created_by %></td>
+            <td><%= api_key.last_used_at ? api_key.last_used_at.utc.strftime("%Y-%m-%d %H:%M UTC") : "never" %></td>
+            <td>
+              <% if api_key.revoked? %>
+                Revoked <%= api_key.revoked_at.utc.strftime("%Y-%m-%d %H:%M UTC") %> by <%= api_key.revoked_by %>
+              <% else %>
+                Active
+              <% end %>
+            </td>
+            <td>
+              <% unless api_key.revoked? %>
+                <%= button_to "Revoke", revoke_api_key_path(api_key),
+                      form: { data: { turbo_confirm: "Revoke #{api_key.name}? Workers using it will be refused." } } %>
+              <% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% end %>
+</div>
