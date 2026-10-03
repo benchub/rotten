@@ -1,0 +1,173 @@
+services:
+  observed-postgres:
+    image: postgres:18
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track_planning=on
+    environment:
+      POSTGRES_DB: observed
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - observed-data:/var/lib/postgresql
+      - ./observed-init.sql:/docker-entrypoint-initdb.d/001-observed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d observed"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      observed:
+        aliases:
+          - observed-db
+
+  rotten-db:
+    build:
+      context: ..
+      dockerfile: docker/rotten-db.Dockerfile
+    image: rotten-dev-db:18
+    environment:
+      POSTGRES_DB: rotten
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - rotten-data:/var/lib/postgresql
+      - ./rotten-db-init.sql:/docker-entrypoint-initdb.d/001-rotten.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rotten"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      core:
+        aliases:
+          - rotten-db
+
+  certs:
+    build:
+      context: ..
+      dockerfile: docker/test.Dockerfile
+    image: rotten-dev-go:1.27
+    network_mode: none
+    working_dir: /src
+    command:
+      - go
+      - run
+      - ./dev/cmd/gen-test-certs
+      - -out
+      - /certs
+      - -host
+      - rotten-server,localhost,127.0.0.1
+    volumes:
+      - ..:/src:ro
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+      - test-certs:/certs
+
+  server-migrate:
+    image: rotten-dev-go:1.27
+    working_dir: /src
+    command:
+      - go
+      - run
+      - ./cmd/rotten-server
+      - migrate
+    environment:
+      ROTTEN_OWNER_DSN: postgres://rotten_owner:rotten_owner@rotten-db:5432/rotten?sslmode=disable
+    volumes:
+      - ..:/src:ro
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+    depends_on:
+      rotten-db:
+        condition: service_healthy
+    networks:
+      - core
+
+  server:
+    image: rotten-dev-go:1.27
+    working_dir: /src
+    command:
+      - go
+      - run
+      - ./cmd/rotten-server
+      - serve
+      - -listen
+      - :8443
+      - -tls-cert
+      - /certs/server.pem
+      - -tls-key
+      - /certs/server-key.pem
+    environment:
+      ROTTEN_SERVER_DSN: postgres://rotten_ingest:rotten_ingest@rotten-db:5432/rotten?sslmode=disable
+    ports:
+      - "8443:8443"
+    volumes:
+      - ..:/src:ro
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+      - test-certs:/certs:ro
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      server-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - go
+        - run
+        - ./dev/cmd/healthcheck
+        - -url
+        - https://localhost:8443/healthz
+        - -ca
+        - /certs/ca.pem
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    networks:
+      edge:
+        aliases:
+          - rotten-server
+      core:
+        aliases:
+          - rotten-server
+
+  worker:
+    image: rotten-dev-go:1.27
+    working_dir: /src
+    command:
+      - sleep
+      - infinity
+    volumes:
+      - ..:/src:ro
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+    depends_on:
+      observed-postgres:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    networks:
+      observed:
+        aliases:
+          - rotten-worker
+      edge:
+        aliases:
+          - rotten-worker
+
+networks:
+  observed:
+    internal: true
+  edge:
+  core:
+    internal: true
+
+volumes:
+  observed-data:
+  rotten-data:
+  go-mod:
+  go-build:
+  test-certs:

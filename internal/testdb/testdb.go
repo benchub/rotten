@@ -4,12 +4,16 @@
 package testdb
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +63,12 @@ type DB struct {
 	dbName string
 }
 
+// Container returns the underlying testcontainers container for tests that
+// need Docker-network details or container control.
+func (d *DB) Container() testcontainers.Container {
+	return d.c
+}
+
 // Stop terminates the database container early. Cleanup still tolerates the
 // already-stopped container.
 func (d *DB) Stop(t testing.TB) {
@@ -71,6 +81,9 @@ func (d *DB) Stop(t testing.TB) {
 // Connect opens a superuser connection and closes it at test cleanup.
 func (d *DB) Connect(t testing.TB) *pgx.Conn {
 	t.Helper()
+	if d.DSN == "" {
+		t.Fatalf("testdb: database has no host DSN; use QueryInContainer or an internal network DSN for containers without published ports")
+	}
 	conn, err := pgx.Connect(context.Background(), d.DSN)
 	if err != nil {
 		t.Fatalf("testdb: connect: %v", err)
@@ -83,6 +96,9 @@ func (d *DB) Connect(t testing.TB) *pgx.Conn {
 // name.
 func (d *DB) DSNAs(t testing.TB, role string) string {
 	t.Helper()
+	if d.DSN == "" {
+		t.Fatalf("testdb: database has no host DSN; use QueryInContainer or an internal network DSN for containers without published ports")
+	}
 	u, err := url.Parse(d.DSN)
 	if err != nil {
 		t.Fatalf("testdb: parse DSN: %v", err)
@@ -115,6 +131,7 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 		postgres.WithDatabase(dbName),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
+		testcontainers.WithExposedPorts("5432/tcp"),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).WithStartupTimeout(3 * time.Minute)),
@@ -132,6 +149,28 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 		t.Fatalf("testdb: connection string: %v", err)
 	}
 	return &DB{DSN: dsn, c: c, dbName: dbName}
+}
+
+func startNoHostDSN(t testing.TB, image, dbName string, extra ...testcontainers.ContainerCustomizer) *DB {
+	t.Helper()
+	ctx := context.Background()
+	opts := append([]testcontainers.ContainerCustomizer{
+		postgres.WithDatabase(dbName),
+		postgres.WithUsername("postgres"),
+		postgres.WithPassword("postgres"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).WithStartupTimeout(3 * time.Minute)),
+	}, extra...)
+	c, err := postgres.Run(ctx, image, opts...)
+	testcontainers.CleanupContainer(t, c)
+	if err != nil {
+		if image == RottenImage {
+			t.Fatalf("testdb: start %s: %v (is the image built? run `make image`)", image, err)
+		}
+		t.Fatalf("testdb: start %s: %v", image, err)
+	}
+	return &DB{c: c, dbName: dbName}
 }
 
 // StartRotten is StartRottenEmpty plus migrate.Up, run as OwnerRole, so the
@@ -154,6 +193,12 @@ func StartRottenEmpty(t testing.TB) *DB {
 	t.Helper()
 	skipShort(t)
 	db := start(t, RottenImage, "rotten")
+	initializeRottenEmpty(t, db)
+	return db
+}
+
+func initializeRottenEmpty(t testing.TB, db *DB) {
+	t.Helper()
 	conn := db.Connect(t)
 	ctx := context.Background()
 	if _, err := conn.Exec(ctx, "create extension pg_partman schema public"); err != nil {
@@ -179,7 +224,118 @@ func StartRottenEmpty(t testing.TB) *DB {
 			t.Fatalf("testdb: %s: %v", q, err)
 		}
 	}
-	return db
+}
+
+func initializeRottenEmptyInContainer(t testing.TB, db *DB) {
+	t.Helper()
+	var sql bytes.Buffer
+	sql.WriteString("CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA public;\n")
+	for _, r := range RottenRoles {
+		sql.WriteString(fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s';\n", pgx.Identifier{r}.Sanitize(), r))
+	}
+	owner := pgx.Identifier{OwnerRole}.Sanitize()
+	for _, q := range []string{
+		"ALTER DATABASE rotten OWNER TO " + owner,
+		"GRANT ALL ON ALL TABLES IN SCHEMA public TO " + owner,
+		"GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO " + owner,
+		"GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO " + owner,
+		"GRANT EXECUTE ON ALL PROCEDURES IN SCHEMA public TO " + owner,
+	} {
+		sql.WriteString(q)
+		sql.WriteString(";\n")
+	}
+	execSQLInContainer(t, db, sql.String())
+}
+
+func migrateRottenInContainer(t testing.TB, db *DB) {
+	t.Helper()
+	bin := buildRottenServer(t)
+	const dst = "/rotten-server"
+	if err := db.c.CopyFileToContainer(context.Background(), bin, dst, 0o755); err != nil {
+		t.Fatalf("testdb: copy rotten-server to container: %v", err)
+	}
+	code, r, err := db.c.Exec(context.Background(), []string{
+		dst,
+		"migrate",
+		"-dsn",
+		internalDSN(OwnerRole, OwnerRole, "localhost", db.dbName),
+	}, tcexec.Multiplexed())
+	if err != nil {
+		t.Fatalf("testdb: exec rotten-server migrate: %v", err)
+	}
+	out, _ := io.ReadAll(r)
+	if code != 0 {
+		t.Fatalf("testdb: rotten-server migrate exited %d: %s", code, out)
+	}
+}
+
+func buildRottenServer(t testing.TB) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "rotten-server")
+	cmd := exec.Command("go", "build", "-o", bin, "./cmd/rotten-server")
+	cmd.Dir = RepoRoot()
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("testdb: build rotten-server: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func execSQLInContainer(t testing.TB, db *DB, sql string) {
+	t.Helper()
+	ctx := context.Background()
+	const path = "/rotten-testdb.sql"
+	if err := db.c.CopyToContainer(ctx, []byte(sql), path, 0o644); err != nil {
+		t.Fatalf("testdb: copy SQL to container: %v", err)
+	}
+	code, r, err := db.c.Exec(ctx, []string{"psql", "-X", "-U", "postgres", "-d", db.dbName, "-v", "ON_ERROR_STOP=1", "-f", path}, tcexec.Multiplexed())
+	if err != nil {
+		t.Fatalf("testdb: exec SQL in container: %v", err)
+	}
+	out, _ := io.ReadAll(r)
+	if code != 0 {
+		t.Fatalf("testdb: SQL in container exited %d: %s", code, out)
+	}
+}
+
+// QueryInContainer runs query with psql inside the database container and
+// returns unaligned, tuples-only rows split on a nonprinting field separator.
+// It works for containers with no host-published Postgres port.
+func (d *DB) QueryInContainer(t testing.TB, role string, query string) [][]string {
+	t.Helper()
+	password := role
+	if role == "postgres" {
+		password = "postgres"
+	}
+	const sep = "\x1f"
+	code, r, err := d.c.Exec(context.Background(), []string{
+		"psql",
+		"-X",
+		"-A",
+		"-t",
+		"-F", sep,
+		internalDSN(role, password, "localhost", d.dbName),
+		"-c", query,
+	}, tcexec.Multiplexed())
+	if err != nil {
+		t.Fatalf("testdb: query in container: %v", err)
+	}
+	out, _ := io.ReadAll(r)
+	if code != 0 {
+		t.Fatalf("testdb: query in container exited %d: %s", code, out)
+	}
+	text := strings.TrimSuffix(string(out), "\n")
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(text, "\n")
+	rows := make([][]string, 0, len(lines))
+	for _, line := range lines {
+		rows = append(rows, strings.Split(line, sep))
+	}
+	return rows
 }
 
 // PSQL runs the SQL file at path (on the host) with psql inside the database
