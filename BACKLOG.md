@@ -176,7 +176,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** -30, -49, -105250-4.
 
 ### 20261001-103222-53: Check report query performance.
-- **Do:** Seed about 10 million events across 21 partitions. Check report latency and plans, and add indexes as needed.
+- **Do:** Seed about 10 million events across 21 partitions. Check report latency and plans, and add indexes as needed. Include a `fingerprint_timeseries` case that decides whether `events` needs an index on `(fingerprint_id, observed_window_start)`.
 - **Red test:** A benchmark-style test asserting partition pruning and a latency budget (for example, under two seconds for a three-hour range).
 - **Done when:** Passes. Record the numbers in `docs/`.
 - **Needs:** -50.
