@@ -29,6 +29,7 @@ func TestTopByTotalTime(t *testing.T) {
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		3,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -146,6 +147,7 @@ func TestTopByTotalTimeHonorsLimit(t *testing.T) {
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		2,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

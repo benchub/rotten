@@ -58,6 +58,7 @@ func TestFingerprintTimeseriesReturnsBucketsForOneFingerprintAndSource(t *testin
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
 		10*time.Minute,
+		nil,
 	)
 
 	want := []fingerprintTimeseriesBucket{
@@ -88,6 +89,7 @@ func TestFingerprintTimeseriesKeepsTrailingPartialBucket(t *testing.T) {
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
 		30*time.Minute,
+		nil,
 	)
 
 	want := []fingerprintTimeseriesBucket{
@@ -124,6 +126,7 @@ func TestFingerprintTimeseriesUsesFixedDayWidthAcrossDST(t *testing.T) {
 		start,
 		end,
 		"1 day",
+		nil,
 	)
 
 	if len(got) != 3 {
@@ -168,6 +171,7 @@ func TestFingerprintTimeseriesRejectsNonPositiveWidths(t *testing.T) {
 				fixture.Anchor.Add(-100*time.Minute),
 				fixture.Anchor.Add(-20*time.Minute),
 				c.width,
+				nil,
 			)
 			if err == nil {
 				t.Fatal("non-positive bucket width succeeded, want an error")
@@ -201,6 +205,7 @@ func TestFingerprintTimeseriesEmptyForEmptyOrInvertedRanges(t *testing.T) {
 				c.start,
 				c.end,
 				10*time.Minute,
+				nil,
 			)
 			if len(got) != 0 {
 				t.Fatalf("got %+v, want empty result", got)
@@ -226,6 +231,7 @@ func TestFingerprintTimeseriesRejectsMonthWidth(t *testing.T) {
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
 		"1 month",
+		nil,
 	)
 	if err == nil {
 		t.Fatal("month bucket width succeeded, want an error")
@@ -252,6 +258,7 @@ func TestFingerprintTimeseriesCapsBuckets(t *testing.T) {
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
 		time.Millisecond,
+		nil,
 	)
 	if err == nil {
 		t.Fatal("over-cap bucket request succeeded, want an error")
@@ -278,6 +285,7 @@ func TestFingerprintTimeseriesPrunesEventPartitions(t *testing.T) {
 		start,
 		end,
 		10*time.Minute,
+		nil,
 	)
 	assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.events", expectedPartitions)
 }
@@ -301,6 +309,7 @@ func TestFingerprintTimeseriesPrunesFixedMidnightCrossingRange(t *testing.T) {
 		start,
 		end,
 		10*time.Minute,
+		nil,
 	)
 	assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.events", expectedPartitions)
 }

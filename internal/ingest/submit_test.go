@@ -347,6 +347,7 @@ func TestSubmitHarvestStoresUint64ContextCountForReports(t *testing.T) {
 		start.Add(-time.Second),
 		start.Add(time.Minute),
 		1,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

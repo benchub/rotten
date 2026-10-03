@@ -1,3 +1,4 @@
 <h1>Rotten</h1>
 <p>Signed in as <%= current_user.email %>.</p>
+<p><%= link_to "Reports", reports_path %></p>
 <%= button_to "Log out", logout_path, method: :delete %>

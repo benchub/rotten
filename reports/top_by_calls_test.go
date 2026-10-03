@@ -37,6 +37,7 @@ func TestTopByCalls(t *testing.T) {
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		3,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +122,7 @@ func TestTopByCallsHonorsLimit(t *testing.T) {
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		2,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -192,6 +194,7 @@ func TestTopByCallsContextCountsAreBigint(t *testing.T) {
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		1,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -318,6 +321,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		1,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("top_by_calls with large context sum: %v", err)
@@ -358,7 +362,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		args := []any{"canvas", testdb.ReportEnvironment, "13", fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 1}
+		args := []any{"canvas", testdb.ReportEnvironment, "13", fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 1, nil}
 		reportRows, err := conn.Query(ctx, string(query), args...)
 		if err != nil {
 			t.Fatalf("%s with large context sum: %v", report, err)
@@ -405,6 +409,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		defaultSigma,
 		defaultMinHistory,
 		defaultRatio,
+		nil,
 	)
 	if len(outliers) == 0 {
 		t.Fatal("outliers got no rows")

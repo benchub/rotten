@@ -5,6 +5,11 @@ against a migrated rotten database, and `dev/docker-compose.yaml` runs the app
 at `http://localhost:3000`. `rotten-server migrate` owns the schema; Rails never
 runs migrations.
 
+`make test-ui UI_SPEC_ARGS=spec/system/reports_spec.rb` runs only the given
+specs. The report specs seed the Go report fixture through
+`ROTTEN_UI_TEST_SEED_DATABASE_URL`, a `rotten_owner` connection that
+`make test-ui` sets, because `rotten_ui` can only read the event tables.
+
 ## Authentication
 
 `ROTTEN_UI_AUTH` picks the mode, `oidc` or `password`. The app refuses to boot
@@ -198,6 +203,45 @@ with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
 
 In `oidc` mode, `POST /login` returns 404 and `/login` shows no password form.
 In `password` mode the OIDC routes return 404 and OmniAuth isn't installed.
+
+## Reports
+
+`/reports` lists the reports, and each one has a page at `/reports/<name>`.
+Any signed-in user, viewer or admin, can run them. Pick a project,
+environment and cluster, optionally a role, and a time range: a preset such
+as **Last 3 hours**, or **Custom** with **From** and **To** in UTC, at most
+31 days apart. The utilization reports pick a primary and a replica role
+instead of one role, and the time series takes a fingerprint ID and a bucket
+width. Fingerprint IDs in the other reports link to their time series. Click
+a column header to sort; the sort happens in Ruby on the rows the report
+returned, at most 50 for the top and outlier reports.
+
+Each report is a SQL file in the repo's `reports/` directory, and the app
+reads them from `../reports`, next to the app. `dev/docker-compose.yaml` and
+`make test-ui` mount the directory at `/reports`. The production image needs
+it as a named build context, run from the repo root:
+
+```sh
+docker build --build-context reports=reports -t rotten-ui ui
+```
+
+The app refuses to boot if any report file is missing.
+
+Every parameter is checked against a whitelist before the query runs: the
+source must exist in `logical_sources`, the range, bucket and sort column must
+be one of the choices, and the fingerprint ID must be a positive integer.
+Invalid input gets a 422 with a message. Values reach the SQL only as bound
+parameters, never in its text.
+
+Each report runs as `rotten_ui` in a read-only transaction with
+`SET LOCAL statement_timeout`, so the limit ends with the transaction and
+never applies to the next request on the same connection. A report that runs
+past it is stopped, and the page answers 503 with a message suggesting a
+shorter range or a narrower source.
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `ROTTEN_UI_REPORT_TIMEOUT` | no | Statement timeout for each report query, in seconds; fractions such as `2.5` are allowed. Default `15`. The app refuses to boot if the value isn't a number from 0.001 to 2147483. |
 
 ## Production settings
 

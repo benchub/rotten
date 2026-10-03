@@ -1,5 +1,7 @@
-# This Dockerfile is designed for production, not development:
-# docker build -t ui .
+# This Dockerfile is designed for production, not development. The reports
+# page runs the SQL in the repo's reports/ directory, so pass it as the
+# "reports" build context; it ends up at /reports, next to the app in /rails:
+# docker build --build-context reports=../reports -t ui .
 # docker run -d -p 80:80 -e DATABASE_URL=<postgres-url> -e SECRET_KEY_BASE=<secret> --name ui ui
 
 # Make sure RUBY_VERSION matches the Ruby version in .ruby-version
@@ -40,6 +42,7 @@ RUN bundle install && \
 
 # Copy application code
 COPY . .
+COPY --from=reports *.sql /reports/
 
 # Precompile bootsnap code for faster boot times.
 # -j 1 disable parallel compilation to avoid a QEMU bug: https://github.com/rails/bootsnap/issues/495
@@ -62,6 +65,7 @@ USER 1000:1000
 # Copy built artifacts: gems, application
 COPY --chown=rails:rails --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 COPY --chown=rails:rails --from=build /rails /rails
+COPY --from=build /reports /reports
 
 # Entrypoint starts the requested process. Goose migrations are run by rotten-server, not Rails.
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]

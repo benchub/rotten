@@ -1,0 +1,13 @@
+<% content_for :title, "Reports" %>
+<div class="reports">
+  <p><%= link_to "Home", root_path %></p>
+  <h1>Reports</h1>
+  <ul class="report-list">
+    <% @reports.each do |report| %>
+      <li>
+        <%= link_to report.title, report_path(report.key) %>
+        <span><%= report.description %></span>
+      </li>
+    <% end %>
+  </ul>
+</div>

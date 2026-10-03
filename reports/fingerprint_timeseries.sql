@@ -8,11 +8,13 @@
 --   $5 window start, inclusive
 --   $6 window end, exclusive for starts; windows must also end at or before it
 --   $7 bucket width interval
+--   $8 role, or NULL for every role
 --
 -- Source filter:
 --   Source means the same project/environment/cluster filter as the sibling
---   reports. Role is deliberately aggregated, so primary and replica rows for
---   that source filter contribute to the same bucket.
+--   reports, with the same optional role. With a NULL role, primary and
+--   replica rows for that source filter contribute to the same bucket; a role
+--   in $8 narrows the filter to that role.
 --
 -- Buckets:
 --   The bucket width is an interval, but it must not contain month or year
@@ -59,6 +61,7 @@ with input as (
   where project = $1
     and environment = $2
     and cluster = $3
+    and ($8::text is null or role = $8::text)
 ), buckets as (
   select
     gs.bucket_start,

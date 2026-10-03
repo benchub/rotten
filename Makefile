@@ -173,7 +173,7 @@ test-ui: image ui-image
 		exit 1; \
 	fi; \
 	$(DOCKER_RUN) --network "$$net" $(IMAGE) go run ./cmd/rotten-server migrate -dsn "postgres://rotten_owner:rotten_owner@$$db:5432/rotten?sslmode=disable"; \
-	docker run --rm -t --network "$$net" -v "$(CURDIR)/ui":/app -w /app -e RAILS_ENV=test -e DATABASE_URL="postgres://rotten_ui:rotten_ui@$$db:5432/rotten?sslmode=disable" -e SECRET_KEY_BASE=test -e ROTTEN_UI_AUTH=password $(UI_IMAGE) bundle exec rspec
+	docker run --rm -t --network "$$net" -v "$(CURDIR)/ui":/app -v "$(CURDIR)/reports":/reports:ro -w /app -e RAILS_ENV=test -e DATABASE_URL="postgres://rotten_ui:rotten_ui@$$db:5432/rotten?sslmode=disable" -e ROTTEN_UI_TEST_SEED_DATABASE_URL="postgres://rotten_owner:rotten_owner@$$db:5432/rotten?sslmode=disable" -e SECRET_KEY_BASE=test -e ROTTEN_UI_AUTH=password $(UI_IMAGE) bundle exec rspec $(UI_SPEC_ARGS)
 
 ## test-all: Go and UI test suites.
 test-all: test test-ui

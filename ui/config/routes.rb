@@ -7,6 +7,8 @@ Rails.application.routes.draw do
   post "login" => "sessions#create"
   delete "logout" => "sessions#destroy"
   get "admin" => "admin#show"
+  get "reports" => "reports#index", as: :reports, format: false
+  get "reports/:id" => "reports#show", as: :report, format: false
 
   # OmniAuth's middleware handles POST /auth/openid_connect and hands the
   # callback to this route.

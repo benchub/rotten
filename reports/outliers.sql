@@ -10,6 +10,7 @@
 --   $7 sigma threshold (recommended default: 3)
 --   $8 minimum history count after removing in-range samples (recommended default: 30)
 --   $9 zero-stddev ratio threshold (recommended default: 2)
+--   $10 role, or NULL for every role in the project, environment and cluster
 --
 -- Baseline choice:
 --   fingerprint_stats rows for logical_source_id = 0 are the global aggregate
@@ -50,6 +51,7 @@ with sources as (
   where project = $1
     and environment = $2
     and cluster = $3
+    and ($10::text is null or role = $10::text)
 ), aggregated as (
   select
     s.id as logical_source_id,

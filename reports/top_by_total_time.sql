@@ -7,12 +7,14 @@
 --   $4 window start, inclusive
 --   $5 window end, exclusive for starts; windows must also end at or before it
 --   $6 row limit
+--   $7 role, or NULL for every role in the project, environment and cluster
 with sources as (
   select id
   from rotten.logical_sources
   where project = $1
     and environment = $2
     and cluster = $3
+    and ($7::text is null or role = $7::text)
 ), aggregated as (
   select
     e.fingerprint_id,
