@@ -43,6 +43,7 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Needs:** -39.
 
 ### 20261001-103222-41: Build release artifacts.
+- **Parked (2026-10-03, user):** Blocked by the sandbox. The Docker credential helper can't reach the keychain (error -50) to pull `gcr.io/distroless/static-debian12:nonroot` and `debian:stable-slim`. Partial work is uncommitted in the worktree `.claude/worktrees/task-20261001-103222-41`. Resume once the images are reachable.
 - **Do:** Add `make build`, which builds `rotten-worker` (cgo) and `rotten-server` (static) with version info, for Linux amd64 and arm64 plus native macOS. Add production Dockerfiles:
   - `docker/worker.Dockerfile` on Debian slim.
   - `docker/server.Dockerfile` on distroless.
