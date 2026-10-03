@@ -434,6 +434,46 @@ func TestSubmitHarvestStatsBatchingMatchesAccumulated(t *testing.T) {
 	}
 }
 
+func TestSubmitHarvestSkipsLifetimeMinMaxStats(t *testing.T) {
+	f := setupSubmit(t)
+	start := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Hour)
+	fp := "fp-lifetime-minmax"
+
+	first := harvestStatsRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start, "window-minmax-1", fp, 10)
+	if _, err := f.handler.SubmitHarvest(f.ctx, first); err != nil {
+		t.Fatalf("first SubmitHarvest: %v", err)
+	}
+	got := submitStatRows(t, f.owner, fp, f.reg.GetLogicalSourceId())
+	if r := got["max_time"]; r.count != 1 || !nearSubmit(r.mean, 40) {
+		t.Fatalf("first max_time = count %d mean %v, want count 1 mean 40", r.count, r.mean)
+	}
+
+	lifetime := harvestStatsRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start.Add(time.Minute), "lifetime-minmax", fp, 100)
+	lifetime.Msg.Aggregates[0].MinmaxLifetime = true
+	if _, err := f.handler.SubmitHarvest(f.ctx, lifetime); err != nil {
+		t.Fatalf("lifetime SubmitHarvest: %v", err)
+	}
+	got = submitStatRows(t, f.owner, fp, f.reg.GetLogicalSourceId())
+	if r := got["max_time"]; r.count != 1 || !nearSubmit(r.mean, 40) {
+		t.Fatalf("after lifetime max_time = count %d mean %v, want unchanged count 1 mean 40", r.count, r.mean)
+	}
+	if r := got["min_time"]; r.count != 1 || !nearSubmit(r.mean, 30) {
+		t.Fatalf("after lifetime min_time = count %d mean %v, want unchanged count 1 mean 30", r.count, r.mean)
+	}
+
+	window := harvestStatsRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start.Add(2*time.Minute), "window-minmax-2", fp, 20)
+	if _, err := f.handler.SubmitHarvest(f.ctx, window); err != nil {
+		t.Fatalf("window SubmitHarvest: %v", err)
+	}
+	got = submitStatRows(t, f.owner, fp, f.reg.GetLogicalSourceId())
+	if r := got["max_time"]; r.count != 2 || !nearSubmit(r.mean, 60) {
+		t.Fatalf("after window max_time = count %d mean %v, want count 2 mean 60", r.count, r.mean)
+	}
+	if r := got["min_time"]; r.count != 2 || !nearSubmit(r.mean, 45) {
+		t.Fatalf("after window min_time = count %d mean %v, want count 2 mean 45", r.count, r.mean)
+	}
+}
+
 func TestSubmitHarvestRejectsDuplicateFingerprints(t *testing.T) {
 	f := setupSubmit(t)
 	start := time.Now().UTC().Truncate(time.Second).Add(-45 * time.Minute)

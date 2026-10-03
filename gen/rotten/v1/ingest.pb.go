@@ -329,12 +329,16 @@ func (x *SubmitHarvestRequest) GetAggregates() []*FingerprintAggregate {
 // IN-list lengths, schema qualifiers, and so on). The worker merges them
 // into one aggregate before sending:
 //   - calls, total_time, rows, the block counts, and the block times add.
-//   - min_time takes the smallest and max_time the largest.
+//   - min_time takes the smallest and max_time the largest among window-only
+//     values; lifetime values are ignored when any merged entry has window-only
+//     min/max.
 //   - stddev_time is the pooled population stddev (Chan et al., as in
 //     pgss.WindowStats) when every merged entry has one, and unset if any
 //     entry's is unset.
 //   - mean_time is recomputed as total_time / calls.
-//   - minmax_lifetime is true if any merged entry's min/max is lifetime.
+//   - minmax_lifetime is true only when every merged entry's min/max is
+//     lifetime; the server skips min_time/max_time fingerprint_stats samples
+//     when it is set.
 //   - contexts with the same (controller, action, job_tag) add their counts.
 type FingerprintAggregate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`

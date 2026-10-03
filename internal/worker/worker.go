@@ -60,7 +60,7 @@ type QueryEvent struct {
 	max_time float64
 
 	// minmax_lifetime is true when min_time and max_time reach back before
-	// this window (pgss.WindowMinMax). Nothing stores it yet.
+	// this window (pgss.WindowMinMax), so ingest skips them in fingerprint_stats.
 	minmax_lifetime bool
 
 	rows                float64

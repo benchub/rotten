@@ -321,7 +321,7 @@ func mergeFingerprintStats(ctx context.Context, tx pgx.Tx, msg *rottenv1.SubmitH
 			accumulators[fingerprintID] = accumulator
 			ordered = append(ordered, fingerprintID)
 		}
-		accumulateFingerprintStats(accumulator, aggregate.GetMetrics())
+		accumulateFingerprintStats(accumulator, aggregate)
 	}
 	sort.Slice(ordered, func(i, j int) bool {
 		return ordered[i] < ordered[j]
@@ -345,12 +345,15 @@ func newFingerprintStatsAccumulator(fingerprintID int64) *fingerprintStatsAccumu
 	return &fingerprintStatsAccumulator{fingerprintID: fingerprintID, stats: stats}
 }
 
-func accumulateFingerprintStats(accumulator *fingerprintStatsAccumulator, metrics *rottenv1.Metrics) {
+func accumulateFingerprintStats(accumulator *fingerprintStatsAccumulator, aggregate *rottenv1.FingerprintAggregate) {
+	metrics := aggregate.GetMetrics()
 	calls := float64(metrics.GetCalls())
 	accumulator.stats["calls"].Push(calls)
 	accumulator.stats["total_time"].Push(metrics.GetTotalTime())
-	accumulator.stats["min_time"].Push(metrics.GetMinTime())
-	accumulator.stats["max_time"].Push(metrics.GetMaxTime())
+	if !aggregate.GetMinmaxLifetime() {
+		accumulator.stats["min_time"].Push(metrics.GetMinTime())
+		accumulator.stats["max_time"].Push(metrics.GetMaxTime())
+	}
 	if calls > 0 {
 		accumulator.stats["mean_time"].Push(metrics.GetTotalTime() / calls)
 	} else {

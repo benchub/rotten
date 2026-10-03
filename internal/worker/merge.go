@@ -18,22 +18,17 @@ func (w *Worker) stillProcessing() uint32 {
 // same observation window, and returns the result. Counters and times are
 // summed, min and max are kept, mean and stddev are combined with
 // runningstat, and b's context histogram counts are added into a's. The
-// merged stddev is absent (stddev_absent) if either side's is, and min and
-// max are lifetime if either side's are. The returned event shares a's
-// context map, which is updated in place. Everything else (query, window)
-// comes from a.
+// merged stddev is absent (stddev_absent) if either side's is. Lifetime min
+// and max values are ignored when the other side has window-only min and max;
+// the merged min and max are lifetime only when both sides are lifetime. The
+// returned event shares a's context map, which is updated in place. Everything
+// else (query, window) comes from a.
 func mergeEvent(a, b QueryEvent) QueryEvent {
 	aCalls := a.calls
 	bCalls := b.calls
 	a.calls += b.calls
 	a.total_time += b.total_time
-	if a.min_time > b.min_time {
-		a.min_time = b.min_time
-	}
-	if a.max_time < b.max_time {
-		a.max_time = b.max_time
-	}
-	a.minmax_lifetime = a.minmax_lifetime || b.minmax_lifetime
+	a.min_time, a.max_time, a.minmax_lifetime = mergeMinMax(a, b)
 
 	a.mean_time, a.stddev_time = mergePopulationStats(aCalls, a.mean_time, a.stddev_time, bCalls, b.mean_time, b.stddev_time)
 	a.stddev_absent = a.stddev_absent || b.stddev_absent
@@ -60,6 +55,24 @@ func mergeEvent(a, b QueryEvent) QueryEvent {
 	}
 
 	return a
+}
+
+func mergeMinMax(a, b QueryEvent) (float64, float64, bool) {
+	if a.minmax_lifetime && !b.minmax_lifetime {
+		return b.min_time, b.max_time, false
+	}
+	if !a.minmax_lifetime && b.minmax_lifetime {
+		return a.min_time, a.max_time, false
+	}
+	minTime := a.min_time
+	if minTime > b.min_time {
+		minTime = b.min_time
+	}
+	maxTime := a.max_time
+	if maxTime < b.max_time {
+		maxTime = b.max_time
+	}
+	return minTime, maxTime, a.minmax_lifetime && b.minmax_lifetime
 }
 
 func mergePopulationStats(aCalls, aMean, aStddev, bCalls, bMean, bStddev float64) (float64, float64) {

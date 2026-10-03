@@ -155,15 +155,14 @@ func populationStats(samples []float64) (float64, float64) {
 }
 
 // TestMergeEventAbsentStddev: an absent stddev on either side makes the
-// merged one absent (and 0), without touching the mean. Lifetime min and max
-// on either side make the merged ones lifetime.
+// merged one absent (and 0), without touching the mean.
 func TestMergeEventAbsentStddev(t *testing.T) {
 	for _, c := range []struct{ a, b, want bool }{{false, false, false}, {true, false, true}, {false, true, true}, {true, true, true}} {
-		a := QueryEvent{calls: 2, mean_time: 10, stddev_time: 2, stddev_absent: c.a, minmax_lifetime: c.a, context: map[string]uint64{}}
-		b := QueryEvent{calls: 2, mean_time: 20, stddev_time: 4, stddev_absent: c.b, minmax_lifetime: c.b, context: map[string]uint64{}}
+		a := QueryEvent{calls: 2, mean_time: 10, stddev_time: 2, stddev_absent: c.a, context: map[string]uint64{}}
+		b := QueryEvent{calls: 2, mean_time: 20, stddev_time: 4, stddev_absent: c.b, context: map[string]uint64{}}
 		m := mergeEvent(a, b)
-		if m.stddev_absent != c.want || m.minmax_lifetime != c.want {
-			t.Errorf("%v+%v: stddev_absent %v, minmax_lifetime %v, want %v", c.a, c.b, m.stddev_absent, m.minmax_lifetime, c.want)
+		if m.stddev_absent != c.want {
+			t.Errorf("%v+%v: stddev_absent %v, want %v", c.a, c.b, m.stddev_absent, c.want)
 		}
 		if c.want && m.stddev_time != 0 {
 			t.Errorf("%v+%v: absent stddev_time = %v, want 0", c.a, c.b, m.stddev_time)
@@ -173,6 +172,32 @@ func TestMergeEventAbsentStddev(t *testing.T) {
 		}
 		// Same mean as TestMergeEventRunningStat's first case.
 		approx(t, "mean_time", m.mean_time, 15)
+	}
+}
+
+func TestMergeEventSkipsLifetimeMinMaxWhenWindowValuesExist(t *testing.T) {
+	window := QueryEvent{calls: 1, min_time: 3, max_time: 10, context: map[string]uint64{}}
+	lifetime := QueryEvent{calls: 1, min_time: 1, max_time: 100, minmax_lifetime: true, context: map[string]uint64{}}
+
+	for _, c := range []struct {
+		name string
+		a, b QueryEvent
+	}{
+		{name: "window first", a: window, b: lifetime},
+		{name: "lifetime first", a: lifetime, b: window},
+	} {
+		m := mergeEvent(c.a, c.b)
+		if m.minmax_lifetime {
+			t.Errorf("%s: minmax_lifetime = true, want false", c.name)
+		}
+		if m.min_time != 3 || m.max_time != 10 {
+			t.Errorf("%s: min/max = %v/%v, want the window-only 3/10", c.name, m.min_time, m.max_time)
+		}
+	}
+
+	m := mergeEvent(lifetime, QueryEvent{calls: 1, min_time: 2, max_time: 50, minmax_lifetime: true, context: map[string]uint64{}})
+	if !m.minmax_lifetime {
+		t.Error("two lifetime-only min/max samples marked window-only")
 	}
 }
 
