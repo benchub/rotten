@@ -488,3 +488,26 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Limits:** at most 10,000 buckets; more raises an error. A width that isn't positive raises an error. An empty or inverted range returns no rows.
   - **Source:** role is aggregated, and empty buckets come back as zero.
   - **Index:** none added. The decision is deferred to the -53 scale test.
+
+### 20261001-105250-1: Build the dev stack and the network layout for tests.
+- **Do:** Add `dev/docker-compose.yaml` with the `observed`, `edge`, and `core` networks from `docs/plan.md`. It runs observed Postgres 18, the worker, the server (with a test CA and cert), and the rotten DB. The UI joins later, in -48. Add matching network helpers in `internal/testdb`. Explain how to use it in `dev/README.md`.
+- **Red test:** A topology test checks that the worker reaches the server, the server reaches the rotten DB, and the worker can't reach the rotten DB.
+- **Done when:** Passes, and `docker compose -f dev/docker-compose.yaml up` gives a working stack.
+- **Needs:** -31, -36.
+- **Completed:** 2026-10-03, 8940c11.
+  - **Networks:** `observed` and `core` are `internal: true` in both compose and `testdb`, because Docker otherwise routes between bridges by IP.
+  - **Isolation tests:** they probe by container IP, each with a positive control using the same method: worker→rotten-db fails while server→rotten-db succeeds, and server→observed fails while worker→observed succeeds.
+  - **Test DB access:** topology DBs have no host DSN. Use `QueryInContainer` or `PSQL`, and `RottenInternalDSN` from inside the network. `Topology.StartRotten` runs the real `rotten-server migrate` inside the container.
+  - **Test certs:** `internal/testcerts` generates them, and `dev/cmd/gen-test-certs` wraps it. The cert covers `rotten-server`, `localhost` and `127.0.0.1`.
+  - **Healthcheck:** the server checks `/healthz` with `dev/cmd/healthcheck`.
+  - **Worker:** it's a placeholder until -39.
+  - **Compose module cache:** after a `go.mod` change, run `docker compose down -v`, because `core` has no outbound access.
+
+### 20261003-021800-1: Fix the time-of-day flake in the report partition-pruning tests.
+- **Do:** `TestReplicaUtilizationPrunesEventContextPartitions` (`reports/replica_utilization_test.go`) and the fingerprint_timeseries pruning test check that the plan never touches the "old" fixture's daily partition, which holds the row at Anchor-26h. When Anchor is between 02:00 and 03:00 UTC, the report range's start (Anchor-3h) falls on the same UTC day as that row, so the in-range plan legitimately touches the old partition and the test fails. The existing skip only compares the recent partition, Anchor-30m. Make the tests independent of the time of day: compare against the partitions the range [Anchor-RecentRange, Anchor] actually covers, or pick an "old" partition that can never overlap the range. Don't weaken the pruning assertion. Check the other report pruning tests for the same pattern.
+- **Red test:** Make the anchor or clock controllable, or compute partitions deterministically, so the 02:00–03:00 UTC case reproduces at any time of day.
+- **Done when:** `make test` passes at any time of day.
+- **Needs:** none. Found while landing -105250-1, at 02:17 UTC.
+- **Completed:** 2026-10-03, d129ed9.
+  - **Shared helpers:** in `reports/partition_pruning_test.go`. They compute the daily partitions (cut at UTC midnight) that the range overlaps, and assert the plan touches all of them and no other child partition.
+  - **Midnight coverage:** fixed ranges crossing midnight exercise the two-day case at any hour, with unit tests for the boundaries.
