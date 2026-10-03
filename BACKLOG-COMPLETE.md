@@ -529,3 +529,52 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Crash test:** the store is reopened after a lost ack, and a server that dedupes on `batch_id` ends up with exactly one copy.
   - **Wiring:** `Config.ServerOutbox` is a library hook, and the legacy direct DB path is unchanged. -39 wires it up and adds the backoff for the sender loop.
   - **`fingerprint.Query`:** added so the batch can carry pg_query's normalized text.
+
+### 20261001-103222-39: Switch the worker over to the server.
+- **Do:** Remove the rotten DB connection, `identity`, and the stats goroutines from the worker. Move to a new config format (`ServerURL`, `PassKeyFile`, `ServerCAFile`, `StateDir`, `MaxSnapshotAge`), and update `conf`.
+- **Wiring from -38:**
+  - Build a `serverclient.Client`. Pass the same `*state.Store` as both `Config.State` and `Config.ServerOutbox`.
+  - Run a sender loop that calls `OutboxSender.Drain`. `Drain` returns on the first operational error, such as Unavailable, an auth error or a server-side ResourceExhausted. So the loop must back off with jitter and log loudly, especially on a persistent `Unauthenticated` or `PermissionDenied`, so it neither hot-loops nor fails silently.
+  - Expose the outbox depth and the dropped counters (`dropped_cap`, `dropped_rejected`) in logs.
+- **Red test:** End to end on the three-network layout (-105250-1). Restart the server mid-run, and check that the rows match the expected workload with nothing lost or duplicated.
+- **Done when:** Passes, and the worker binary has no rotten DB code.
+- **Needs:** -25, -34, -38, -105250-1.
+- **Completed:** 2026-10-03, b08c871.
+  - **Config:** a hard switch. The required keys are `ServerURL`, `PassKeyFile`, `ServerCAFile`, `StateDir` and `MaxSnapshotAge`, and the old keys (including `RottenDBConn`, `LogicalID` and `PhysicalID`) fail fast. `conf`, the README and `docs/plan.md` are updated.
+  - **Removed:** the direct rotten DB path. `process.go` and the stats goroutines are gone, and `mergeEvent` moved to `merge.go`.
+  - **No rotten DB code:** `cmd/rotten-worker/deps_test.go` checks the worker against an allow-list of rotten packages and bans `pgxpool`.
+  - **Registration:**
+    - It retries with jittered backoff. Auth errors are logged at Error level.
+    - The registered IDs are cached in the state store (schema v3) together with `ServerURL` and the identity (Project, Environment, Cluster, Role and FQDN), and the cache is used only on an exact match.
+    - If a background re-register returns different IDs, the worker exits nonzero.
+    - Batches queued under stale IDs are a known limitation; see 20261003-060000-1.
+  - **Sender loop:**
+    - Jittered backoff up to 60s.
+    - Logs outbox depth and the drop counters.
+    - Runs on a cancellable context, which -40 will wire to SIGTERM.
+  - **Restored behaviour:** the progress counters and the hidden or no-text skip logs.
+  - **Tests:**
+    - `TestWorkerDiffingOutbox` (PG14 and PG18) ports the old diffing scenarios onto the outbox.
+    - The e2e test on the three-network topology restarts the server. It asserts that calls are exact, that the windows queued during the outage arrived, that windows are contiguous, that there are no duplicates (re-checked after settling), and that the context row exists.
+  - **Dev stack:** the worker is now real, the observer schema is loaded, and key creation fails loudly.
+  - **Superseded by this task:** 20261002-171500-1, 20261001-114554-1, 20261001-120544-1 and 20261001-120501-1. They're recorded below.
+
+### 20261002-171500-1: Fix the worker's fingerprint_stats first-insert race.
+- **Do:** The worker's direct `reportSamples` (`internal/worker/process.go`) uses `select … for update` and inserts the rows when none come back. That locks nothing when the rows don't exist yet, so two concurrent flushes, or a worker flush racing a server `SubmitHarvest`, can both insert and one fails with 23505. Use the server's pattern from -34: pre-insert zero-count rows with `on conflict do nothing` in sorted order, then lock and merge. This matters only until -39 removes the worker's direct path; skip it if -39 lands first.
+- **Needs:** -34. Found in review of -34.
+- **Completed:** 2026-10-03, b08c871. Superseded: -39 removed `reportSamples`.
+
+### 20261001-114554-1: Stop dropping stats when a fingerprint_stats flush rolls back.
+- **Do:** When `reportSamples` rolls back a source, it still resets the in-memory stats, so that source loses those samples.
+- **Needs:** -10.
+- **Completed:** 2026-10-03, b08c871. Superseded: -39 removed `reportSamples` and `stats_test.go`.
+
+### 20261001-120544-1: Flush a new fingerprint's first sample.
+- **Do:** A new fingerprint's first sample can go unflushed until a second sample arrives.
+- **Needs:** -10.
+- **Completed:** 2026-10-03, b08c871. Superseded: -39 removed `consumeSamples` and `reportSamples`.
+
+### 20261001-120501-1: Make in-flight event processing deterministic.
+- **Do:** In `run`, increment the processing counter before `go processEvent`, not inside it.
+- **Needs:** -13.
+- **Completed:** 2026-10-03, b08c871. Superseded: -39 removed `processEvent`. Harvest now builds the batch synchronously.

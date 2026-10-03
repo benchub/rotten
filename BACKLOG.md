@@ -32,21 +32,11 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261002-171500-1: Fix the worker's fingerprint_stats first-insert race.
-- **Do:** The worker's direct `reportSamples` (`internal/worker/process.go`) uses `select … for update` and inserts the rows when none come back. That locks nothing when the rows don't exist yet, so two concurrent flushes, or a worker flush racing a server `SubmitHarvest`, can both insert and one fails with 23505. Use the server's pattern from -34: pre-insert zero-count rows with `on conflict do nothing` in sorted order, then lock and merge. This matters only until -39 removes the worker's direct path; skip it if -39 lands first.
-- **Red test:** Pre-create a fingerprint with no stats rows, then run concurrent worker flushes (and a concurrent `SubmitHarvest`) for it. No errors, correct counts.
-- **Done when:** Passes, or -39 has removed `reportSamples`.
-- **Needs:** -34. Found in review of -34.
-
-### 20261001-103222-39: Switch the worker over to the server.
-- **Do:** Remove the rotten DB connection, `identity`, and the stats goroutines from the worker. Move to a new config format (`ServerURL`, `PassKeyFile`, `ServerCAFile`, `StateDir`, `MaxSnapshotAge`), and update `conf`.
-- **Wiring from -38:**
-  - Build a `serverclient.Client`. Pass the same `*state.Store` as both `Config.State` and `Config.ServerOutbox`.
-  - Run a sender loop that calls `OutboxSender.Drain`. `Drain` returns on the first operational error, such as Unavailable, an auth error or a server-side ResourceExhausted. So the loop must back off with jitter and log loudly, especially on a persistent `Unauthenticated` or `PermissionDenied`, so it neither hot-loops nor fails silently.
-  - Expose the outbox depth and the dropped counters (`dropped_cap`, `dropped_rejected`) in logs.
-- **Red test:** End to end on the three-network layout (-105250-1). Restart the server mid-run, and check that the rows match the expected workload with nothing lost or duplicated.
-- **Done when:** Passes, and the worker binary has no rotten DB code.
-- **Needs:** -25, -34, -38, -105250-1.
+### 20261003-060000-1: Unblock the outbox after the server reassigns source IDs.
+- **Do:** Since -39, the worker caches its registered logical and physical IDs together with its identity and `ServerURL`. If the server later assigns different IDs (the rotten DB was rebuilt, a link was removed, or a `StateDir` was restored on another host), the worker exits and re-registers. Batches already queued under the old IDs then get `PermissionDenied`. The sender keeps retrying them in strict order, so the outbox stays blocked until the 288-batch cap drops them, about a day. Decide on a safe way out. For example, when the cached IDs have changed, re-stamp the queued batches with the new IDs, or drop and count them. Keep the dedupe on `batch_id` correct either way, since `batch_id` includes the physical ID.
+- **Red test:** Queue batches under IDs A, then switch the cache to IDs B and have the server reject A with `PermissionDenied`. Newer windows reach the server without waiting for the cap.
+- **Done when:** Passes, and `docs/plan.md` describes the behaviour.
+- **Needs:** none. Found in review of -39.
 
 ### 20261001-103222-40: Make the worker resilient.
 - **Do:**
@@ -204,24 +194,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A URL-form connection string with `sslrootcert` builds the chain.
 - **Done when:** Tests pass.
 - **Needs:** -11.
-
-### 20261001-114554-1: Stop dropping stats when a fingerprint_stats flush rolls back.
-- **Do:** When `reportSamples` rolls back a source (for example, only some of the 19 types exist), it still resets the in-memory stats, so the source that rolled back loses those samples. The other source already committed them. Its "Only found" log line also prints `logical_source_id` instead of the `source_id` that failed. Decide whether to keep the stats for the next pass or repair the missing rows, and fix the log line.
-- **Red test:** `TestReportSamplesPartialRowsRollBack` in `stats_test.go` asserts the reset today. Flip it to the new behavior.
-- **Done when:** Tests pass.
-- **Needs:** -10.
-
-### 20261001-120544-1: Flush a new fingerprint's first sample.
-- **Do:** A new fingerprint's first sample can go unflushed until a second sample arrives. `reportSamples` copies `f.last` into `lastReport` when it starts. If `consumeSamples` has already recorded the first sample, no pass sees a change until another sample comes in.
-- **Red test:** Let `consumeSamples` record a new fingerprint's first sample before `reportSamples` starts, step once, and expect 19 rows per source.
-- **Done when:** Tests pass.
-- **Needs:** -10.
-
-### 20261001-120501-1: Make in-flight event processing deterministic.
-- **Do:** In `run`, increment the processing counter (or add to a WaitGroup) before `go processEvent`, not inside it. Today the counter can read zero while spawned goroutines haven't started yet.
-- **Red test:** Right after `run` spawns its goroutines, the in-flight count equals the number of unique events in the window.
-- **Done when:** Tests pass, and `TestWorkerEndToEnd` can wait on the counter instead of polling the database.
-- **Needs:** -13.
 
 ### 20261001-120501-2: Let `run` exit gracefully on errors and cancellation.
 - **Do:** Pass `ctx` into the worker loop's database calls. Replace the `log.Fatalln` calls in `run` with returned errors, and have `main` log them and exit.
