@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	"github.com/benchub/rotten/internal/auth"
+	"github.com/benchub/rotten/internal/harvestlimits"
 )
 
 // SubmitHarvest records one worker observation window. Duplicate batch IDs
@@ -121,119 +121,7 @@ func (h *Handler) submitDBError(keyID int64, batchID string, err error) (*connec
 }
 
 func (h *Handler) validateHarvestEnvelope(msg *rottenv1.SubmitHarvestRequest) (time.Time, time.Time, error) {
-	if msg == nil {
-		return time.Time{}, time.Time{}, errors.New("harvest request is required")
-	}
-	if msg.GetLogicalSourceId() == 0 {
-		return time.Time{}, time.Time{}, errors.New("logical_source_id is empty")
-	}
-	if msg.GetPhysicalSourceId() == 0 {
-		return time.Time{}, time.Time{}, errors.New("physical_source_id is empty")
-	}
-	if err := validateTextField("batch_id", msg.GetBatchId(), 128, false); err != nil {
-		return time.Time{}, time.Time{}, err
-	}
-	if msg.GetWindowStart() == nil || msg.GetWindowEnd() == nil {
-		return time.Time{}, time.Time{}, errors.New("window timestamps are required")
-	}
-	if err := msg.GetWindowStart().CheckValid(); err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("window_start is invalid: %w", err)
-	}
-	if err := msg.GetWindowEnd().CheckValid(); err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("window_end is invalid: %w", err)
-	}
-	start := msg.GetWindowStart().AsTime()
-	end := msg.GetWindowEnd().AsTime()
-	if !end.After(start) {
-		return time.Time{}, time.Time{}, errors.New("window_end must be after window_start")
-	}
-	if end.Sub(start) > MaxHarvestWindowDuration {
-		return time.Time{}, time.Time{}, fmt.Errorf("window is longer than %s", MaxHarvestWindowDuration)
-	}
-	futureLimit := h.now().UTC().Add(MaxHarvestFutureSkew)
-	if start.After(futureLimit) || end.After(futureLimit) {
-		return time.Time{}, time.Time{}, fmt.Errorf("window is more than %s in the future", MaxHarvestFutureSkew)
-	}
-	wantBatch := fmt.Sprintf("%d:%d:%d", msg.GetPhysicalSourceId(), start.UnixMicro(), end.UnixMicro())
-	if msg.GetBatchId() != wantBatch {
-		return time.Time{}, time.Time{}, errors.New("batch_id does not match source and window")
-	}
-	if len(msg.GetAggregates()) > MaxHarvestAggregates {
-		return time.Time{}, time.Time{}, fmt.Errorf("aggregates exceed %d", MaxHarvestAggregates)
-	}
-	seenFingerprints := map[string]struct{}{}
-	contexts := 0
-	for _, aggregate := range msg.GetAggregates() {
-		if aggregate == nil || aggregate.GetMetrics() == nil {
-			return time.Time{}, time.Time{}, errors.New("aggregate is missing required fields")
-		}
-		if err := validateTextField("fingerprint", aggregate.GetFingerprint(), MaxFingerprintBytes, false); err != nil {
-			return time.Time{}, time.Time{}, err
-		}
-		if err := validateTextField("normalized", aggregate.GetNormalized(), MaxNormalizedBytes, false); err != nil {
-			return time.Time{}, time.Time{}, err
-		}
-		if _, ok := seenFingerprints[aggregate.GetFingerprint()]; ok {
-			return time.Time{}, time.Time{}, errors.New("aggregate fingerprints must be unique within a batch")
-		}
-		seenFingerprints[aggregate.GetFingerprint()] = struct{}{}
-		if err := validateMetrics(aggregate.GetMetrics()); err != nil {
-			return time.Time{}, time.Time{}, err
-		}
-		if aggregate.GetMetrics().GetCalls() > math.MaxInt32 {
-			return time.Time{}, time.Time{}, errors.New("aggregate calls exceed event storage range")
-		}
-		for _, qc := range aggregate.GetContexts() {
-			contexts++
-			if contexts > MaxHarvestContexts {
-				return time.Time{}, time.Time{}, fmt.Errorf("contexts exceed %d", MaxHarvestContexts)
-			}
-			if qc == nil {
-				return time.Time{}, time.Time{}, errors.New("context is required")
-			}
-			if err := validateTextField("context controller", qc.GetController(), MaxContextStringBytes, true); err != nil {
-				return time.Time{}, time.Time{}, err
-			}
-			if err := validateTextField("context action", qc.GetAction(), MaxContextStringBytes, true); err != nil {
-				return time.Time{}, time.Time{}, err
-			}
-			if err := validateTextField("context job_tag", qc.GetJobTag(), MaxContextStringBytes, true); err != nil {
-				return time.Time{}, time.Time{}, err
-			}
-			if qc.GetCount() == 0 || qc.GetCount() > math.MaxInt32 {
-				return time.Time{}, time.Time{}, errors.New("context count is out of range")
-			}
-		}
-	}
-	return start, end, nil
-}
-
-func validateMetrics(metrics *rottenv1.Metrics) error {
-	for name, value := range map[string]float64{
-		"total_time":     metrics.GetTotalTime(),
-		"min_time":       metrics.GetMinTime(),
-		"max_time":       metrics.GetMaxTime(),
-		"mean_time":      metrics.GetMeanTime(),
-		"blk_read_time":  metrics.GetBlkReadTime(),
-		"blk_write_time": metrics.GetBlkWriteTime(),
-	} {
-		if err := validateFloatCounter(name, value); err != nil {
-			return err
-		}
-	}
-	if metrics.StddevTime != nil {
-		if err := validateFloatCounter("stddev_time", metrics.GetStddevTime()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateFloatCounter(name string, value float64) error {
-	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > MaxFloatMetricValue {
-		return fmt.Errorf("%s is outside the finite non-negative metric range", name)
-	}
-	return nil
+	return harvestlimits.ValidateHarvest(msg, h.now().UTC(), harvestlimits.CheckFutureSkew)
 }
 
 func harvestContentHash(msg *rottenv1.SubmitHarvestRequest) ([]byte, error) {
