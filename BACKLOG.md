@@ -32,12 +32,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261002-145000-1: Classify mid-transaction DB failures as Unavailable in Register and SubmitHarvest.
-- **Do:** In `internal/ingest/register.go` `isUnavailable` (shared by Register and SubmitHarvest), also treat `pgconn.SafeToRetry(err)`, `pgconn.Timeout(err)`, plain network errors, and SQLSTATE class `57P0x` (e.g. `57P01` admin shutdown) as `Unavailable`. Today a Postgres restart or failover after `begin` succeeds but before the writes finish returns `Internal`, which a client won't retry. Register's upserts are idempotent and SubmitHarvest dedupes by `batch_id`, so retrying is safe. Keep permission and constraint errors as `Internal`.
-- **Red test:** Against real Postgres, terminate the backend (`pg_terminate_backend`) mid-transaction for each call, and check that it returns `Unavailable` with no DB text in the message.
-- **Done when:** Passes.
-- **Needs:** -33. Found in review of -32.
-
 ### 20261002-171500-1: Fix the worker's fingerprint_stats first-insert race.
 - **Do:** The worker's direct `reportSamples` (`internal/worker/process.go`) uses `select … for update` and inserts the rows when none come back. That locks nothing when the rows don't exist yet, so two concurrent flushes, or a worker flush racing a server `SubmitHarvest`, can both insert and one fails with 23505. Use the server's pattern from -34: pre-insert zero-count rows with `on conflict do nothing` in sorted order, then lock and merge. This matters only until -39 removes the worker's direct path; skip it if -39 lands first.
 - **Red test:** Pre-create a fingerprint with no stats rows, then run concurrent worker flushes (and a concurrent `SubmitHarvest`) for it. No errors, correct counts.

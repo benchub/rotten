@@ -436,3 +436,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **History correction:** before scoring, the in-range samples are subtracted from the stored history (both source and global), because ingest has already merged them. The subtraction uses the sample-variance algebra.
   - **Outlier test:** a query is an outlier when its recent mean exceeds the history mean plus `$7` × stddev, and the corrected history has at least `$8` samples. When the stddev is 0, it's an outlier if the recent mean exceeds `$9` × the history mean. The recommended defaults are 3σ, 30 samples, and 2×.
   - **Legacy worker caveat:** until -39 lands, set `$5` at least 2 × `ObservationInterval` behind now.
+
+### 20261002-145000-1: Classify mid-transaction DB failures as Unavailable in Register and SubmitHarvest.
+- **Do:** In `internal/ingest/register.go` `isUnavailable` (shared by Register and SubmitHarvest), also treat `pgconn.SafeToRetry(err)`, `pgconn.Timeout(err)`, plain network errors, and SQLSTATE class `57P0x` (e.g. `57P01` admin shutdown) as `Unavailable`. Today a Postgres restart or failover after `begin` succeeds but before the writes finish returns `Internal`, which a client won't retry. Register's upserts are idempotent and SubmitHarvest dedupes by `batch_id`, so retrying is safe. Keep permission and constraint errors as `Internal`.
+- **Red test:** Against real Postgres, terminate the backend (`pg_terminate_backend`) mid-transaction for each call, and check that it returns `Unavailable` with no DB text in the message.
+- **Done when:** Passes.
+- **Needs:** -33. Found in review of -32.
+- **Completed:** 2026-10-02, 0e7ce5c. Several more failure kinds now return Unavailable, and the termination tests cover both calls:
+  - `SafeToRetry` and `pgconn.Timeout` errors.
+  - Network errors: EOF, and connections that were closed or reset.
+  - SQLSTATE `57P0x`.
+  - `context.Canceled` and `DeadlineExceeded`. Canceled stays Unavailable so that calls cut off by the -36 shutdown force-close get retried.
