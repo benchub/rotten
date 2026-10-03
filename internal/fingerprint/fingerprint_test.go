@@ -172,3 +172,35 @@ func TestFingerprintGolden(t *testing.T) {
 	}
 	t.Error("fingerprints changed; if intended, regenerate with `make golden` and review the diff")
 }
+
+func TestFingerprintCorpusValidCasesNormalize(t *testing.T) {
+	cases := loadCorpus(t)
+
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
+
+	for _, c := range cases {
+		if corpusCaseMayError(c.name) {
+			continue
+		}
+		if _, err := Normalized(c.query, Options{}); err != nil {
+			t.Errorf("%s: Normalized returned %v", c.name, err)
+		}
+	}
+}
+
+func corpusCaseMayError(name string) bool {
+	if strings.HasPrefix(name, "parse_error_") {
+		return true
+	}
+	switch name {
+	case "pg18_returning_with_aliases",
+		"pg18_generated_virtual",
+		"pg18_generated_default_virtual",
+		"pg18_without_overlaps_primary",
+		"pg18_without_overlaps_unique":
+		return true
+	default:
+		return false
+	}
+}

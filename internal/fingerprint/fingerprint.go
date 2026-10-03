@@ -142,6 +142,45 @@ func (s *walker) Struct(v reflect.Value) error {
 		switch n := v.Addr().Interface().(type) {
 		case *pg_query.A_Expr:
 			rewriteArrayToIn(n)
+		case *pg_query.ColumnRef:
+			if !s.opts.KeepSchemas {
+				n.Fields = collapseColumnRefFields(n.Fields)
+			}
+		case *pg_query.FuncCall:
+			if !s.opts.KeepSchemas {
+				n.Funcname = collapseFuncCallName(n.Funcname, n.Funcformat)
+			}
+		case *pg_query.TypeName:
+			if !s.opts.KeepSchemas {
+				n.Names = collapseTypeName(n.Names, n.PctType)
+			}
+		case *pg_query.DropStmt:
+			if !s.opts.KeepSchemas {
+				collapseDropObjects(n.RemoveType, n.Objects)
+			}
+		case *pg_query.CommentStmt:
+			if !s.opts.KeepSchemas {
+				collapseObjectNode(n.Objtype, n.Object)
+			}
+		case *pg_query.RenameStmt:
+			if !s.opts.KeepSchemas {
+				collapseObjectNode(n.RenameType, n.Object)
+			}
+		case *pg_query.AlterObjectDependsStmt:
+			if !s.opts.KeepSchemas {
+				collapseObjectNode(n.ObjectType, n.Object)
+			}
+		case *pg_query.AlterObjectSchemaStmt:
+			if !s.opts.KeepSchemas {
+				if n.Newschema != "" {
+					n.Newschema = "some_schema"
+				}
+				collapseObjectNode(n.ObjectType, n.Object)
+			}
+		case *pg_query.AlterOwnerStmt:
+			if !s.opts.KeepSchemas {
+				collapseObjectNode(n.ObjectType, n.Object)
+			}
 		case *pg_query.SubLink:
 			// x = ANY (subquery) and x IN (subquery) are the same
 			// ANY_SUBLINK; IN just leaves the operator name out.
@@ -256,6 +295,171 @@ func copyTypeName(tn *pg_query.TypeName) *pg_query.TypeName {
 func isOp(name []*pg_query.Node, op string) bool {
 	return len(name) == 1 && name[0].GetString_() != nil && name[0].GetString_().Sval == op
 }
+
+func collapseColumnRefFields(fields []*pg_query.Node) []*pg_query.Node {
+	switch len(fields) {
+	case 3:
+		if isStringNode(fields[0]) {
+			return append(fields[:0:0], fields[1:]...)
+		}
+	case 4:
+		if isStringNode(fields[1]) {
+			out := append(fields[:0:0], fields[0])
+			return append(out, fields[2:]...)
+		}
+	}
+	return fields
+}
+
+func collapseQualifiedObjectName(name []*pg_query.Node) []*pg_query.Node {
+	switch len(name) {
+	case 2:
+		if isStringNode(name[0]) {
+			return append(name[:0:0], name[1:]...)
+		}
+	case 3:
+		if isStringNode(name[1]) {
+			out := append(name[:0:0], name[0])
+			return append(out, name[2:]...)
+		}
+	}
+	return name
+}
+
+func collapseFuncCallName(name []*pg_query.Node, format pg_query.CoercionForm) []*pg_query.Node {
+	if format == pg_query.CoercionForm_COERCE_SQL_SYNTAX {
+		return name
+	}
+	switch len(name) {
+	case 2:
+		if stringNodeValue(name[0]) == "pg_catalog" {
+			return name
+		}
+	case 3:
+		if stringNodeValue(name[1]) == "pg_catalog" {
+			return name
+		}
+	}
+	return collapseQualifiedObjectName(name)
+}
+
+func collapseTypeName(name []*pg_query.Node, pctType bool) []*pg_query.Node {
+	if pctType {
+		return collapseColumnRefFields(name)
+	}
+	switch len(name) {
+	case 2:
+		if stringNodeValue(name[0]) == "pg_catalog" {
+			return name
+		}
+	case 3:
+		if stringNodeValue(name[1]) == "pg_catalog" {
+			return name
+		}
+	}
+	return collapseQualifiedObjectName(name)
+}
+
+func collapseDropObjects(objtype pg_query.ObjectType, objects []*pg_query.Node) {
+	for _, obj := range objects {
+		collapseObjectNode(objtype, obj)
+	}
+}
+
+func collapseObjectNode(objtype pg_query.ObjectType, obj *pg_query.Node) {
+	if obj == nil {
+		return
+	}
+	if list := obj.GetList(); list != nil {
+		list.Items = collapseObjectNameItems(objtype, list.Items)
+		return
+	}
+	if withArgs := obj.GetObjectWithArgs(); withArgs != nil {
+		withArgs.Objname = collapseObjectNameItems(objtype, withArgs.Objname)
+	}
+}
+
+func collapseObjectNameItems(objtype pg_query.ObjectType, items []*pg_query.Node) []*pg_query.Node {
+	switch objectNameShape(objtype) {
+	case objectNameAny:
+		return collapseQualifiedObjectName(items)
+	case objectNameTableMember:
+		if len(items) < 3 {
+			return items
+		}
+		table := collapseQualifiedObjectName(items[:len(items)-1])
+		out := make([]*pg_query.Node, 0, len(table)+1)
+		out = append(out, table...)
+		return append(out, items[len(items)-1])
+	case objectNameAccessMethodMember:
+		if len(items) < 3 {
+			return items
+		}
+		name := collapseQualifiedObjectName(items[1:])
+		out := make([]*pg_query.Node, 0, len(name)+1)
+		out = append(out, items[0])
+		return append(out, name...)
+	default:
+		return items
+	}
+}
+
+type objectNameKind int
+
+const (
+	objectNameNone objectNameKind = iota
+	objectNameAny
+	objectNameTableMember
+	objectNameAccessMethodMember
+)
+
+func objectNameShape(objtype pg_query.ObjectType) objectNameKind {
+	switch objtype {
+	case pg_query.ObjectType_OBJECT_AGGREGATE,
+		pg_query.ObjectType_OBJECT_COLLATION,
+		pg_query.ObjectType_OBJECT_CONVERSION,
+		pg_query.ObjectType_OBJECT_DOMAIN,
+		pg_query.ObjectType_OBJECT_FOREIGN_TABLE,
+		pg_query.ObjectType_OBJECT_FUNCTION,
+		pg_query.ObjectType_OBJECT_INDEX,
+		pg_query.ObjectType_OBJECT_MATVIEW,
+		pg_query.ObjectType_OBJECT_PROCEDURE,
+		pg_query.ObjectType_OBJECT_ROUTINE,
+		pg_query.ObjectType_OBJECT_SEQUENCE,
+		pg_query.ObjectType_OBJECT_STATISTIC_EXT,
+		pg_query.ObjectType_OBJECT_TABLE,
+		pg_query.ObjectType_OBJECT_TSCONFIGURATION,
+		pg_query.ObjectType_OBJECT_TSDICTIONARY,
+		pg_query.ObjectType_OBJECT_TSPARSER,
+		pg_query.ObjectType_OBJECT_TSTEMPLATE,
+		pg_query.ObjectType_OBJECT_TYPE,
+		pg_query.ObjectType_OBJECT_VIEW:
+		return objectNameAny
+	case pg_query.ObjectType_OBJECT_COLUMN,
+		pg_query.ObjectType_OBJECT_POLICY,
+		pg_query.ObjectType_OBJECT_RULE,
+		pg_query.ObjectType_OBJECT_TABCONSTRAINT,
+		pg_query.ObjectType_OBJECT_TRIGGER:
+		return objectNameTableMember
+	case pg_query.ObjectType_OBJECT_OPCLASS,
+		pg_query.ObjectType_OBJECT_OPFAMILY:
+		return objectNameAccessMethodMember
+	default:
+		return objectNameNone
+	}
+}
+
+func isStringNode(n *pg_query.Node) bool {
+	return n != nil && n.GetString_() != nil
+}
+
+func stringNodeValue(n *pg_query.Node) string {
+	if str := n.GetString_(); str != nil {
+		return str.Sval
+	}
+	return ""
+}
+
 func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 	// Skip over all the protobuf fields we couldn't care less about
 	// Modify the things we do want to change

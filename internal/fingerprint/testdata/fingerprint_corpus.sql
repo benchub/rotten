@@ -49,6 +49,94 @@ SELECT * FROM public.users WHERE id = 4
 CREATE SCHEMA shard_1
 -- case: create_schema_b
 CREATE SCHEMA shard_27
+-- case: qualified_column_ref_a
+SELECT users.id FROM users
+-- case: qualified_column_ref_b
+SELECT public.users.id FROM users
+-- case: qualified_column_ref_c
+SELECT catalog_1.public.users.id FROM users
+-- case: qualified_column_ref_d
+SELECT catalog_1.shard_27.users.id FROM users
+-- case: qualified_function_a
+SELECT f(id) FROM users
+-- case: qualified_function_b
+SELECT shard_1.f(id) FROM users
+-- case: qualified_function_c
+SELECT shard_27.f(id) FROM users
+-- case: sql_syntax_extract
+SELECT EXTRACT(YEAR FROM TIMESTAMP '2024-01-02')
+-- case: sql_syntax_at_time_zone
+SELECT TIMESTAMP '2024-01-02 03:04:05' AT TIME ZONE 'UTC'
+-- case: sql_syntax_trim
+SELECT TRIM(BOTH 'x' FROM 'xxhelloxx')
+-- case: sql_syntax_substring
+SELECT SUBSTRING('abcdef' FROM 2 FOR 3)
+-- case: drop_table_name_a
+DROP TABLE users
+-- case: drop_table_name_b
+DROP TABLE public.users
+-- case: drop_table_name_c
+DROP TABLE shard_27.users
+-- case: drop_trigger_name_a
+DROP TRIGGER trg ON users
+-- case: drop_trigger_name_b
+DROP TRIGGER trg ON public.users
+-- case: drop_trigger_other_table
+DROP TRIGGER trg ON public.orders
+-- case: drop_policy_name_a
+DROP POLICY pol ON users
+-- case: drop_policy_name_b
+DROP POLICY pol ON public.users
+-- case: drop_rule_name_a
+DROP RULE rul ON users
+-- case: drop_rule_name_b
+DROP RULE rul ON public.users
+-- case: comment_column_name_a
+COMMENT ON COLUMN users.id IS 'x'
+-- case: comment_column_name_b
+COMMENT ON COLUMN public.users.id IS 'x'
+-- case: comment_column_other_table
+COMMENT ON COLUMN orders.id IS 'x'
+-- case: comment_constraint_name_a
+COMMENT ON CONSTRAINT users_pkey ON users IS 'x'
+-- case: comment_constraint_name_b
+COMMENT ON CONSTRAINT users_pkey ON public.users IS 'x'
+-- case: drop_opclass_name_a
+DROP OPERATOR CLASS c USING btree
+-- case: drop_opclass_name_b
+DROP OPERATOR CLASS s.c USING btree
+-- case: drop_opfamily_name_a
+DROP OPERATOR FAMILY f USING btree
+-- case: drop_opfamily_name_b
+DROP OPERATOR FAMILY s.f USING btree
+-- case: drop_function_name_a
+DROP FUNCTION f(int)
+-- case: drop_function_name_b
+DROP FUNCTION public.f(int)
+-- case: drop_function_name_c
+DROP FUNCTION shard_27.f(int)
+-- case: qualified_type_name_a
+SELECT id::mytype FROM users
+-- case: qualified_type_name_b
+SELECT id::public.mytype FROM users
+-- case: qualified_type_name_c
+SELECT id::shard_27.mytype FROM users
+-- case: pct_type_arg_a
+CREATE FUNCTION f(x users.id%TYPE) RETURNS int LANGUAGE sql AS 'SELECT 1'
+-- case: pct_type_arg_b
+CREATE FUNCTION f(x public.users.id%TYPE) RETURNS int LANGUAGE sql AS 'SELECT 1'
+-- case: pct_type_arg_other_table
+CREATE FUNCTION f(x orders.id%TYPE) RETURNS int LANGUAGE sql AS 'SELECT 1'
+-- case: pct_type_returns_a
+CREATE FUNCTION f() RETURNS users.id%TYPE LANGUAGE sql AS 'SELECT 1'
+-- case: pct_type_returns_b
+CREATE FUNCTION f() RETURNS public.users.id%TYPE LANGUAGE sql AS 'SELECT 1'
+-- case: pct_type_returns_other_table
+CREATE FUNCTION f() RETURNS orders.id%TYPE LANGUAGE sql AS 'SELECT 1'
+-- case: alter_set_schema_a
+ALTER TABLE users SET SCHEMA tenant_1
+-- case: alter_set_schema_b
+ALTER TABLE users SET SCHEMA tenant_27
 
 -- case: repack_index_a
 CREATE INDEX CONCURRENTLY index_12345 ON repack.table_12345 (id)
