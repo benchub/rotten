@@ -4,12 +4,23 @@ RSpec.describe Report do
   it "has one report for each SQL file in the reports directory" do
     files = Dir.children(Rails.configuration.x.reports_dir).grep(/\.sql\z/).sort
 
-    expect(described_class.all.map(&:file).sort).to eq(files)
+    expect(described_class.files.sort).to eq(files)
+  end
+
+  it "keeps the fingerprint detail queries out of the report list" do
+    internal = %w[fingerprint_contexts fingerprint_sources]
+
+    expect(described_class.all.map(&:key)).not_to include(*internal)
+    internal.each do |key|
+      expect(described_class.find(key)).to be_nil
+      expect(described_class.internal(key).file).to eq("#{key}.sql")
+    end
+    expect(described_class.internal("outliers")).to be_nil
   end
 
   it "loads each report's SQL from the reports directory" do
-    described_class.all.each do |report|
-      expect(ReportSql.read(report.file)).to include("$1", "rotten.logical_sources")
+    described_class.files.each do |file|
+      expect(ReportSql.read(file)).to include("$1", "rotten.logical_sources")
     end
   end
 

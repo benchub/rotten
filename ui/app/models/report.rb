@@ -21,9 +21,16 @@ class Report
     freeze
   end
 
-  def self.all = ALL
+  def self.all = LISTED
 
-  def self.find(key) = ALL.find { |report| report.key == key }
+  def self.find(key) = LISTED.find { |report| report.key == key }
+
+  # The queries the fingerprint detail page runs alongside the time series.
+  # They aren't reports of their own, so they're not listed or routable.
+  def self.internal(key) = INTERNAL.find { |report| report.key == key }
+
+  # Every SQL file the UI may read.
+  def self.files = (LISTED + INTERNAL).map(&:file)
 
   def column(key) = columns.find { |column| column.key == key }
 
@@ -62,7 +69,7 @@ class Report
     ]
   end
 
-  ALL = [
+  LISTED = [
     new(key: "top_by_total_time", title: "Top queries by total time", file: "top_by_total_time.sql", kind: :top,
         description: "The queries that spent the most time.", columns: top_columns),
     new(key: "top_by_calls", title: "Top queries by calls", file: "top_by_calls.sql", kind: :top,
@@ -97,6 +104,26 @@ class Report
           ["bucket_end", "Bucket end (UTC)", :time],
           ["calls", "Calls", :count],
           ["total_ms", "Total ms", :ms]
+        ])
+  ].freeze
+
+  INTERNAL = [
+    new(key: "fingerprint_contexts", title: "Top contexts", file: "fingerprint_contexts.sql",
+        kind: :fingerprint_contexts, description: "The contexts that ran one query the most.",
+        columns: [
+          ["context", "Context", :context],
+          ["times", "Calls", :count]
+        ]),
+    new(key: "fingerprint_sources", title: "Stats for each source", file: "fingerprint_sources.sql",
+        kind: :fingerprint_sources, description: "One query's calls, time and history on each role.",
+        columns: [
+          ["role", "Role", :text],
+          ["calls", "Calls", :count],
+          ["total_ms", "Total ms", :ms],
+          ["avg_ms_per_call", "Avg ms/call", :ms],
+          ["history_samples", "History samples", :count],
+          ["history_mean_ms", "History mean ms/call", :ms],
+          ["history_deviation_ms", "History deviation ms", :ms]
         ])
   ].freeze
 end

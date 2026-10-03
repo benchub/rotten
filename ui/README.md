@@ -212,9 +212,20 @@ environment and cluster, optionally a role, and a time range: a preset such
 as **Last 3 hours**, or **Custom** with **From** and **To** in UTC, at most
 31 days apart. The utilization reports pick a primary and a replica role
 instead of one role, and the time series takes a fingerprint ID and a bucket
-width. Fingerprint IDs in the other reports link to their time series. Click
-a column header to sort; the sort happens in Ruby on the rows the report
-returned, at most 50 for the top and outlier reports.
+width. Fingerprint IDs in the other reports link to the fingerprint page.
+Click a column header to sort; the sort happens in Ruby on the rows the
+report returned, at most 50 for the top and outlier reports.
+
+Each fingerprint has a page at `/fingerprints/<id>`. It shows the normalized
+SQL, and after you pick a source and time range: charts of calls and total
+time for each bucket, the top 10 contexts (job tag, or controller and
+action), and stats for each logical source, including the per-call mean time
+history kept in `fingerprint_stats`. The charts are SVG drawn on the server
+with no JavaScript; each point carries `data-time` and `data-value`. An
+unknown or malformed ID gets a 404. The page runs
+`fingerprint_timeseries.sql`, `fingerprint_contexts.sql` and
+`fingerprint_sources.sql`; the last two aren't listed under `/reports`. Each
+query has its own statement timeout.
 
 Each report is a SQL file in the repo's `reports/` directory, and the app
 reads them from `../reports`, next to the app. `dev/docker-compose.yaml` and

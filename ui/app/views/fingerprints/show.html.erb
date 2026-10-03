@@ -1,0 +1,74 @@
+<% content_for :title, "Fingerprint #{@fingerprint.id}" %>
+<div class="reports fingerprint">
+  <p><%= link_to "All reports", reports_path %></p>
+  <h1>Fingerprint <%= @fingerprint.id %></h1>
+
+  <h2>Normalized SQL</h2>
+  <pre class="fingerprint-sql"><%= @fingerprint.normalized %></pre>
+
+  <%= form_with url: fingerprint_path(@fingerprint.id), method: :get, class: "report-form", data: { turbo: false } do %>
+    <%= render "reports/source_fields", query: @query, report: @query.report, fingerprint_field: false %>
+    <div>
+      <%= submit_tag "Show", name: nil %>
+    </div>
+  <% end %>
+  <p class="report-hint">Times are UTC. From and To are used only with a Custom time range.</p>
+
+  <%= render "reports/messages", query: @query, timeout_seconds: @timeout_seconds %>
+
+  <% if @series %>
+    <h2>Calls</h2>
+    <%= timeseries_chart(@series, value_key: "calls", label: "Calls") %>
+    <h2>Total ms</h2>
+    <%= timeseries_chart(@series, value_key: "total_ms", label: "Total ms") %>
+    <p><%= link_to "Time series as a table", report_path("fingerprint_timeseries", @query.link_params) %></p>
+
+    <h2>Top contexts</h2>
+    <% if @contexts.empty? %>
+      <p>No contexts for this source and time range.</p>
+    <% else %>
+      <table class="report fingerprint-contexts">
+        <thead>
+          <tr>
+            <th scope="col">Context</th>
+            <th scope="col">Calls</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @contexts.each do |context| %>
+            <tr>
+              <td><%= report_context_name(context) %></td>
+              <td class="numeric"><%= number_with_delimiter(context["times"].to_i) %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% end %>
+
+    <h2>Stats for each source</h2>
+    <p class="report-hint">History is the per-call mean time kept for each source over its whole life, not just this time range.</p>
+    <% if @sources.empty? %>
+      <p>No stats for this source and time range.</p>
+    <% else %>
+      <% columns = Report.internal("fingerprint_sources").columns %>
+      <table class="report fingerprint-sources">
+        <thead>
+          <tr>
+            <% columns.each do |column| %>
+              <%= tag.th(column.label, scope: "col", data: { column: column.key }) %>
+            <% end %>
+          </tr>
+        </thead>
+        <tbody>
+          <% @sources.each do |row| %>
+            <tr>
+              <% columns.each do |column| %>
+                <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, row[column.key]) %></td>
+              <% end %>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% end %>
+  <% end %>
+</div>

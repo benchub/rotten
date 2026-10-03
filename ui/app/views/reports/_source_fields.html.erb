@@ -1,0 +1,54 @@
+<%# The source picker and time range fields shared by the report and fingerprint pages. %>
+<div>
+  <%= label_tag :project, "Project" %>
+  <%= select_tag :project, options_for_select(query.projects, query.project) %>
+</div>
+<div>
+  <%= label_tag :environment, "Environment" %>
+  <%= select_tag :environment, options_for_select(query.environments, query.environment) %>
+</div>
+<div>
+  <%= label_tag :cluster, "Cluster" %>
+  <%= select_tag :cluster, options_for_select(query.clusters, query.cluster) %>
+</div>
+<% if report.role_filter? %>
+  <div>
+    <%= label_tag :role, "Role" %>
+    <%= select_tag :role, options_for_select([["All roles", ""]] + query.roles, query.role.to_s) %>
+  </div>
+<% end %>
+<% if report.utilization? %>
+  <% utilization_roles = query.roles | [ReportQuery::DEFAULT_PRIMARY_ROLE, ReportQuery::DEFAULT_REPLICA_ROLE] %>
+  <div>
+    <%= label_tag :primary_role, "Primary role" %>
+    <%= select_tag :primary_role, options_for_select(utilization_roles, query.primary_role) %>
+  </div>
+  <div>
+    <%= label_tag :replica_role, "Replica role" %>
+    <%= select_tag :replica_role, options_for_select(utilization_roles, query.replica_role) %>
+  </div>
+<% end %>
+<% if report.timeseries? %>
+  <% if local_assigns.fetch(:fingerprint_field, true) %>
+    <div>
+      <%= label_tag :fingerprint_id, "Fingerprint ID" %>
+      <%= text_field_tag :fingerprint_id, query.fingerprint_id, inputmode: "numeric" %>
+    </div>
+  <% end %>
+  <div>
+    <%= label_tag :bucket, "Bucket" %>
+    <%= select_tag :bucket, options_for_select([["Auto", ""]] + ReportQuery::BUCKETS.map { |key, (label, _)| [label, key] }, query.bucket.to_s) %>
+  </div>
+<% end %>
+<div>
+  <%= label_tag :range, "Time range" %>
+  <%= select_tag :range, options_for_select(ReportQuery::RANGES.map { |key, (label, _)| [label, key] }, query.range) %>
+</div>
+<div>
+  <%= label_tag :from, "From (UTC)" %>
+  <%= datetime_local_field_tag :from, query.from %>
+</div>
+<div>
+  <%= label_tag :to, "To (UTC)" %>
+  <%= datetime_local_field_tag :to, query.to %>
+</div>

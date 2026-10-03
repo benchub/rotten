@@ -11,6 +11,6 @@ Rails.application.config.x.reports_dir = Rails.root.parent.join("reports").to_s
 # for example an image built without the reports build context.
 Rails.application.config.after_initialize do
   dir = Rails.application.config.x.reports_dir
-  missing = Report.all.map(&:file).reject { |file| File.file?(File.join(dir, file)) }
+  missing = Report.files.reject { |file| File.file?(File.join(dir, file)) }
   raise "report SQL missing from #{dir}: #{missing.join(', ')}" if missing.any?
 end

@@ -82,6 +82,42 @@ RSpec.describe "Report SQL injection", type: :request do
     end
   end
 
+  describe "fingerprint detail" do
+    let(:path) { "/fingerprints/#{@fixture.fingerprint_ids.fetch('users')}" }
+
+    params.each do |param|
+      it "treats every payload in #{param} as a value" do
+        (payloads + structured).each do |payload|
+          expect_safe(path, base.merge(param => payload))
+        end
+        expect(ReportFixture.table_counts).to eq(@counts)
+      end
+    end
+
+    it "treats payloads in the custom range as values" do
+      payloads.each do |payload|
+        expect_safe(path, base.merge("range" => "custom", "from" => payload, "to" => "2026-01-01T00:00"))
+        expect_safe(path, base.merge("range" => "custom", "from" => "2026-01-01T00:00", "to" => payload))
+      end
+      expect(ReportFixture.table_counts).to eq(@counts)
+    end
+
+    it "404s from the controller for every payload in the fingerprint id" do
+      expect(Fingerprint).to receive(:lookup).exactly(payloads.size).times.and_call_original
+
+      payloads.each do |payload|
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        get "/fingerprints/#{ERB::Util.url_encode(payload)}", params: base
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+        expect(response).to have_http_status(:not_found), "#{payload.inspect} -> #{response.status}"
+        expect(response.body).to eq("Not found"), "#{payload.inspect} wasn't rejected by the controller"
+        expect(elapsed).to be < 4
+      end
+      expect(ReportFixture.table_counts).to eq(@counts)
+    end
+  end
+
   it "doesn't leak another project's rows through the source fields" do
     get "/reports/top_by_calls", params: base.merge("project" => "canvas' or project = 'bridge")
 

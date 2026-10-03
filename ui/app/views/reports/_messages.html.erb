@@ -1,0 +1,19 @@
+<%# Validation errors and the timeout message shared by the report and fingerprint pages. %>
+<% if query.errors.any? %>
+  <div class="report-errors" role="alert">
+    <ul>
+      <% query.errors.full_messages.each do |message| %>
+        <li><%= message %></li>
+      <% end %>
+    </ul>
+  </div>
+<% end %>
+
+<% if timeout_seconds %>
+  <div class="report-errors" role="alert">
+    <p>
+      This report took longer than <%= number_with_precision(timeout_seconds, precision: 3, strip_insignificant_zeros: true) %>
+      seconds and was stopped. Try a shorter time range or a narrower source.
+    </p>
+  </div>
+<% end %>

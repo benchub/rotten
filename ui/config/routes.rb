@@ -9,6 +9,9 @@ Rails.application.routes.draw do
   get "admin" => "admin#show"
   get "reports" => "reports#index", as: :reports, format: false
   get "reports/:id" => "reports#show", as: :report, format: false
+  # Any id reaches the controller, which 404s the ones that aren't a
+  # fingerprint.
+  get "fingerprints/:id" => "fingerprints#show", as: :fingerprint, format: false, constraints: { id: %r{[^/]+} }
 
   # OmniAuth's middleware handles POST /auth/openid_connect and hands the
   # callback to this route.

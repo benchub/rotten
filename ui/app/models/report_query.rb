@@ -33,6 +33,7 @@ class ReportQuery
   DEFAULT_REPLICA_ROLE = "replica".freeze
 
   ROW_LIMIT = 50
+  CONTEXT_LIMIT = 10
   OUTLIER_SIGMA = 3
   OUTLIER_MIN_HISTORY = 30
   OUTLIER_RATIO = 2
@@ -98,10 +99,12 @@ class ReportQuery
   def sort_column = sort.present? ? report.column(sort) : nil
   def direction = dir.presence || (sort_column&.numeric? ? "desc" : "asc")
 
-  def run(runner = ReportRunner.new)
-    result = runner.run(report.sql, binds)
+  # Runs this query's report, or with the same validated parameters one of
+  # the internal reports (Report.internal). Only this query's report sorts.
+  def run(runner = ReportRunner.new, report: self.report)
+    result = runner.run(report.sql, binds(report))
     rows = result.rows.map { |values| result.columns.zip(values).to_h }
-    sort_rows(rows)
+    report == self.report ? sort_rows(rows) : rows
   end
 
   # The validated parameters, for links that keep the current choices.
@@ -125,7 +128,7 @@ class ReportQuery
 
   private
 
-  def binds
+  def binds(report)
     start_at, end_at = window.map { |time| time.utc.iso8601(6) }
     source = [project, environment, cluster]
     role_or_nil = role.presence
@@ -135,9 +138,19 @@ class ReportQuery
       [*source, start_at, end_at, ROW_LIMIT, OUTLIER_SIGMA, OUTLIER_MIN_HISTORY, OUTLIER_RATIO, role_or_nil]
     when :utilization then [*source, start_at, end_at, primary_role, replica_role]
     when :timeseries
-      [*source, Integer(fingerprint_id, 10), start_at, end_at, "#{bucket_seconds} seconds", role_or_nil]
+      [*source, fingerprint_id_value, start_at, end_at, "#{bucket_seconds} seconds", role_or_nil]
+    when :fingerprint_contexts
+      [*source, fingerprint_id_value, start_at, end_at, CONTEXT_LIMIT, role_or_nil]
+    when :fingerprint_sources then [*source, fingerprint_id_value, start_at, end_at, role_or_nil]
     else raise ArgumentError, "unknown report kind #{report.kind}"
     end
+  end
+
+  # The internal reports share the time series' validated fingerprint id.
+  def fingerprint_id_value
+    raise ArgumentError, "fingerprint reports run from a time series query" unless self.report.timeseries?
+
+    Integer(fingerprint_id, 10)
   end
 
   def sort_rows(rows)

@@ -139,13 +139,15 @@ RSpec.describe "Reports", type: :system do
     ])
   end
 
-  it "follows a fingerprint to its time series over a custom range" do
+  it "follows a fingerprint through its detail page to its time series over a custom range" do
     visit "/reports/top_by_calls"
     pick_source(project: "canvas", cluster: "13")
     click_button "Run report"
 
     users_id = @fixture.fingerprint_ids.fetch("users")
     within("table.report") { click_link users_id.to_s }
+    expect(page).to have_css("h1", text: "Fingerprint #{users_id}")
+    click_link "Time series as a table"
 
     expect(page).to have_css("h1", text: "Fingerprint time series")
     expect(page).to have_field("Fingerprint ID", with: users_id.to_s)
