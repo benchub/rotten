@@ -831,3 +831,26 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Regression locks only:** CAST, TRANSFORM and ALTER CONVERSION were already handled by the general TypeName walker or the allow-list, so they only get regression tests.
   - **Left alone:** the `OPERATOR(a.+)` expression syntax, which has a negative golden case.
   - **Golden changes:** additions only.
+
+### 20261001-103222-49: Add the users table and auth mode switch.
+- **Do:**
+  - Add a migration for `users(id, email citext unique, name, provider, provider_uid, password_digest null, role viewer|admin, groups text[], active, last_login_at)`, and grant it to `rotten_ui`.
+  - Read `ROTTEN_UI_AUTH=oidc|password` at boot, and refuse to start if it's missing or unknown.
+  - Every page requires login, except `/up` and the login pages.
+  - Add `require_admin` for admin pages.
+  - Inactive users get logged out on their next request.
+- **Red test:**
+  - Booting without `ROTTEN_UI_AUTH` fails with a clear message.
+  - A logged-out request redirects to `/login`.
+  - An inactive user's session gets dropped.
+  - A viewer gets 403 on an admin page.
+- **Done when:** Passes.
+- **Needs:** -48.
+- **Completed:** 2026-10-03, 05bc82a.
+  - **Migration:** 0006.
+  - **Email:** `email` is `text`, with a unique index on `lower(email)`, plus Rails `normalizes :email`. This replaces citext: citext's operators live in `public`, which isn't on the UI search path, so lookups were case-sensitive.
+  - **Placeholders:** `/login` and `/admin`.
+  - **Test sign-in:** a test-only route, gated on both the route and the controller.
+  - **Boot guard:** an `eager_load!` spec catches Zeitwerk naming errors. A first version crashed in production on `RottenUI` vs `RottenUi`.
+  - **Environments:** `ROTTEN_UI_AUTH` is set in compose, the Makefile and the Dockerfile precompile step.
+  - **Follow-up:** notes for -105250-2 and -105250-3 on `normalizes` gaps and `RecordNotUnique`.

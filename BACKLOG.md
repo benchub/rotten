@@ -42,21 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-49: Add the users table and auth mode switch.
-- **Do:**
-  - Add a migration for `users(id, email citext unique, name, provider, provider_uid, password_digest null, role viewer|admin, groups text[], active, last_login_at)`, and grant it to `rotten_ui`.
-  - Read `ROTTEN_UI_AUTH=oidc|password` at boot, and refuse to start if it's missing or unknown.
-  - Every page requires login, except `/up` and the login pages.
-  - Add `require_admin` for admin pages.
-  - Inactive users get logged out on their next request.
-- **Red test:**
-  - Booting without `ROTTEN_UI_AUTH` fails with a clear message.
-  - A logged-out request redirects to `/login`.
-  - An inactive user's session gets dropped.
-  - A viewer gets 403 on an admin page.
-- **Done when:** Passes.
-- **Needs:** -48.
-
 ### 20261001-105250-2: Add OIDC login.
 - **Do:** Use `omniauth_openid_connect` with `omniauth-rails_csrf_protection`.
   - Every org-specific value comes from env, with no defaults: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_GROUPS_CLAIM` (default `groups`), `ROTTEN_UI_VIEWER_GROUP`, and `ROTTEN_UI_ADMIN_GROUP`.
@@ -70,6 +55,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - `OMNIAUTH_FAKE` does nothing outside development.
   - Booting in `oidc` mode with a missing `OIDC_*` value fails.
 - **Done when:** Passes. Okta itself is a placeholder here: document the env vars an Okta app needs, and leave the real setup to the repo that deploys this one.
+- **Note (from -49):**
+  - `users.email` is `text` with a unique index on `lower(email)`. The model `normalizes :email`, but that doesn't cover `upsert_all`, `insert_all`, `update_all` or raw SQL, so lowercase the email yourself there.
+  - `User` has no uniqueness validation. Handle `RecordNotUnique` when provisioning, so a race doesn't become a 500.
 - **Needs:** -49.
 
 ### 20261001-105250-3: Add password login.
@@ -81,6 +69,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - The rake tasks do what they say.
   - In `oidc` mode, the password form and endpoint return 404.
 - **Done when:** Passes.
+- **Note (from -49):** Emails are normalized to lowercase. `users:create` must reject a duplicate email with a clear error, not a raw `RecordNotUnique`.
 - **Needs:** -49.
 
 ### 20261001-105250-4: Write the UI security specs.
