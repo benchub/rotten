@@ -20,6 +20,7 @@ import (
 
 	"github.com/benchub/rotten/internal/migrate"
 	"github.com/jackc/pgx/v5"
+	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -39,6 +40,8 @@ const (
 	UIRole       = "rotten_ui"
 	ReadonlyRole = "rotten_readonly"
 )
+
+const postgresPort = "5432/tcp"
 
 // RottenRoles are the login roles StartRottenEmpty creates.
 var RottenRoles = []string{OwnerRole, IngestRole, UIRole, ReadonlyRole}
@@ -95,37 +98,11 @@ func (d *DB) Restart(t testing.TB, whileStopped ...func()) {
 	if err := d.c.Start(ctx); err != nil {
 		t.Fatalf("testdb: start container after restart: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		host, err := d.c.Host(ctx)
-		if err != nil {
-			lastErr = err
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		port, err := d.c.MappedPort(ctx, "5432/tcp")
-		if err == nil {
-			u := url.URL{
-				Scheme:   "postgres",
-				User:     url.UserPassword("postgres", "postgres"),
-				Host:     net.JoinHostPort(host, port.Port()),
-				Path:     d.dbName,
-				RawQuery: "sslmode=disable",
-			}
-			d.DSN = u.String()
-			conn, err := pgx.Connect(ctx, d.DSN)
-			if err == nil {
-				conn.Close(ctx)
-				return
-			}
-			lastErr = err
-		} else {
-			lastErr = err
-		}
-		time.Sleep(100 * time.Millisecond)
+	dsn, err := connectableHostDSNWithRetry(ctx, d.c, d.dbName, 30*time.Second, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("testdb: restarted container did not become ready: %v", err)
 	}
-	t.Fatalf("testdb: restarted container did not become ready: %v", lastErr)
+	d.DSN = dsn
 }
 
 // Connect opens a superuser connection and closes it at test cleanup.
@@ -174,6 +151,80 @@ func skipShort(t testing.TB) {
 	}
 }
 
+type hostPortResolver interface {
+	Host(context.Context) (string, error)
+	MappedPort(context.Context, string) (network.Port, error)
+}
+
+func hostDSNWithRetry(ctx context.Context, resolver hostPortResolver, dbName string, timeout time.Duration, pollInterval time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var lastErr error
+	for {
+		dsn, err := hostDSN(ctx, resolver, dbName)
+		if err == nil {
+			return dsn, nil
+		}
+		lastErr = err
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return "", fmt.Errorf("mapped port %q not ready after %s: %w", postgresPort, timeout, lastErr)
+		case <-timer.C:
+		}
+	}
+}
+
+func connectableHostDSNWithRetry(ctx context.Context, resolver hostPortResolver, dbName string, timeout time.Duration, pollInterval time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var lastErr error
+	for {
+		dsn, err := hostDSN(ctx, resolver, dbName)
+		if err == nil {
+			conn, err := pgx.Connect(ctx, dsn)
+			if err == nil {
+				conn.Close(ctx)
+				return dsn, nil
+			}
+			lastErr = err
+		} else {
+			lastErr = err
+		}
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return "", fmt.Errorf("host DSN did not become connectable after %s: %w", timeout, lastErr)
+		case <-timer.C:
+		}
+	}
+}
+
+func hostDSN(ctx context.Context, resolver hostPortResolver, dbName string) (string, error) {
+	host, err := resolver.Host(ctx)
+	if err != nil {
+		return "", err
+	}
+	port, err := resolver.MappedPort(ctx, postgresPort)
+	if err != nil {
+		return "", err
+	}
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword("postgres", "postgres"),
+		Host:     net.JoinHostPort(host, port.Port()),
+		Path:     dbName,
+		RawQuery: "sslmode=disable",
+	}
+	return u.String(), nil
+}
+
 func start(t testing.TB, image, dbName string, extra ...testcontainers.ContainerCustomizer) *DB {
 	t.Helper()
 	ctx := context.Background()
@@ -181,10 +232,11 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 		postgres.WithDatabase(dbName),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
-		testcontainers.WithExposedPorts("5432/tcp"),
-		testcontainers.WithWaitStrategy(
+		testcontainers.WithExposedPorts(postgresPort),
+		testcontainers.WithWaitStrategyAndDeadline(3*time.Minute,
+			wait.ForListeningPort(postgresPort).WithStartupTimeout(3*time.Minute),
 			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(3 * time.Minute)),
+				WithOccurrence(2).WithStartupTimeout(3*time.Minute)),
 	}, extra...)
 	c, err := postgres.Run(ctx, image, opts...)
 	testcontainers.CleanupContainer(t, c)
@@ -194,7 +246,7 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 		}
 		t.Fatalf("testdb: start %s: %v", image, err)
 	}
-	dsn, err := c.ConnectionString(ctx, "sslmode=disable")
+	dsn, err := hostDSNWithRetry(ctx, c, dbName, 30*time.Second, 100*time.Millisecond)
 	if err != nil {
 		t.Fatalf("testdb: connection string: %v", err)
 	}

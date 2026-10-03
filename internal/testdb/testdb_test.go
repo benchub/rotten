@@ -2,10 +2,13 @@ package testdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/moby/moby/api/types/network"
 )
 
 func TestRottenRolesCanLogIn(t *testing.T) {
@@ -90,4 +93,43 @@ func TestStartObserved(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHostDSNWaitsForMappedPort(t *testing.T) {
+	resolver := &flakyPortResolver{
+		host:         "127.0.0.1",
+		failuresLeft: 3,
+		port:         network.MustParsePort("15432/tcp"),
+	}
+
+	dsn, err := hostDSNWithRetry(context.Background(), resolver, "observed", time.Second, 0)
+	if err != nil {
+		t.Fatalf("hostDSNWithRetry: %v", err)
+	}
+	if resolver.mappedCalls != 4 {
+		t.Fatalf("MappedPort calls = %d, want 4", resolver.mappedCalls)
+	}
+	if dsn != "postgres://postgres:postgres@127.0.0.1:15432/observed?sslmode=disable" {
+		t.Fatalf("DSN = %q", dsn)
+	}
+}
+
+type flakyPortResolver struct {
+	host         string
+	failuresLeft int
+	port         network.Port
+	mappedCalls  int
+}
+
+func (r *flakyPortResolver) Host(context.Context) (string, error) {
+	return r.host, nil
+}
+
+func (r *flakyPortResolver) MappedPort(context.Context, string) (network.Port, error) {
+	r.mappedCalls++
+	if r.failuresLeft > 0 {
+		r.failuresLeft--
+		return network.Port{}, errors.New(`port "5432/tcp" not found`)
+	}
+	return r.port, nil
 }
