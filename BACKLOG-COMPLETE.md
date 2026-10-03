@@ -618,3 +618,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Tests pass.
 - **Needs:** -12.
 - **Completed:** 2026-10-02, dc151b6. Covered by -40.
+
+### 20261001-113241-1: Fix the mean and stddev merge in mergeEvent.
+- **Do:** `mergeEvent` adds `b.calls` to `a.calls` before it builds the first `RunningStat`, so the first side is weighted by both call counts. For two events of two calls each (means 10 and 20), it gives a mean of 13.33 instead of 15. Also, `runningstat.Init` treats the stddev as a sample stddev (`sd^2*(n-1)`), but pg_stat_statements reports a population stddev. And when `n <= 1`, `Init` stores `sd` unsquared in `m_newS` and sets `m_oldS` to 0. `Merge` reads the second side's `m_oldS`, so a one-call second event's stddev is dropped. An unsquared `sd` only reaches `Merge` on the first side. Use the original count and the right variance formula.
+- **Red test:** Change the expected values in `TestMergeEventRunningStat` to the correct ones (mean 15 for the example above).
+- **Done when:** Tests pass with correct pooled mean and stddev.
+- **Needs:** -8.
+- **Completed:** 2026-10-02, 3ab8dd7.
+- **Notes:**
+  - `mergePopulationStats` pools the mean and population M2 using the original counts, matching how `pgss.WindowStats` computes the per-window stddev.
+  - The server-side `runningstat` use in `ingest/submit.go` is internally consistent (a sample stddev over per-window values), so it was left alone.
+  - The review was clean on the first round.
