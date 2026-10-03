@@ -458,3 +458,21 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Percentages:** the replica figure is 100 minus the primary figure, so the two always add up to 100.
   - **Partition pruning:** the window filters are applied before the per-event context total, and an EXPLAIN test checks that pruning happens.
   - **Cleanup:** `schema/example queries` is deleted. All five legacy queries now have replacements in `reports/`.
+
+### 20261001-103222-37: Build the worker's server client.
+- **Do:** Use a Connect client with TLS (system roots or a configured CA), a bearer key from `PassKeyFile`, HTTP/2 keepalive, per-call timeouts, and exponential backoff with jitter.
+- **Fit the server's limits (from -35):** Before sending, truncate each `normalized` to the server's `MaxNormalizedBytes` at a UTF-8 boundary, and clip context strings the same way. A batch the server rejects with `InvalidArgument` or `ResourceExhausted` is never retried, so the worker must not send one it can predict will fail. Log and count anything clipped.
+- **Red test:**
+  - Requests reach a test server with the right header.
+  - It retries `Unavailable` but doesn't retry `Unauthenticated` or `InvalidArgument`.
+  - It reconnects after the server restarts.
+  - A batch with an over-long `normalized` (including a multi-byte character at the cut point) is truncated to valid UTF-8 within the limit and accepted.
+- **Done when:** Passes.
+- **Needs:** -30, -31.
+- **Completed:** 2026-10-02, 35aa5bf.
+  - **Package:** `internal/serverclient`. The worker isn't wired to it yet; that's -39.
+  - **Shared validation:** limits and `ValidateHarvest` moved to `internal/harvestlimits`, which has no dependencies. Ingest delegates to it, and a test checks that the client doesn't pull in pgx or ingest.
+  - **Preflight:** the client runs the same validation on a clipped clone of the batch, minus the future-skew check, and never mutates the caller's batch.
+  - **Retries:** retried on Unavailable, DeadlineExceeded, Aborted and transport errors. Never retried on ResourceExhausted, InvalidArgument or the auth errors.
+  - **Defaults:** 30 s per call, 5 attempts, 200 ms–5 s jittered backoff, and stdlib HTTP/2 pings (`golang.org/x/net` was blocked by the sandbox and isn't needed).
+  - **Invalid UTF-8:** repaired with U+FFFD before clipping.

@@ -38,17 +38,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes, or -39 has removed `reportSamples`.
 - **Needs:** -34. Found in review of -34.
 
-### 20261001-103222-37: Build the worker's server client.
-- **Do:** Use a Connect client with TLS (system roots or a configured CA), a bearer key from `PassKeyFile`, HTTP/2 keepalive, per-call timeouts, and exponential backoff with jitter.
-- **Fit the server's limits (from -35):** Before sending, truncate each `normalized` to the server's `MaxNormalizedBytes` at a UTF-8 boundary, and clip context strings the same way. A batch the server rejects with `InvalidArgument` or `ResourceExhausted` is never retried, so the worker must not send one it can predict will fail. Log and count anything clipped.
-- **Red test:**
-  - Requests reach a test server with the right header.
-  - It retries `Unavailable` but doesn't retry `Unauthenticated` or `InvalidArgument`.
-  - It reconnects after the server restarts.
-  - A batch with an over-long `normalized` (including a multi-byte character at the cut point) is truncated to valid UTF-8 within the limit and accepted.
-- **Done when:** Passes.
-- **Needs:** -30, -31.
-
 ### 20261001-103222-38: Add the worker outbox.
 - **Do:** Add an `outbox` table in `internal/state`. Save the batch and the next snapshot in one transaction. A sender drains the outbox oldest first and deletes each batch on ack. Cap the outbox size, and when it's full, drop the oldest batches and count them.
 - **Crash gap:** Today the worker saves its snapshot right after starting the processEvent goroutines, without waiting for them. A crash after the save loses that window, and a crash between sending and the save counts it twice on restart. The outbox should close both gaps. Until then, document the risk in the `harvest` comment.
