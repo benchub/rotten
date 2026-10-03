@@ -42,16 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-48: Set up the UI skeleton.
-- **Do:** Create a Rails 8.1 app in `ui/` on Ruby 3.4, set up like this:
-  - RSpec, Capybara, FactoryBot, and Shoulda Matchers.
-  - importmap, Turbo, Stimulus, and standalone Tailwind.
-  - `ui/dev.Dockerfile` (with Chromium for system specs), kept separate from the production `ui/Dockerfile`.
-
-  It connects as `rotten_ui`, owns no migrations, and uses `schema_format :sql`. The test DB gets prepared with `rotten-server migrate`. Add `make test-ui` and `make test-all`. Add the UI to the `core` network in `dev/docker-compose.yaml`.
-- **Red test:** A request spec where `/up` returns 200 with the database up and 503 with it down.
-- **Done when:** `make test-all` passes.
-- **Needs:** -28, -105250-1.
 ### 20261001-103222-49: Add the users table and auth mode switch.
 - **Do:**
   - Add a migration for `users(id, email citext unique, name, provider, provider_uid, password_digest null, role viewer|admin, groups text[], active, last_login_at)`, and grant it to `rotten_ui`.
@@ -171,4 +161,10 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** -131002-1 collapses schemas in object lists by type, using an allow-list. Rarer forms are left alone: OPERATOR, CAST, TRANSFORM, DOMCONSTRAINT, and collations and conversions in ALTER forms. Audit them and add the ones whose list shapes are clear, with golden cases.
 - **Red test:** Golden pairs for each newly handled type, plus negative cases for anything that's still left alone.
 - **Done when:** Passes, and `make golden` shows only additions.
+- **Needs:** none.
+
+### 20261003-120000-1: Build the UI dev image natively on arm64 if possible.
+- **Do:** `make ui-image` and the compose `ui` service force `--platform linux/amd64`, so on Apple Silicon the RSpec and Chromium image runs under emulation. Find out why it was pinned (Chromium and chromedriver availability on Debian arm64?). If a native build works, use the native platform; if not, document why the pin stays.
+- **Red test:** A smoke check that `make test-ui` passes with the image built for the native platform. Or, if the pin stays, a comment in the Makefile and compose file explaining it.
+- **Done when:** `make test-all` passes on this arm64 host without emulation, or the pin is justified.
 - **Needs:** none.

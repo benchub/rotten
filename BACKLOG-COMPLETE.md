@@ -796,3 +796,22 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
     - `123::text`, which normalizes to `$1::text`.
     - `::text` against `name` or `char(n)` columns.
   - **Golden changes:** five additions only.
+
+### 20261001-103222-48: Set up the UI skeleton.
+- **Do:** Create a Rails 8.1 app in `ui/` on Ruby 3.4, set up like this:
+  - RSpec, Capybara, FactoryBot, and Shoulda Matchers.
+  - importmap, Turbo, Stimulus, and standalone Tailwind.
+  - `ui/dev.Dockerfile` (with Chromium for system specs), kept separate from the production `ui/Dockerfile`.
+
+  It connects as `rotten_ui`, owns no migrations, and uses `schema_format :sql`. The test DB gets prepared with `rotten-server migrate`. Add `make test-ui` and `make test-all`. Add the UI to the `core` network in `dev/docker-compose.yaml`.
+- **Red test:** A request spec where `/up` returns 200 with the database up and 503 with it down.
+- **Done when:** `make test-all` passes.
+- **Needs:** -28, -105250-1.
+- **Completed:** 2026-10-03, 9c2ee1f.
+  - **Review fixes:**
+    - The compose `ui` service also joins a non-internal `ui-public` network so the host port works. The worker shares no network with the UI.
+    - Production requires `DATABASE_URL`. Asset precompile uses a placeholder.
+    - When `/up` times out, it discards only its own connection and returns 503, not 500.
+    - The `pg_isready` loop in `test-ui` is capped and fails loudly.
+  - **`make test-all` is now the gate.**
+  - **Follow-up:** 20261003-120000-1, the amd64-pinned UI dev image.
