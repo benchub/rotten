@@ -5,9 +5,7 @@ import (
 	"testing"
 )
 
-// These tests characterize mergeEvent as it behaves today. Some of the
-// expected values encode known oddities (see the comments), not correct
-// statistics. Don't "fix" an expected value without a backlog task.
+// These tests characterize mergeEvent as it behaves today.
 
 func approx(t *testing.T, name string, got, want float64) {
 	t.Helper()
@@ -81,62 +79,77 @@ func TestMergeEventSumsMinMax(t *testing.T) {
 	}
 }
 
-// Hand-computed with runningstat v0.2.0 math. Init(n, mean, sd) sets
-// S = sd^2*(n-1) when n > 1. When n <= 1, Init stores sd unsquared in
-// m_newS but sets m_oldS to 0. Merge reads the first side's m_newS and the
-// second side's m_oldS, so an unsquared sd only matters on the first side.
-// On the second side, sd is dropped. Merge gives
-// n = n1+n2, mean = m1 + n2*(m2-m1)/n, S = S1 + S2 + n1*n2*(m2-m1)^2/n,
-// and stddev = sqrt(S/(n-1)).
-//
-// Oddity: calls is summed before the first RunningStat is built, so the
-// first side is weighted by a.calls+b.calls instead of a.calls.
 func TestMergeEventRunningStat(t *testing.T) {
 	t.Run("counts above one", func(t *testing.T) {
 		a := QueryEvent{calls: 2, mean_time: 10, stddev_time: 2, context: map[string]uint32{}}
 		b := QueryEvent{calls: 2, mean_time: 20, stddev_time: 4, context: map[string]uint32{}}
 		m := mergeEvent(a, b)
-		// rs1 = Init(4, 10, 2): S1 = 4*3 = 12.
-		// rs2 = Init(2, 20, 4): S2 = 16*1 = 16.
-		// n = 6, delta = 10, mean = 10 + 2*10/6 = 40/3.
-		// S = 12 + 16 + 4*2*100/6 = 28 + 400/3 = 484/3. var = 484/15.
-		approx(t, "mean_time", m.mean_time, 40.0/3)
-		approx(t, "stddev_time", m.stddev_time, math.Sqrt(484.0/15))
-		// For contrast, weighting by the real counts would give mean 15 and
-		// stddev sqrt(40). This test locks in today's behavior.
+		approx(t, "mean_time", m.mean_time, 15)
+		approx(t, "stddev_time", m.stddev_time, math.Sqrt(35))
 	})
 
 	t.Run("single calls", func(t *testing.T) {
 		a := QueryEvent{calls: 1, mean_time: 5, stddev_time: 0, context: map[string]uint32{}}
 		b := QueryEvent{calls: 1, mean_time: 9, stddev_time: 0, context: map[string]uint32{}}
 		m := mergeEvent(a, b)
-		// rs1 = Init(2, 5, 0): S1 = 0. rs2 = Init(1, 9, 0): S2 = 0.
-		// n = 3, delta = 4, mean = 5 + 4/3 = 19/3.
-		// S = 2*1*16/3 = 32/3. var = 16/3.
-		approx(t, "mean_time", m.mean_time, 19.0/3)
-		approx(t, "stddev_time", m.stddev_time, math.Sqrt(16.0/3))
+		approx(t, "mean_time", m.mean_time, 7)
+		approx(t, "stddev_time", m.stddev_time, 2)
 	})
 
-	t.Run("second side with one call drops its stddev", func(t *testing.T) {
-		a := QueryEvent{calls: 1, mean_time: 5, stddev_time: 0, context: map[string]uint32{}}
-		b := QueryEvent{calls: 1, mean_time: 9, stddev_time: 3, context: map[string]uint32{}}
+	t.Run("unequal counts", func(t *testing.T) {
+		a := QueryEvent{calls: 3, mean_time: 10, stddev_time: 0, context: map[string]uint32{}}
+		b := QueryEvent{calls: 1, mean_time: 22, stddev_time: 0, context: map[string]uint32{}}
 		m := mergeEvent(a, b)
-		// rs2 = Init(1, 9, 3): m_oldS = 0, so b's sd of 3 never reaches Merge.
-		// The result matches the "single calls" case: mean 19/3, var 16/3.
-		approx(t, "mean_time", m.mean_time, 19.0/3)
-		approx(t, "stddev_time", m.stddev_time, math.Sqrt(16.0/3))
+		approx(t, "mean_time", m.mean_time, 13)
+		approx(t, "stddev_time", m.stddev_time, math.Sqrt(27))
 	})
 
-	t.Run("fractional calls truncate in Init", func(t *testing.T) {
+	t.Run("one-call side with zero stddev", func(t *testing.T) {
+		a := QueryEvent{calls: 4, mean_time: 10, stddev_time: 2, context: map[string]uint32{}}
+		b := QueryEvent{calls: 1, mean_time: 20, stddev_time: 0, context: map[string]uint32{}}
+		m := mergeEvent(a, b)
+		approx(t, "mean_time", m.mean_time, 12)
+		approx(t, "stddev_time", m.stddev_time, math.Sqrt(19.2))
+	})
+
+	t.Run("nonzero stddevs match population samples", func(t *testing.T) {
+		aSamples := []float64{8, 10, 12, 14}
+		bSamples := []float64{12, 18, 24}
+		a := queryEventFromSamples(aSamples)
+		b := queryEventFromSamples(bSamples)
+		m := mergeEvent(a, b)
+		mean, sd := populationStats(append(aSamples, bSamples...))
+		approx(t, "mean_time", m.mean_time, mean)
+		approx(t, "stddev_time", m.stddev_time, sd)
+	})
+
+	t.Run("fractional calls use original counts", func(t *testing.T) {
 		a := QueryEvent{calls: 1.5, mean_time: 4, stddev_time: 0, context: map[string]uint32{}}
 		b := QueryEvent{calls: 1.9, mean_time: 10, stddev_time: 0, context: map[string]uint32{}}
 		m := mergeEvent(a, b)
-		// calls = 3.4. rs1 = Init(int64(3.4)=3, 4, 0). rs2 = Init(int64(1.9)=1, 10, 0).
-		// n = 4, delta = 6, mean = 4 + 6/4 = 5.5. S = 3*1*36/4 = 27. var = 9.
 		approx(t, "calls", m.calls, 3.4)
-		approx(t, "mean_time", m.mean_time, 5.5)
-		approx(t, "stddev_time", m.stddev_time, 3)
+		approx(t, "mean_time", m.mean_time, 25.0/3.4)
+		approx(t, "stddev_time", m.stddev_time, math.Sqrt((36*(1.5*1.9/3.4))/3.4))
 	})
+}
+
+func queryEventFromSamples(samples []float64) QueryEvent {
+	mean, sd := populationStats(samples)
+	return QueryEvent{calls: float64(len(samples)), mean_time: mean, stddev_time: sd, context: map[string]uint32{}}
+}
+
+func populationStats(samples []float64) (float64, float64) {
+	var sum float64
+	for _, sample := range samples {
+		sum += sample
+	}
+	mean := sum / float64(len(samples))
+	var m2 float64
+	for _, sample := range samples {
+		delta := sample - mean
+		m2 += delta * delta
+	}
+	return mean, math.Sqrt(m2 / float64(len(samples)))
 }
 
 // TestMergeEventAbsentStddev: an absent stddev on either side makes the
@@ -157,7 +170,7 @@ func TestMergeEventAbsentStddev(t *testing.T) {
 			t.Errorf("%v+%v: stddev_time = 0, want the merged value", c.a, c.b)
 		}
 		// Same mean as TestMergeEventRunningStat's first case.
-		approx(t, "mean_time", m.mean_time, (4*10+2*20)/6.0)
+		approx(t, "mean_time", m.mean_time, 15)
 	}
 }
 

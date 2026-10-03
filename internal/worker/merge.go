@@ -1,6 +1,6 @@
 package worker
 
-import runningstat "github.com/benchub/runningstat"
+import "math"
 
 func (w *Worker) fingerprintCount() int {
 	return 0
@@ -19,6 +19,8 @@ func (w *Worker) stillProcessing() uint32 {
 // context map, which is updated in place. Everything else (query, window)
 // comes from a.
 func mergeEvent(a, b QueryEvent) QueryEvent {
+	aCalls := a.calls
+	bCalls := b.calls
 	a.calls += b.calls
 	a.total_time += b.total_time
 	if a.min_time > b.min_time {
@@ -29,17 +31,7 @@ func mergeEvent(a, b QueryEvent) QueryEvent {
 	}
 	a.minmax_lifetime = a.minmax_lifetime || b.minmax_lifetime
 
-	rs1 := runningstat.RunningStat{}
-	rs2 := runningstat.RunningStat{}
-
-	// Note: a.calls already includes b.calls here. That's how it's always
-	// worked, so this characterization keeps it.
-	rs1.Init(int64(a.calls), a.mean_time, a.stddev_time)
-	rs2.Init(int64(b.calls), b.mean_time, b.stddev_time)
-	rs1.Merge(rs2)
-
-	a.mean_time = rs1.RunningStatMean()
-	a.stddev_time = rs1.RunningStatDeviation()
+	a.mean_time, a.stddev_time = mergePopulationStats(aCalls, a.mean_time, a.stddev_time, bCalls, b.mean_time, b.stddev_time)
 	a.stddev_absent = a.stddev_absent || b.stddev_absent
 	if a.stddev_absent {
 		a.stddev_time = 0
@@ -64,4 +56,18 @@ func mergeEvent(a, b QueryEvent) QueryEvent {
 	}
 
 	return a
+}
+
+func mergePopulationStats(aCalls, aMean, aStddev, bCalls, bMean, bStddev float64) (float64, float64) {
+	calls := aCalls + bCalls
+	if calls <= 0 {
+		return 0, 0
+	}
+
+	mean := (aMean*aCalls + bMean*bCalls) / calls
+	aM2 := aStddev * aStddev * aCalls
+	bM2 := bStddev * bStddev * bCalls
+	delta := bMean - aMean
+	m2 := aM2 + bM2 + delta*delta*aCalls*bCalls/calls
+	return mean, math.Sqrt(m2 / calls)
 }
