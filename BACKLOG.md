@@ -100,13 +100,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-45: Report on queries slower than their history.
-- **Do:** Add `reports/outliers.sql`. Add the missing `ORDER BY` before `LIMIT`, and define how source 0 compares with each source's own stats.
-- **Fixture:** `fingerprint_stats.type` has no `time` value. Use `mean_time`. The fixture's outlier history has mean 5 on source 0 and mean 8 on its own source.
-- **Red test:** The fixture's planted outlier gets returned, along with its overall mean and deviation.
-- **Done when:** Passes.
-- **Needs:** -43.
-
 ### 20261001-103222-46: Report on replica utilization.
 - **Do:** Add `reports/replica_utilization_by_job.sql` and `..._by_controller_action.sql`. Make the role names parameters instead of hard-coding `master` and `slave`. Use full outer joins so work that only runs on one side still shows up.
 - **Red test:** A job that only runs on the primary shows 100% primary. Mixed jobs show the right percentages.

@@ -424,3 +424,15 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Config:** a JSON file in the worker's format, with keys `DSN`, `Listen`, `TLSCert`, `TLSKey`, `ShutdownTimeout` and `HealthTimeout`. Precedence is flags, then `ROTTEN_SERVER_*` env vars, then the file, then defaults.
   - **Health:** `/healthz` is an unauthenticated readiness check that pings the DB. It times out after 1 s and doesn't leak DB errors.
   - **Shutdown:** SIGTERM drains in-flight calls for up to `ShutdownTimeout` (10 s by default). After that, request contexts are cancelled so stuck transactions roll back. The handler wait is bounded and the process exits nonzero.
+
+### 20261001-103222-45: Report on queries slower than their history.
+- **Do:** Add `reports/outliers.sql`. Add the missing `ORDER BY` before `LIMIT`, and define how source 0 compares with each source's own stats.
+- **Fixture:** `fingerprint_stats.type` has no `time` value. Use `mean_time`. The fixture's outlier history has mean 5 on source 0 and mean 8 on its own source.
+- **Red test:** The fixture's planted outlier gets returned, along with its overall mean and deviation.
+- **Done when:** Passes.
+- **Needs:** -43.
+- **Completed:** 2026-10-02, 4306910.
+  - **Baseline:** each source's own history decides what counts as an outlier. The source 0 (global) history is returned only for context.
+  - **History correction:** before scoring, the in-range samples are subtracted from the stored history (both source and global), because ingest has already merged them. The subtraction uses the sample-variance algebra.
+  - **Outlier test:** a query is an outlier when its recent mean exceeds the history mean plus `$7` × stddev, and the corrected history has at least `$8` samples. When the stddev is 0, it's an outlier if the recent mean exceeds `$9` × the history mean. The recommended defaults are 3σ, 30 samples, and 2×.
+  - **Legacy worker caveat:** until -39 lands, set `$5` at least 2 × `ObservationInterval` behind now.
