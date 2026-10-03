@@ -129,6 +129,33 @@ How to use it
    reconnecting clients always verify the current certificate. SIGINT/SIGTERM stop
    the listener and reload loop; in-flight request draining, health checks, and
    operational configuration remain task -36.
+
+   **Ingest validation limits.** The server rejects semantically invalid
+   `SubmitHarvest` and `Register` requests before opening a database transaction.
+
+   | Input | Limit |
+   | --- | ---: |
+   | Connect request body | 32 MiB |
+   | Fingerprint aggregates per harvest | 2000 |
+   | Query-context entries per harvest | 2000 |
+   | Fingerprint string | 128 bytes |
+   | Normalized query string | 8 KiB |
+   | Context strings | 512 bytes |
+   | Floating metric values | 1e15 ms |
+   | Harvest window duration | 24 hours |
+   | Harvest window future skew | 5 minutes |
+   | Register source strings | 255 bytes |
+   | Register `worker_version` | 128 bytes |
+
+   The aggregate and context caps cover the worker's current top-N selection:
+   the union of 100 entries for each of 19 metrics, rounded up to 2000. The
+   24-hour window limit leaves room for valid worker configurations and outbox
+   replay; there is no "too far in the past" check. Future worker RPC sending
+   must truncate normalized query strings to 8 KiB at a UTF-8 boundary before
+   sending. Window times must be ordered and no more than five minutes ahead of
+   the server clock. Numeric metric fields must be finite and non-negative. All
+   stored text must be valid UTF-8 and cannot contain NUL bytes, matching
+   PostgreSQL `text`.
 5. Install `pg_stat_statements` in the monitored database:
  - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
  - run `CREATE EXTENSION pg_stat_statements` in the monitored database

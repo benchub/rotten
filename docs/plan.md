@@ -86,6 +86,31 @@ On the worker. That keeps the `pg_query` C parser away from input that comes in 
 
 We'll use **unary calls over a long-lived, kept-alive connection**, not long streams. A batch goes out every observation window, so streaming adds complexity without much benefit. Unary calls also make revocation simple: the server checks the key on every call.
 
+Semantic validation runs before any database transaction:
+
+| Input | Limit |
+| --- | ---: |
+| Connect request body | 32 MiB |
+| Fingerprint aggregates per harvest | 2000 |
+| Query-context entries per harvest | 2000 |
+| Fingerprint string | 128 bytes |
+| Normalized query string | 8 KiB |
+| Context strings | 512 bytes |
+| Floating metric values | 1e15 ms |
+| Harvest window duration | 24 hours |
+| Harvest window future skew | 5 minutes |
+| Register source identity strings | 255 bytes |
+| Register worker version | 128 bytes |
+
+The aggregate and context caps cover the worker's current top-N selection: the
+union of 100 entries for each of 19 metrics, rounded up to 2000. The 32 MiB
+transport cap fits a worst-case semantic-limit batch with headroom. Future
+worker RPC sending must truncate normalized query strings to 8 KiB at a UTF-8
+boundary before sending. Harvest windows must be ordered and no more than five
+minutes in the future; there is no "too far in the past" check because outbox
+replay must work. Floating metric counters must be finite and non-negative.
+Stored text must be valid UTF-8 and NUL-free, matching PostgreSQL `text`.
+
 ### Fault tolerance.
 
 - **Exactly-once effect.** Each batch has a deterministic `batch_id` built from the source and the window. The server records it in `ingested_batches` in the same transaction as the data. A retried batch gets acked without writing anything twice.

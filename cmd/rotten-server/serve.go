@@ -93,6 +93,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	path, handler := rottenv1connect.NewIngestServiceHandler(
 		ingest.NewHandler(pool, ingest.Options{Logger: logger}),
 		connect.WithInterceptors(authenticator.Interceptor()),
+		connect.WithReadMaxBytes(ingest.MaxIngestMessageBytes),
 	)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)

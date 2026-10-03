@@ -188,6 +188,77 @@ func TestRegisterRejectsReservedLogicalSource(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsBadStringInputsWithoutWriting(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*rottenv1.RegisterRequest)
+	}{
+		{
+			name: "project too long",
+			mutate: func(msg *rottenv1.RegisterRequest) {
+				msg.Project = strings.Repeat("p", 256)
+			},
+		},
+		{
+			name: "environment invalid utf8",
+			mutate: func(msg *rottenv1.RegisterRequest) {
+				msg.Environment = string([]byte{0xff})
+			},
+		},
+		{
+			name: "cluster has nul",
+			mutate: func(msg *rottenv1.RegisterRequest) {
+				msg.Cluster = "east\x00one"
+			},
+		},
+		{
+			name: "role too long",
+			mutate: func(msg *rottenv1.RegisterRequest) {
+				msg.Role = strings.Repeat("r", 256)
+			},
+		},
+		{
+			name: "fqdn too long",
+			mutate: func(msg *rottenv1.RegisterRequest) {
+				msg.Fqdn = strings.Repeat("d", 256)
+			},
+		},
+		{
+			name: "worker version too long",
+			mutate: func(msg *rottenv1.RegisterRequest) {
+				msg.WorkerVersion = strPtr(strings.Repeat("v", 129))
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupRegister(t, "db-register-validation.example")
+			req := registerRequest("billing", "prod", "east", "primary", "db-register-validation.example")
+			tc.mutate(req.Msg)
+
+			_, err := f.handler.Register(f.ctx, req)
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("Register err = %v, want InvalidArgument", err)
+			}
+			if strings.Contains(err.Error(), strings.Repeat("p", 128)) || strings.Contains(err.Error(), strings.Repeat("v", 128)) {
+				t.Fatalf("Register error echoed large input: %v", err)
+			}
+			wantSourceRows(t, f.owner, "billing", "prod", "east", "primary", "db-register-validation.example", 0, 0)
+		})
+	}
+}
+
+func TestRegisterAllowsBoundaryStringLengths(t *testing.T) {
+	f := setupRegister(t, "db-register-boundary.example")
+	req := registerRequest(strings.Repeat("p", 255), strings.Repeat("e", 255), strings.Repeat("c", 255), strings.Repeat("r", 255), "db-register-boundary.example")
+	req.Msg.WorkerVersion = strPtr(strings.Repeat("v", 128))
+
+	if _, err := f.handler.Register(f.ctx, req); err != nil {
+		t.Fatalf("Register boundary: %v", err)
+	}
+	wantSourceRows(t, f.owner, strings.Repeat("p", 255), strings.Repeat("e", 255), strings.Repeat("c", 255), strings.Repeat("r", 255), "db-register-boundary.example", 1, 1)
+}
+
 func TestRegisterUnavailableHidesDatabaseErrorAndLogsDetail(t *testing.T) {
 	f := setupRegister(t, "db5.example.com")
 	var logs bytes.Buffer

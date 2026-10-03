@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -40,11 +41,13 @@ type Beginner interface {
 type Handler struct {
 	db     Beginner
 	logger *slog.Logger
+	now    func() time.Time
 }
 
 // Options configures a Handler. Zero values take the defaults.
 type Options struct {
 	Logger *slog.Logger
+	Now    func() time.Time
 }
 
 // NewHandler returns a Connect handler backed by db.
@@ -56,7 +59,10 @@ func NewHandler(db Beginner, opts ...Options) *Handler {
 	if opt.Logger == nil {
 		opt.Logger = slog.Default()
 	}
-	return &Handler{db: db, logger: opt.Logger}
+	if opt.Now == nil {
+		opt.Now = time.Now
+	}
+	return &Handler{db: db, logger: opt.Logger, now: opt.Now}
 }
 
 // Register creates or reuses the source rows for this authenticated worker.
@@ -64,6 +70,14 @@ func (h *Handler) Register(ctx context.Context, req *connect.Request[rottenv1.Re
 	key, ok := auth.FromContext(ctx)
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing pass key"))
+	}
+	if req.Msg == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("register request is required"))
+	}
+	if req.Msg.WorkerVersion != nil {
+		if err := validateTextField("worker_version", req.Msg.GetWorkerVersion(), MaxWorkerVersionBytes, true); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 	}
 	src := Source{
 		Project:     req.Msg.GetProject(),
@@ -169,8 +183,8 @@ func validateSource(src Source) error {
 		"role":        src.Role,
 		"fqdn":        src.FQDN,
 	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s is empty", name)
+		if err := validateTextField(name, value, MaxSourceStringBytes, false); err != nil {
+			return err
 		}
 	}
 	return nil

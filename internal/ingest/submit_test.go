@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	runningstat "github.com/benchub/runningstat"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
@@ -369,6 +370,222 @@ func TestSubmitHarvestRejectsDuplicateFingerprints(t *testing.T) {
 	}
 	if n := countSubmitRows(t, f.owner, "rotten.fingerprint_stats"); n != 0 {
 		t.Fatalf("fingerprint_stats rows = %d, want 0", n)
+	}
+}
+
+func TestSubmitHarvestValidationRejectsBadInputBeforeWriting(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*rottenv1.SubmitHarvestRequest)
+	}{
+		{
+			name: "more than 2000 aggregates",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates = nil
+				for i := range 2001 {
+					msg.Aggregates = append(msg.Aggregates, statsAggregate(fmt.Sprintf("fp-too-many-%d", i), 1, "select 1"))
+				}
+			},
+		},
+		{
+			name: "more than 2000 contexts",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Contexts = nil
+				for i := range 2001 {
+					msg.Aggregates[0].Contexts = append(msg.Aggregates[0].Contexts, &rottenv1.QueryContext{
+						Controller: fmt.Sprintf("users-%d", i),
+						Count:      1,
+					})
+				}
+			},
+		},
+		{
+			name: "fingerprint longer than 128 bytes",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Fingerprint = strings.Repeat("f", 129)
+			},
+		},
+		{
+			name: "normalized longer than 8192 bytes",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Normalized = strings.Repeat("s", 8193)
+			},
+		},
+		{
+			name: "context string longer than 512 bytes",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Contexts[0].Controller = strings.Repeat("c", 513)
+			},
+		},
+		{
+			name: "invalid utf8 string",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Contexts[0].Action = string([]byte{0xff})
+			},
+		},
+		{
+			name: "nul byte string",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Contexts[0].JobTag = "job\x00tag"
+			},
+		},
+		{
+			name: "window end equals start",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				start := msg.GetWindowStart().AsTime()
+				msg.WindowEnd = timestamppb.New(start)
+				msg.BatchId = fmt.Sprintf("%d:%d:%d", msg.GetPhysicalSourceId(), start.UnixMicro(), start.UnixMicro())
+			},
+		},
+		{
+			name: "window more than five minutes in future",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				start := time.Now().UTC().Truncate(time.Second).Add(6 * time.Minute)
+				end := start.Add(30 * time.Second)
+				msg.WindowStart = timestamppb.New(start)
+				msg.WindowEnd = timestamppb.New(end)
+				msg.BatchId = fmt.Sprintf("%d:%d:%d", msg.GetPhysicalSourceId(), start.UnixMicro(), end.UnixMicro())
+			},
+		},
+		{
+			name: "window longer than 24 hours",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				start := msg.GetWindowStart().AsTime()
+				end := start.Add(24*time.Hour + time.Microsecond)
+				msg.WindowEnd = timestamppb.New(end)
+				msg.BatchId = fmt.Sprintf("%d:%d:%d", msg.GetPhysicalSourceId(), start.UnixMicro(), end.UnixMicro())
+			},
+		},
+		{
+			name: "negative counter",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Metrics.TotalTime = -1
+			},
+		},
+		{
+			name: "nan counter",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Metrics.MeanTime = math.NaN()
+			},
+		},
+		{
+			name: "infinite counter",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Metrics.StddevTime = proto.Float64(math.Inf(1))
+			},
+		},
+		{
+			name: "huge total_time counter",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Metrics.TotalTime = 1e200
+			},
+		},
+		{
+			name: "huge stddev_time counter",
+			mutate: func(msg *rottenv1.SubmitHarvestRequest) {
+				msg.Aggregates[0].Metrics.StddevTime = proto.Float64(1e200)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupSubmit(t)
+			start := time.Now().UTC().Truncate(time.Second).Add(-45 * time.Minute)
+			req := harvestRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start, tc.name)
+			tc.mutate(req.Msg)
+
+			_, err := f.handler.SubmitHarvest(f.ctx, req)
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("SubmitHarvest err = %v, want InvalidArgument", err)
+			}
+			if strings.Contains(err.Error(), strings.Repeat("s", 128)) || strings.Contains(err.Error(), strings.Repeat("c", 128)) {
+				t.Fatalf("SubmitHarvest error echoed large input: %v", err)
+			}
+			wantNoSubmitWrites(t, f.owner)
+		})
+	}
+}
+
+func TestSubmitHarvestValidationRejectsEachInvalidFloatMetric(t *testing.T) {
+	mutators := map[string]func(*rottenv1.Metrics){
+		"total_time":     func(m *rottenv1.Metrics) { m.TotalTime = -1 },
+		"min_time":       func(m *rottenv1.Metrics) { m.MinTime = math.NaN() },
+		"max_time":       func(m *rottenv1.Metrics) { m.MaxTime = math.Inf(1) },
+		"mean_time":      func(m *rottenv1.Metrics) { m.MeanTime = -1 },
+		"stddev_time":    func(m *rottenv1.Metrics) { m.StddevTime = proto.Float64(-1) },
+		"blk_read_time":  func(m *rottenv1.Metrics) { m.BlkReadTime = math.NaN() },
+		"blk_write_time": func(m *rottenv1.Metrics) { m.BlkWriteTime = math.Inf(-1) },
+	}
+	for name, mutate := range mutators {
+		t.Run(name, func(t *testing.T) {
+			f := setupSubmit(t)
+			start := time.Now().UTC().Truncate(time.Second).Add(-45 * time.Minute)
+			req := harvestRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start, name)
+			req.Msg.Aggregates[0].Metrics.StddevTime = proto.Float64(0)
+			mutate(req.Msg.Aggregates[0].Metrics)
+
+			_, err := f.handler.SubmitHarvest(f.ctx, req)
+			if connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("SubmitHarvest err = %v, want InvalidArgument", err)
+			}
+			wantNoSubmitWrites(t, f.owner)
+		})
+	}
+}
+
+func TestSubmitHarvestValidationAllowsBoundaryValues(t *testing.T) {
+	f := setupSubmit(t)
+	start := time.Now().UTC().Truncate(time.Second).Add(-25 * time.Hour)
+	req := harvestRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start, "boundary")
+	req.Msg.Aggregates[0].Fingerprint = strings.Repeat("f", 128)
+	req.Msg.Aggregates[0].Normalized = strings.Repeat("n", 8192)
+	req.Msg.Aggregates[0].Contexts[0].Controller = strings.Repeat("c", 512)
+	req.Msg.Aggregates[0].Contexts[0].Action = strings.Repeat("a", 512)
+	req.Msg.Aggregates[0].Contexts[0].JobTag = strings.Repeat("j", 512)
+	req.Msg.Aggregates[0].Metrics.TotalTime = ingest.MaxFloatMetricValue
+	req.Msg.Aggregates[0].Metrics.MinTime = ingest.MaxFloatMetricValue
+	req.Msg.Aggregates[0].Metrics.MaxTime = ingest.MaxFloatMetricValue
+	req.Msg.Aggregates[0].Metrics.MeanTime = ingest.MaxFloatMetricValue
+	req.Msg.Aggregates[0].Metrics.StddevTime = proto.Float64(ingest.MaxFloatMetricValue)
+	req.Msg.Aggregates[0].Metrics.BlkReadTime = ingest.MaxFloatMetricValue
+	req.Msg.Aggregates[0].Metrics.BlkWriteTime = ingest.MaxFloatMetricValue
+	req.Msg.WindowEnd = timestamppb.New(start.Add(24 * time.Hour))
+	req.Msg.BatchId = fmt.Sprintf("%d:%d:%d", req.Msg.GetPhysicalSourceId(), start.UnixMicro(), start.Add(24*time.Hour).UnixMicro())
+
+	resp, err := f.handler.SubmitHarvest(f.ctx, req)
+	if err != nil {
+		t.Fatalf("SubmitHarvest boundary: %v", err)
+	}
+	if resp.Msg.GetStatus() != rottenv1.SubmitHarvestResponse_STATUS_ACCEPTED {
+		t.Fatalf("status = %v, want ACCEPTED", resp.Msg.GetStatus())
+	}
+	if n := countSubmitRows(t, f.owner, "rotten.events"); n != 1 {
+		t.Fatalf("events rows = %d, want 1", n)
+	}
+}
+
+func TestSubmitHarvestValidationUsesInjectedClockForFutureLimit(t *testing.T) {
+	f := setupSubmit(t)
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	f.handler = ingest.NewHandler(f.ingest, ingest.Options{Now: func() time.Time { return now }})
+	start := now.Add(4*time.Minute + 30*time.Second)
+	accepted := harvestRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start, "future-boundary")
+	resp, err := f.handler.SubmitHarvest(f.ctx, accepted)
+	if err != nil {
+		t.Fatalf("SubmitHarvest ending exactly five minutes in future: %v", err)
+	}
+	if resp.Msg.GetStatus() != rottenv1.SubmitHarvestResponse_STATUS_ACCEPTED {
+		t.Fatalf("status = %v, want ACCEPTED", resp.Msg.GetStatus())
+	}
+
+	rejectedStart := now.Add(4*time.Minute + 30*time.Second + time.Microsecond)
+	rejected := harvestRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), rejectedStart, "future-over")
+	_, err = f.handler.SubmitHarvest(f.ctx, rejected)
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("SubmitHarvest more than five minutes in future err = %v, want InvalidArgument", err)
+	}
+	if n := countSubmitRows(t, f.owner, "rotten.ingested_batches"); n != 1 {
+		t.Fatalf("ingested_batches rows = %d, want only accepted boundary batch", n)
 	}
 }
 
@@ -868,4 +1085,19 @@ func countSubmitRows(t *testing.T, pool *pgxpool.Pool, table string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func wantNoSubmitWrites(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	for _, table := range []string{
+		"rotten.events",
+		"rotten.event_context",
+		"rotten.ingested_batches",
+		"rotten.fingerprints",
+		"rotten.fingerprint_stats",
+	} {
+		if n := countSubmitRows(t, pool, table); n != 0 {
+			t.Fatalf("%s rows = %d, want 0", table, n)
+		}
+	}
 }

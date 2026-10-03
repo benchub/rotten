@@ -142,7 +142,7 @@ func TestParseFailuresCountedAndSampled(t *testing.T) {
 	if !strings.Contains(got, "fingerprint failure samples (up to 5):") {
 		t.Errorf("failure samples missing from progress: %s", got)
 	}
-	for i, d := range topNDeltas(deltas, 100) {
+	for i, d := range topNDeltas(deltas, topDeltasPerMetric) {
 		quoted := fmt.Sprintf("%q", d.Query)
 		if present := strings.Contains(got, quoted); present != (i < 5) {
 			t.Errorf("sample %d present = %v, want %v: %s", i, present, i < 5, got)

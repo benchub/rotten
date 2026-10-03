@@ -292,7 +292,7 @@ func (w *Worker) harvest(reader *pgss.Reader, texts *pgss.TextCache, now time.Ti
 // them by fingerprint, and hands each merged event to processEvent.
 func (w *Worker) send(ctx context.Context, texts *pgss.TextCache, deltas []pgss.Delta, start, end time.Time) {
 	cfg := w.cfg
-	picked := topNDeltas(deltas, 100)
+	picked := topNDeltas(deltas, topDeltasPerMetric)
 	rows := make([]pgss.Stat, len(picked))
 	for i := range picked {
 		rows[i] = picked[i].Stat

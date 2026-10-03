@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benchub/rotten/internal/ingest"
 	"github.com/benchub/rotten/internal/pgss"
 )
 
@@ -130,6 +131,16 @@ func TestTopNDeltasPerMetric(t *testing.T) {
 	}
 	if ids[200] != 0 || len(got) != 19 {
 		t.Errorf("kept %d rows (query 200: %d), want 19 without 200", len(got), ids[200])
+	}
+}
+
+func TestIngestLimitsCoverWorkerTopDeltas(t *testing.T) {
+	workerMaxPicked := topDeltasPerMetric * len(deltaMetrics)
+	if ingest.MaxHarvestAggregates < workerMaxPicked {
+		t.Fatalf("MaxHarvestAggregates = %d, want at least worker top-delta bound %d", ingest.MaxHarvestAggregates, workerMaxPicked)
+	}
+	if ingest.MaxHarvestContexts < workerMaxPicked {
+		t.Fatalf("MaxHarvestContexts = %d, want at least worker top-delta bound %d", ingest.MaxHarvestContexts, workerMaxPicked)
 	}
 }
 

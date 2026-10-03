@@ -6,6 +6,8 @@ import (
 	"github.com/benchub/rotten/internal/pgss"
 )
 
+const topDeltasPerMetric = 100
+
 // eventFromDelta maps a window's delta onto the worker's event fields. The
 // counters are the window's changes. Mean and stddev come from
 // pgss.WindowStats; a stddev it flags as unreliable is recorded as absent

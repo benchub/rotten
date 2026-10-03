@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,30 @@ type stubServer struct {
 	gotInfo  *rottenv1.RegisterRequest
 	gotBatch *rottenv1.SubmitHarvestRequest
 	gotProto string
+}
+
+func TestReadMaxBytesRejectsOversizedMessageBeforeHandler(t *testing.T) {
+	stub := &stubServer{}
+	path, handler := rottenv1connect.NewIngestServiceHandler(stub, connect.WithReadMaxBytes(256))
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := rottenv1connect.NewIngestServiceClient(srv.Client(), srv.URL)
+	batch := sampleBatch()
+	batch.Aggregates[0].Normalized = strings.Repeat("select 1", 256)
+
+	_, err := client.SubmitHarvest(context.Background(), connect.NewRequest(batch))
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("SubmitHarvest err = %v, want ResourceExhausted", err)
+	}
+	if stub.gotBatch != nil {
+		t.Fatalf("handler saw oversized batch: %v", stub.gotBatch)
+	}
+	if strings.Contains(err.Error(), batch.Aggregates[0].Normalized[:128]) {
+		t.Fatalf("error echoed large input: %v", err)
+	}
 }
 
 func (s *stubServer) Register(_ context.Context, req *connect.Request[rottenv1.RegisterRequest]) (*connect.Response[rottenv1.RegisterResponse], error) {
