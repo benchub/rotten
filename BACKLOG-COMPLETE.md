@@ -882,3 +882,24 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Dev compose:** runs in oidc mode with the fake login.
   - **Reviews:** two review rounds plus a final fix. The reviews found the email-link takeover, the hard-coded `groups` scope, the issuer-less `sub` match, and unverified create and resync.
   - **Gate:** the first `make test-all` run hit a testcontainers flake (20261003-130000-1).
+
+### 20261001-105250-3: Add password login.
+- **Do:** Use `has_secure_password` on `users`, with a `/login` form and `rate_limit` on attempts. There's no sign-up and no password reset by email. Add `bin/rails users:create[email,role]` (prints a one-time password), `users:disable[email]`, and `users:reset_password[email]`.
+- **Red test:**
+  - Right and wrong passwords work as expected, and the error message doesn't reveal whether the email exists.
+  - The rate limit kicks in.
+  - A disabled user can't log in.
+  - The rake tasks do what they say.
+  - In `oidc` mode, the password form and endpoint return 404.
+- **Done when:** Passes.
+- **Note (from -49):** Emails are normalized to lowercase. `users:create` must reject a duplicate email with a clear error, not a raw `RecordNotUnique`.
+- **Needs:** -49.
+- **Completed:** 2026-10-03, 9ec805d.
+  - **Login check:** `authenticate_by`, scoped to `provider = "password"` and active users.
+  - **Failures:** every failure gets the same response, and each costs exactly one bcrypt hash.
+  - **Rate limits:** 10 attempts per IP and 5 per normalized email, per 3 minutes. Counters live in `Rails.cache`, a memory store per process in test and production.
+  - **Rake tasks:** `create` and `reset_password` refuse to run outside password mode. `disable` works in both modes.
+  - **Session revocation:** sessions store an HMAC fingerprint of the password digest, so a reset ends existing sessions.
+  - **Shared code:** a `SignIn` concern, used by both the OIDC and password logins.
+  - **Dev stack fix:** `migration_error = false` in development. Before that, every dev page returned 500, because Rails' pending-migration check tried to create `schema_migrations` as `rotten_ui`.
+  - **Follow-ups:** 20261003-140000-1 and 20261003-140000-2.

@@ -42,18 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-105250-3: Add password login.
-- **Do:** Use `has_secure_password` on `users`, with a `/login` form and `rate_limit` on attempts. There's no sign-up and no password reset by email. Add `bin/rails users:create[email,role]` (prints a one-time password), `users:disable[email]`, and `users:reset_password[email]`.
-- **Red test:**
-  - Right and wrong passwords work as expected, and the error message doesn't reveal whether the email exists.
-  - The rate limit kicks in.
-  - A disabled user can't log in.
-  - The rake tasks do what they say.
-  - In `oidc` mode, the password form and endpoint return 404.
-- **Done when:** Passes.
-- **Note (from -49):** Emails are normalized to lowercase. `users:create` must reject a duplicate email with a clear error, not a raw `RecordNotUnique`.
-- **Needs:** -49.
-
 ### 20261001-105250-4: Write the UI security specs.
 - **Do:** Add `ui/spec/security/`. Cover:
   - CSRF on every state-changing route.
@@ -155,3 +143,21 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** Depends on the decision.
 - **Done when:** Passes.
 - **Needs:** -105250-4.
+
+### 20261003-140000-1: Let users change their own password, and add `users:enable`.
+- **Do:**
+  - Add a page where a logged-in password user changes their password, using the current one. The fingerprint check already ends their other sessions; re-fingerprint the current session.
+  - Add a `users:enable[email]` rake task.
+  - Optionally, force a change at first login. That needs a goose migration (`must_change_password`); ask the user first.
+- **Red test:**
+  - Changing the password works, the current session stays alive, and other sessions are dropped.
+  - A wrong current password is rejected.
+  - `users:enable` works.
+- **Done when:** Passes.
+- **Needs:** -105250-4.
+
+### 20261003-140000-2: Share login rate-limit counters across UI processes.
+- **Do:** The rate limits use a memory store in each process, so N Puma workers or replicas allow N times the limit. Pick a shared store (Solid Cache in the rotten DB would need a goose migration and grants), or document a single-process deployment. Ask the user.
+- **Red test:** Depends on the decision.
+- **Done when:** Passes.
+- **Needs:** none.
