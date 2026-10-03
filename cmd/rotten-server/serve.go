@@ -37,21 +37,29 @@ const (
 // ServeFileConfig is the JSON configuration file format for rotten-server.
 // Durations are in seconds, matching the worker config's interval fields.
 type ServeFileConfig struct {
-	DSN             string
-	Listen          string
-	TLSCert         string
-	TLSKey          string
-	ShutdownTimeout uint32
-	HealthTimeout   uint32
+	DSN                    string
+	Listen                 string
+	TLSCert                string
+	TLSKey                 string
+	ShutdownTimeout        uint32
+	HealthTimeout          uint32
+	FailedAuthBurst        uint32
+	FailedAuthRefill       uint32
+	GlobalFailedAuthBurst  uint32
+	GlobalFailedAuthRefill uint32
 }
 
 type serveConfig struct {
-	DSN             string
-	Listen          string
-	TLSCert         string
-	TLSKey          string
-	ShutdownTimeout time.Duration
-	HealthTimeout   time.Duration
+	DSN                    string
+	Listen                 string
+	TLSCert                string
+	TLSKey                 string
+	ShutdownTimeout        time.Duration
+	HealthTimeout          time.Duration
+	FailedAuthBurst        int
+	FailedAuthRefill       time.Duration
+	GlobalFailedAuthBurst  int
+	GlobalFailedAuthRefill time.Duration
 }
 
 func runServe(args []string, stdout, stderr io.Writer) int {
@@ -100,7 +108,16 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "rotten-server serve: connect database: %v\n", err)
 		return 1
 	}
-	authenticator := auth.New(auth.NewPGStore(pool), auth.Options{Logger: logger})
+	authenticator := auth.New(auth.NewPGStore(pool), auth.Options{
+		Logger:                 logger,
+		FailedAuthBurst:        cfg.FailedAuthBurst,
+		FailedAuthRefill:       cfg.FailedAuthRefill,
+		GlobalFailedAuthBurst:  cfg.GlobalFailedAuthBurst,
+		GlobalFailedAuthRefill: cfg.GlobalFailedAuthRefill,
+	})
+	preloadCtx, cancelPreload := context.WithTimeout(ctx, 10*time.Second)
+	_ = authenticator.Preload(preloadCtx)
+	cancelPreload()
 	path, handler := rottenv1connect.NewIngestServiceHandler(
 		ingest.NewHandler(pool, ingest.Options{Logger: logger}),
 		connect.WithInterceptors(authenticator.Interceptor()),
@@ -207,6 +224,10 @@ func loadServeConfig(args []string, stderr io.Writer) (serveConfig, error) {
 	keyFile := fs.String("tls-key", "", "PEM private key file (default config TLSKey, then $ROTTEN_SERVER_TLS_KEY)")
 	shutdownTimeout := fs.Uint("shutdown-timeout", 0, "graceful shutdown timeout in seconds (default config ShutdownTimeout, then $ROTTEN_SERVER_SHUTDOWN_TIMEOUT, else 10)")
 	healthTimeout := fs.Uint("health-timeout", 0, "health database ping timeout in seconds (default config HealthTimeout, then $ROTTEN_SERVER_HEALTH_TIMEOUT, else 1)")
+	failedAuthBurst := fs.Uint("failed-auth-burst", 0, "failed auth lookup burst per client (default config FailedAuthBurst, then $ROTTEN_SERVER_FAILED_AUTH_BURST, else 5)")
+	failedAuthRefill := fs.Uint("failed-auth-refill", 0, "failed auth token refill in seconds (default config FailedAuthRefill, then $ROTTEN_SERVER_FAILED_AUTH_REFILL, else 10)")
+	globalFailedAuthBurst := fs.Uint("global-failed-auth-burst", 0, "global failed auth lookup burst (default config GlobalFailedAuthBurst, then $ROTTEN_SERVER_GLOBAL_FAILED_AUTH_BURST, else 50)")
+	globalFailedAuthRefill := fs.Uint("global-failed-auth-refill", 0, "global failed auth token refill in seconds (default config GlobalFailedAuthRefill, then $ROTTEN_SERVER_GLOBAL_FAILED_AUTH_REFILL, else 1)")
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
@@ -234,6 +255,10 @@ func loadServeConfig(args []string, stderr io.Writer) (serveConfig, error) {
 		}
 		cfg.ShutdownTimeout = secondsDuration(file.ShutdownTimeout)
 		cfg.HealthTimeout = secondsDuration(file.HealthTimeout)
+		cfg.FailedAuthBurst = int(file.FailedAuthBurst)
+		cfg.FailedAuthRefill = secondsDuration(file.FailedAuthRefill)
+		cfg.GlobalFailedAuthBurst = int(file.GlobalFailedAuthBurst)
+		cfg.GlobalFailedAuthRefill = secondsDuration(file.GlobalFailedAuthRefill)
 	}
 	if !explicit["dsn"] {
 		if v := firstEnv("ROTTEN_SERVER_DSN", legacyEnv(*configFile, "ROTTEN_INGEST_DSN")); v != "" {
@@ -281,6 +306,42 @@ func loadServeConfig(args []string, stderr io.Writer) (serveConfig, error) {
 	} else {
 		cfg.HealthTimeout = time.Duration(*healthTimeout) * time.Second
 	}
+	if !explicit["failed-auth-burst"] {
+		if v, ok, err := envUint("ROTTEN_SERVER_FAILED_AUTH_BURST"); err != nil {
+			return serveConfig{}, err
+		} else if ok {
+			cfg.FailedAuthBurst = int(v)
+		}
+	} else {
+		cfg.FailedAuthBurst = int(*failedAuthBurst)
+	}
+	if !explicit["failed-auth-refill"] {
+		if v, ok, err := envSeconds("ROTTEN_SERVER_FAILED_AUTH_REFILL"); err != nil {
+			return serveConfig{}, err
+		} else if ok {
+			cfg.FailedAuthRefill = v
+		}
+	} else {
+		cfg.FailedAuthRefill = time.Duration(*failedAuthRefill) * time.Second
+	}
+	if !explicit["global-failed-auth-burst"] {
+		if v, ok, err := envUint("ROTTEN_SERVER_GLOBAL_FAILED_AUTH_BURST"); err != nil {
+			return serveConfig{}, err
+		} else if ok {
+			cfg.GlobalFailedAuthBurst = int(v)
+		}
+	} else {
+		cfg.GlobalFailedAuthBurst = int(*globalFailedAuthBurst)
+	}
+	if !explicit["global-failed-auth-refill"] {
+		if v, ok, err := envSeconds("ROTTEN_SERVER_GLOBAL_FAILED_AUTH_REFILL"); err != nil {
+			return serveConfig{}, err
+		} else if ok {
+			cfg.GlobalFailedAuthRefill = v
+		}
+	} else {
+		cfg.GlobalFailedAuthRefill = time.Duration(*globalFailedAuthRefill) * time.Second
+	}
 	if cfg.Listen == "" {
 		cfg.Listen = defaultServeListen
 	}
@@ -289,6 +350,18 @@ func loadServeConfig(args []string, stderr io.Writer) (serveConfig, error) {
 	}
 	if cfg.HealthTimeout == 0 {
 		cfg.HealthTimeout = defaultHealthCheckTimeout
+	}
+	if cfg.FailedAuthBurst == 0 {
+		cfg.FailedAuthBurst = auth.DefaultFailedAuthBurst
+	}
+	if cfg.FailedAuthRefill == 0 {
+		cfg.FailedAuthRefill = auth.DefaultFailedAuthRefill
+	}
+	if cfg.GlobalFailedAuthBurst == 0 {
+		cfg.GlobalFailedAuthBurst = auth.DefaultGlobalFailedAuthBurst
+	}
+	if cfg.GlobalFailedAuthRefill == 0 {
+		cfg.GlobalFailedAuthRefill = auth.DefaultGlobalFailedAuthRefill
 	}
 	return cfg, nil
 }
@@ -326,6 +399,18 @@ func envSeconds(name string) (time.Duration, bool, error) {
 		return 0, false, fmt.Errorf("%s must be whole seconds: %w", name, err)
 	}
 	return time.Duration(seconds) * time.Second, true, nil
+}
+
+func envUint(name string) (uint64, bool, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return 0, false, nil
+	}
+	n, err := strconv.ParseUint(v, 10, 32)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s must be a whole number: %w", name, err)
+	}
+	return n, true, nil
 }
 
 type slogErrorWriter struct {

@@ -91,6 +91,22 @@ How to use it
    secrets. `--fqdn` pins a key to one worker host. The server refuses to register or
    accept harvests for any source with an unpinned key, so give every worker key `--fqdn`.
    A revoked key stops working within the server's key cache TTL, 30 seconds by default.
+   To keep malformed or stale keys from causing one database lookup per RPC, the
+   server applies two token buckets to failed key lookups: one per client IP
+   (burst 5, refilling by 1 lookup every 10 seconds) and one global bucket
+   (burst 50, refilling by 1 lookup every second). A lookup needs both tokens.
+   Once a bucket is over budget, unknown uncached keys return `Unauthenticated`
+   without an `api_keys` lookup. Successful authentication and database lookup
+   errors refund their reserved tokens; database errors still return
+   `Unavailable`. At startup, the server preloads non-revoked keys into its auth
+   cache so valid workers can reconnect after a restart without spending failed
+   lookup budget. A key created after startup from an over-budget IP works after
+   the next token refill; from another IP it works immediately if the global
+   bucket has budget. IPv6 clients are grouped by /64. The client IP comes from
+   the connection peer address, not `X-Forwarded-For`; behind a load balancer,
+   all workers share the load balancer's source IP and therefore share one
+   per-client budget. Tune the per-client and global bursts/refills with the
+   `FailedAuth*` config keys or matching `ROTTEN_SERVER_*` env vars.
 
    **HTTPS ingest server.** Run the listener as `rotten_ingest`, separately from
    migrations and key administration:
@@ -115,10 +131,15 @@ How to use it
     "TLSCert": "/path/to/server-chain.pem",
     "TLSKey": "/path/to/server-key.pem",
     "ShutdownTimeout": 10,
-    "HealthTimeout": 1
+    "HealthTimeout": 1,
+    "FailedAuthBurst": 5,
+    "FailedAuthRefill": 10,
+    "GlobalFailedAuthBurst": 50,
+    "GlobalFailedAuthRefill": 1
   }
   ```
-   `ShutdownTimeout` and `HealthTimeout` are whole seconds. Precedence is
+   `ShutdownTimeout`, `HealthTimeout`, `FailedAuthRefill`, and
+   `GlobalFailedAuthRefill` are whole seconds. Precedence is
    flags, then `ROTTEN_SERVER_*` environment variables, then the config file,
    then defaults. For compatibility when no config file is used, the old
    `ROTTEN_INGEST_DSN`, `ROTTEN_LISTEN`, `ROTTEN_TLS_CERT`, and
@@ -133,6 +154,10 @@ How to use it
    | `-tls-key` | `TLSKey` | `ROTTEN_SERVER_TLS_KEY` | Required matching PEM private key |
    | `-shutdown-timeout` | `ShutdownTimeout` | `ROTTEN_SERVER_SHUTDOWN_TIMEOUT` | `10` seconds |
    | `-health-timeout` | `HealthTimeout` | `ROTTEN_SERVER_HEALTH_TIMEOUT` | `1` second |
+   | `-failed-auth-burst` | `FailedAuthBurst` | `ROTTEN_SERVER_FAILED_AUTH_BURST` | `5` failed lookups per client |
+   | `-failed-auth-refill` | `FailedAuthRefill` | `ROTTEN_SERVER_FAILED_AUTH_REFILL` | `10` seconds per token |
+   | `-global-failed-auth-burst` | `GlobalFailedAuthBurst` | `ROTTEN_SERVER_GLOBAL_FAILED_AUTH_BURST` | `50` failed lookups globally |
+   | `-global-failed-auth-refill` | `GlobalFailedAuthRefill` | `ROTTEN_SERVER_GLOBAL_FAILED_AUTH_REFILL` | `1` second per token |
 
    Explicit flags override env and config values. The certificate and key must load before
    the server connects to the database or opens its listener; invalid files abort

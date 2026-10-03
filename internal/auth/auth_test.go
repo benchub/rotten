@@ -44,7 +44,7 @@ type clock struct {
 	t  time.Time
 }
 
-func (c *clock) Now() time.Time       { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *clock) Now() time.Time      { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
 func (c *clock) Add(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unlock() }
 
 type fixture struct {
@@ -80,7 +80,7 @@ func setup(t *testing.T) *fixture {
 
 	f := &fixture{db: db, owner: owner, clk: &clock{t: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}, logs: &bytes.Buffer{}, stub: &stub{}}
 	logger := slog.New(slog.NewTextHandler(&syncBuf{b: f.logs}, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	a := auth.New(auth.NewPGStore(ingest), auth.Options{TTL: 30 * time.Second, Now: f.clk.Now, Logger: logger})
+	a := auth.New(auth.NewPGStore(ingest), auth.Options{TTL: 30 * time.Second, Now: f.clk.Now, Logger: logger, FailedAuthBurst: 10000, GlobalFailedAuthBurst: 10000})
 	path, h := rottenv1connect.NewIngestServiceHandler(f.stub, connect.WithInterceptors(a.Interceptor()))
 	mux := http.NewServeMux()
 	mux.Handle(path, h)
@@ -203,7 +203,7 @@ func TestLastUsedThrottled(t *testing.T) {
 	if first == nil {
 		t.Fatal("last_used_at not set after a call")
 	}
-	if _, err := f.owner.Exec(ctx, "update rotten.api_keys set last_used_at = '2000-01-01' where name = 'w1'"); err != nil {
+	if _, err := f.owner.Exec(ctx, "update rotten.api_keys set last_used_at = '2000-01-01 12:00:00+00' where name = 'w1'"); err != nil {
 		t.Fatal(err)
 	}
 	f.clk.Add(40 * time.Second) // past the cache TTL, inside the touch interval

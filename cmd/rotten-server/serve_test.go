@@ -83,12 +83,16 @@ func TestServeConfiguration(t *testing.T) {
 func TestServeConfigFileEnvAndFlagPrecedence(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "server.json")
 	b, err := json.Marshal(ServeFileConfig{
-		DSN:             "file-dsn",
-		Listen:          "file-listen",
-		TLSCert:         "file-cert",
-		TLSKey:          "file-key",
-		ShutdownTimeout: 20,
-		HealthTimeout:   2,
+		DSN:                    "file-dsn",
+		Listen:                 "file-listen",
+		TLSCert:                "file-cert",
+		TLSKey:                 "file-key",
+		ShutdownTimeout:        20,
+		HealthTimeout:          2,
+		FailedAuthBurst:        4,
+		FailedAuthRefill:       5,
+		GlobalFailedAuthBurst:  40,
+		GlobalFailedAuthRefill: 6,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,11 +106,17 @@ func TestServeConfigFileEnvAndFlagPrecedence(t *testing.T) {
 	t.Setenv("ROTTEN_SERVER_TLS_KEY", "env-key")
 	t.Setenv("ROTTEN_SERVER_SHUTDOWN_TIMEOUT", "30")
 	t.Setenv("ROTTEN_SERVER_HEALTH_TIMEOUT", "3")
+	t.Setenv("ROTTEN_SERVER_FAILED_AUTH_BURST", "6")
+	t.Setenv("ROTTEN_SERVER_FAILED_AUTH_REFILL", "7")
+	t.Setenv("ROTTEN_SERVER_GLOBAL_FAILED_AUTH_BURST", "60")
+	t.Setenv("ROTTEN_SERVER_GLOBAL_FAILED_AUTH_REFILL", "9")
 
 	cfg, err := loadServeConfig([]string{
 		"-config", file,
 		"-listen", "flag-listen",
 		"-shutdown-timeout", "40",
+		"-failed-auth-burst", "8",
+		"-global-failed-auth-refill", "11",
 	}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +126,12 @@ func TestServeConfigFileEnvAndFlagPrecedence(t *testing.T) {
 	}
 	if cfg.ShutdownTimeout != 40*time.Second || cfg.HealthTimeout != 3*time.Second {
 		t.Fatalf("timeouts = %v, %v; want 40s flag and 3s env", cfg.ShutdownTimeout, cfg.HealthTimeout)
+	}
+	if cfg.FailedAuthBurst != 8 || cfg.FailedAuthRefill != 7*time.Second {
+		t.Fatalf("failed auth limit = %d, %v; want 8 flag and 7s env", cfg.FailedAuthBurst, cfg.FailedAuthRefill)
+	}
+	if cfg.GlobalFailedAuthBurst != 60 || cfg.GlobalFailedAuthRefill != 11*time.Second {
+		t.Fatalf("global failed auth limit = %d, %v; want 60 env and 11s flag", cfg.GlobalFailedAuthBurst, cfg.GlobalFailedAuthRefill)
 	}
 }
 
