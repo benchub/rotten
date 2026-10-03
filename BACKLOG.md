@@ -32,16 +32,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-40: Make the worker resilient.
-- **Do:**
-  - Reconnect to the observed database with backoff instead of calling `log.Fatal`.
-  - On SIGTERM, finish the current harvest, flush the outbox for up to N seconds, and exit.
-  - Replace the `noIdleHands` nil-map panic with a real watchdog that logs the reason and exits nonzero.
-  - Keep the "sanity check fails, so exit" behavior.
-- **Red test:** Restarting the observed database mid-run causes no crash, and the next window works. The sanity check returning false makes the worker exit nonzero.
-- **Done when:** Passes.
-- **Needs:** -39.
-
 ### 20261001-103222-41: Build release artifacts.
 - **Parked (2026-10-03, user):** Blocked by the sandbox. The Docker credential helper can't reach the keychain (error -50) to pull `gcr.io/distroless/static-debian12:nonroot` and `debian:stable-slim`. Partial work is uncommitted in the worktree `.claude/worktrees/task-20261001-103222-41`. Resume once the images are reachable.
 - **Do:** Add `make build`, which builds `rotten-worker` (cgo) and `rotten-server` (static) with version info, for Linux amd64 and arm64 plus native macOS. Add production Dockerfiles:
@@ -189,12 +179,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A URL-form connection string with `sslrootcert` builds the chain.
 - **Done when:** Tests pass.
 - **Needs:** -11.
-
-### 20261001-120501-2: Let `run` exit gracefully on errors and cancellation.
-- **Do:** Pass `ctx` into the worker loop's database calls. Replace the `log.Fatalln` calls in `run` with returned errors, and have `main` log them and exit.
-- **Red test:** Cancelling `ctx` mid-query makes `run` return promptly, and a failing sanity check makes `run` return an error instead of exiting the process.
-- **Done when:** Tests pass.
-- **Needs:** -12.
 
 ### 20261001-131002-1: Collapse schemas inside qualified column refs, function names, and DROP name lists.
 - **Do:** Today, `public.users.id` and `users.id`, `shard_1.f()` and `shard_2.f()`, and `DROP TABLE shard_1.t` and `DROP TABLE t` each get different fingerprints, because those schemas live in String lists, not in a `Schemaname` field. Collapse them the same way as table references, unless `KeepSchemas` is set.

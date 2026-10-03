@@ -590,3 +590,31 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Changed identity:** rows whose IDs differ are dropped and counted in `dropped_stale_source`. Rows that already carry the current IDs are kept, so a `ServerURL`-only change loses nothing.
   - **Schema:** state schema v4.
   - **No double counting:** the reviewer found no duplicate risk, because `physical_sources.fqdn` is unique.
+
+### 20261001-103222-40: Make the worker resilient.
+- **Do:**
+  - Reconnect to the observed database with backoff instead of calling `log.Fatal`.
+  - On SIGTERM, finish the current harvest, flush the outbox for up to N seconds, and exit.
+  - Replace the `noIdleHands` nil-map panic with a real watchdog that logs the reason and exits nonzero.
+  - Keep the "sanity check fails, so exit" behavior.
+- **Red test:** Restarting the observed database mid-run causes no crash, and the next window works. The sanity check returning false makes the worker exit nonzero.
+- **Done when:** Passes.
+- **Needs:** -39.
+- **Completed:** 2026-10-02, dc151b6.
+- **Notes:**
+  - **Reconnect:** the observed DB reconnects with jittered backoff capped at 60s, and each connect has a 5s timeout. Only connection-level errors are retried. A sanity check that returns false, NULL or no rows exits nonzero.
+  - **Signals:** one `signal.Notify` channel is used for the whole process. Registration can be cancelled by a signal. Background re-registration from the cache uses a process-lifetime ctx.
+  - **First SIGTERM:**
+    - the current harvest gets up to 10s to finish; past that it is force-cancelled and the process exits 1;
+    - the outbox flush retries with backoff until the 10s deadline;
+    - leftover queued rows are logged and the process exits 0.
+  - **Second signal:** cancels Run, skips the flush, closes the store and exits 1.
+  - **Watchdog:** it measures loop and reconnect liveness. The threshold is max(3×max(S,O), maxBackoff + connectTimeout + margin), and the watchdog stops before the flush.
+  - **Testing:** `testdb` gained a restart helper for the same container that re-reads the mapped port.
+
+### 20261001-120501-2: Let `run` exit gracefully on errors and cancellation.
+- **Do:** Pass `ctx` into the worker loop's database calls. Replace the `log.Fatalln` calls in `run` with returned errors, and have `main` log them and exit.
+- **Red test:** Cancelling `ctx` mid-query makes `run` return promptly, and a failing sanity check makes `run` return an error instead of exiting the process.
+- **Done when:** Tests pass.
+- **Needs:** -12.
+- **Completed:** 2026-10-02, dc151b6. Covered by -40.
