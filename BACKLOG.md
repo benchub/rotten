@@ -174,13 +174,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Tests pass.
 - **Needs:** -11.
 
-### 20261001-131002-1: Collapse schemas inside qualified column refs, function names, and DROP name lists.
-- **Do:** Today, `public.users.id` and `users.id`, `shard_1.f()` and `shard_2.f()`, and `DROP TABLE shard_1.t` and `DROP TABLE t` each get different fingerprints, because those schemas live in String lists, not in a `Schemaname` field. Collapse them the same way as table references, unless `KeepSchemas` is set.
-- **Red test:** Golden cases for each pair that share a fingerprint by default, plus schema test cases that show they differ with `KeepSchemas` on.
-- **Done when:** Passes, and `make golden` shows only the intended changes.
-- **Needs:** -112142-3.
-
-
 ### 20261001-132234-1: Fix the flaky "port 5432/tcp not found" in StartObserved.
 - **Do:** `TestObserverSQL` failed once in a full `make test` run with `testdb: connection string: port "5432/tcp" not found`, then passed on rerun. Find out why `ConnectionString` runs before the port is mapped, and make `start` wait for it.
 - **Red test:** Hard to force. Loop `TestObserverSQL` under `-count` until it fails, then show the fix holds for the same loop.
@@ -206,12 +199,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes.
 - **Needs:** 20261001-103222-29, 20261001-112142-5.
 
-### 20261001-143308-1: Limit unauthenticated key lookups.
-- **Do:** The auth interceptor caches only keys it finds, so each bad token with a well-formed key ID costs one `api_keys` query. Add a per-client rate limit on failed auth, or a short negative cache that a new key's ID can't hit (for example, cache misses only for IDs above the current max). Also decide whether a database error during lookup should stay `Unavailable` or fall back to a still-fresh cache entry.
-- **Red test:** A burst of unknown-key calls from one client causes at most a bounded number of lookups, and a key created during the burst works right away.
-- **Done when:** Passes.
-- **Needs:** 20261001-103222-30.
-
 ### 20261001-143630-1: Keep lifetime min and max out of fingerprint_stats.
 - **Do:** On 14 through 16 (and 17+ when the min/max reset fails), `pgss.WindowMinMax` returns lifetime values. The worker flags them on the event (`minmax_lifetime`) but still pushes them into the `min_time` and `max_time` samples, so one old outlier shows up in every window. Leave them out the way an absent stddev is left out, or carry the flag to the server (see -29 and -34).
 - **Red test:** A lifetime max from a diffed delta doesn't change `fingerprint_stats` for `max_time`, and a window-only one does.
@@ -228,4 +215,10 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** A reviewer saw `TestLastUsedThrottled` (`internal/auth/auth_test.go:214`) fail during a run of `go test ./internal/...` outside the docker gate, on a branch that didn't touch `internal/auth`. It passed in `make test`. Find the timing assumption and make the test deterministic, for example with an injectable clock.
 - **Red test:** Loop the test under `-count` until it fails, then show that the fix holds for the same loop.
 - **Done when:** A long loop passes.
+- **Needs:** none.
+
+### 20261003-110000-1: Audit the remaining object-list shapes for schema collapse.
+- **Do:** -131002-1 collapses schemas in object lists by type, using an allow-list. Rarer forms are left alone: OPERATOR, CAST, TRANSFORM, DOMCONSTRAINT, and collations and conversions in ALTER forms. Audit them and add the ones whose list shapes are clear, with golden cases.
+- **Red test:** Golden pairs for each newly handled type, plus negative cases for anything that's still left alone.
+- **Done when:** Passes, and `make golden` shows only additions.
 - **Needs:** none.

@@ -629,3 +629,37 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - `mergePopulationStats` pools the mean and population M2 using the original counts, matching how `pgss.WindowStats` computes the per-window stddev.
   - The server-side `runningstat` use in `ingest/submit.go` is internally consistent (a sample stddev over per-window values), so it was left alone.
   - The review was clean on the first round.
+
+### 20261001-131002-1: Collapse schemas inside qualified column refs, function names, and DROP name lists.
+- **Do:** Today, `public.users.id` and `users.id`, `shard_1.f()` and `shard_2.f()`, and `DROP TABLE shard_1.t` and `DROP TABLE t` each get different fingerprints, because those schemas live in String lists, not in a `Schemaname` field. Collapse them the same way as table references, unless `KeepSchemas` is set.
+- **Red test:** Golden cases for each pair that share a fingerprint by default, plus schema test cases that show they differ with `KeepSchemas` on.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** -112142-3.
+- **Completed:** 2026-10-02, 5c54dcb.
+- **Notes:**
+  - **ColumnRef:** the schema is stripped only from 3- and 4-part refs.
+  - **FuncCall:** names are collapsed, but `pg_catalog` is never stripped, and calls in SQL syntax (`COERCE_SQL_SYNTAX`: EXTRACT, AT TIME ZONE, TRIM, SUBSTRING) are skipped, so their fingerprints don't change.
+  - **Object lists:** collapse follows a per-ObjectType allow-list:
+    - plain qualified names: the schema is stripped;
+    - TRIGGER, POLICY, RULE, TABCONSTRAINT and COLUMN: only the table part is stripped;
+    - OPCLASS and OPFAMILY: the access method comes first and is kept.
+    Anything else is left alone. Follow-up: 20261003-110000-1.
+  - **`%TYPE`:** treated as a column ref.
+  - **`ALTER … SET SCHEMA`:** the new schema is collapsed, unless KeepSchemas is set.
+  - **Golden:** all changes are additions.
+
+### 20261001-143308-1: Limit unauthenticated key lookups.
+- **Do:** The auth interceptor caches only keys it finds, so each bad token with a well-formed key ID costs one `api_keys` query. Add a per-client rate limit on failed auth, or a short negative cache that a new key's ID can't hit (for example, cache misses only for IDs above the current max). Also decide whether a database error during lookup should stay `Unavailable` or fall back to a still-fresh cache entry.
+- **Red test:** A burst of unknown-key calls from one client causes at most a bounded number of lookups, and a key created during the burst works right away.
+- **Done when:** Passes.
+- **Needs:** 20261001-103222-30.
+- **Completed:** 2026-10-02, d4b5318.
+- **Notes:**
+  - **Rate limit:** failed key lookups are limited by token buckets.
+    - Per client: burst 5, refill 1 every 10s. IPv6 clients are keyed by /64, and the buckets live in a bounded LRU.
+    - Global: burst 50, refill 1/s. It stops churn from rotating /64s.
+  - **Over budget:** the server returns `Unauthenticated` without a lookup.
+  - **Refunds:** a successful lookup or a DB error gives the token back. DB errors stay `Unavailable`.
+  - **Cached keys:** they never need a token. A wrong secret or revoked status on a cached key charges the bucket but doesn't block.
+  - **Startup preload:** non-revoked keys are preloaded into the cache at startup, which is non-fatal, so valid workers behind a load balancer aren't throttled after a restart.
+  - **Configuration:** the limits are set through flags, `ROTTEN_SERVER_*` env vars and the config file, and documented in the README.
