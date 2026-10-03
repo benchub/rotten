@@ -190,3 +190,60 @@ func TestTextCacheSkipsHiddenKeys(t *testing.T) {
 		t.Errorf("cache holds %d entries, want 0", c.Len())
 	}
 }
+
+func TestTextCacheAppliesCachedTextWhenMissFetchFails(t *testing.T) {
+	ctx := context.Background()
+	db := testdb.StartObserved(t, 18)
+	if out, err := db.PSQL(t, filepath.Join(testdb.RepoRoot(), "schema", "observer.sql"), nil); err != nil {
+		t.Fatalf("observer.sql: %v\n%s", err, out)
+	}
+	su := db.Connect(t)
+	for _, s := range []string{
+		"alter role rotten_observer password 'rotten_observer'",
+		"select /*tc_cached_before_fetch_error*/ 1",
+	} {
+		if _, err := su.Exec(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	obs, err := pgx.Connect(ctx, db.DSNAs(t, "rotten_observer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obs.Close(ctx)
+	r := pgss.NewReader(obs)
+	c := pgss.NewTextCache(r)
+	stats, err := r.ReadStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cached pgss.Stat
+	for _, s := range stats {
+		if s.QueryID != 0 {
+			cached = s
+			break
+		}
+	}
+	if cached.QueryID == 0 {
+		t.Fatal("no visible row to cache")
+	}
+	if err := c.Fill(ctx, []pgss.Stat{cached}); err != nil {
+		t.Fatal(err)
+	}
+	cached.Query = ""
+	miss := cached
+	miss.QueryID = cached.QueryID + 1
+	mixed := []pgss.Stat{cached, miss}
+	if err := obs.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Fill(ctx, mixed); err == nil {
+		t.Fatal("Fill succeeded after connection close, want fetch error for the miss")
+	}
+	if mixed[0].Query == "" {
+		t.Fatal("cached row query stayed empty when a miss fetch failed")
+	}
+	if mixed[1].Query != "" {
+		t.Fatalf("miss row query = %q, want empty", mixed[1].Query)
+	}
+}

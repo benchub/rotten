@@ -386,6 +386,165 @@ func TestBuildHarvestBatchLogsHiddenAndNoText(t *testing.T) {
 	}
 }
 
+type sequenceTextFiller struct {
+	failures int
+	texts    map[int64]string
+}
+
+func (f *sequenceTextFiller) Fill(ctx context.Context, stats []pgss.Stat) error {
+	if f.failures > 0 {
+		f.failures--
+		return errors.New("injected text fetch failure")
+	}
+	for i := range stats {
+		stats[i].Query = f.texts[stats[i].QueryID]
+	}
+	return nil
+}
+
+func TestBuildHarvestBatchRetriesTextFetch(t *testing.T) {
+	w := New(Config{LogicalID: 7, PhysicalID: 42, Fingerprint: fingerprinting.Options{}}, RealClock{})
+	key := pgss.Key{UserID: 1, DBID: 1, TopLevel: true, QueryID: 201}
+	delta := pgss.Delta{Stat: pgss.Stat{UserID: key.UserID, DBID: key.DBID, TopLevel: key.TopLevel, QueryID: key.QueryID, Calls: 3, TotalExecTime: 3, TotalTime: 3, MeanTime: 1}, New: true}
+	filler := &sequenceTextFiller{
+		failures: 1,
+		texts: map[int64]string{
+			key.QueryID: "select 201",
+		},
+	}
+	batch, _ := w.buildHarvestBatchAndSnapshot(context.Background(), filler, pgss.Snapshot{}, pgss.Snapshot{Entries: map[pgss.Key]pgss.Stat{key: delta.Stat}}, []pgss.Delta{delta}, time.Unix(10, 0), time.Unix(20, 0))
+	aggregate := findAggregate(t, []*rottenv1.SubmitHarvestRequest{batch}, fingerprintOf(t, "select 201"))
+	if got := aggregate.GetMetrics().GetCalls(); got != 3 {
+		t.Fatalf("calls = %d, want 3 after retry", got)
+	}
+}
+
+func TestBuildHarvestBatchCarriesSkippedTextDeltas(t *testing.T) {
+	w := New(Config{LogicalID: 7, PhysicalID: 42, Fingerprint: fingerprinting.Options{}}, RealClock{})
+	info := pgss.Info{StatsReset: time.Unix(1, 0)}
+	t0 := time.Unix(9, 0)
+	tAfterSecondWindow := time.Unix(31, 0)
+	existingKey := pgss.Key{UserID: 1, DBID: 1, TopLevel: true, QueryID: 101}
+	newKey := pgss.Key{UserID: 1, DBID: 1, TopLevel: true, QueryID: 102}
+	prev := pgss.Snapshot{
+		Info: info,
+		Entries: map[pgss.Key]pgss.Stat{
+			existingKey: {UserID: existingKey.UserID, DBID: existingKey.DBID, TopLevel: existingKey.TopLevel, QueryID: existingKey.QueryID, Calls: 10, TotalExecTime: 10, TotalTime: 10, MeanTime: 1, MinmaxStatsSince: &t0},
+		},
+	}
+	firstStats := []pgss.Stat{
+		{UserID: existingKey.UserID, DBID: existingKey.DBID, TopLevel: existingKey.TopLevel, QueryID: existingKey.QueryID, Calls: 13, TotalExecTime: 13, TotalTime: 13, MeanTime: 1, MinmaxStatsSince: &t0},
+		{UserID: newKey.UserID, DBID: newKey.DBID, TopLevel: newKey.TopLevel, QueryID: newKey.QueryID, Calls: 4, TotalExecTime: 4, TotalTime: 4, MeanTime: 1, MinmaxStatsSince: &t0},
+	}
+	firstDeltas, firstNext := pgss.Diff(prev, firstStats, info)
+	filler := &sequenceTextFiller{
+		failures: textFetchAttempts,
+		texts: map[int64]string{
+			existingKey.QueryID: "select id from widgets where id = 101",
+			newKey.QueryID:      "select name from widgets where id = 102",
+		},
+	}
+	firstBatch, carried := w.buildHarvestBatchAndSnapshot(context.Background(), filler, prev, firstNext, firstDeltas, time.Unix(10, 0), time.Unix(20, 0))
+	if len(firstBatch.GetAggregates()) != 0 {
+		t.Fatalf("failed text fetch batch has %d aggregates, want 0", len(firstBatch.GetAggregates()))
+	}
+
+	secondStats := []pgss.Stat{
+		{UserID: existingKey.UserID, DBID: existingKey.DBID, TopLevel: existingKey.TopLevel, QueryID: existingKey.QueryID, Calls: 15, TotalExecTime: 15, TotalTime: 15, MeanTime: 1, MinmaxStatsSince: &tAfterSecondWindow},
+		{UserID: newKey.UserID, DBID: newKey.DBID, TopLevel: newKey.TopLevel, QueryID: newKey.QueryID, Calls: 6, TotalExecTime: 6, TotalTime: 6, MeanTime: 1, MinmaxStatsSince: &tAfterSecondWindow},
+	}
+	secondDeltas, secondNext := pgss.Diff(carried, secondStats, info)
+	secondBatch, _ := w.buildHarvestBatchAndSnapshot(context.Background(), filler, carried, secondNext, secondDeltas, time.Unix(20, 0), time.Unix(30, 0))
+	got := map[string]uint64{}
+	for _, aggregate := range secondBatch.GetAggregates() {
+		got[aggregate.GetFingerprint()] = aggregate.GetMetrics().GetCalls()
+	}
+	existingFingerprint := fingerprintOf(t, "select id from widgets where id = 101")
+	newFingerprint := fingerprintOf(t, "select name from widgets where id = 102")
+	if got[existingFingerprint] != 5 {
+		t.Fatalf("existing query calls = %d, want 5 after carry; aggregates = %+v", got[existingFingerprint], got)
+	}
+	if got[newFingerprint] != 6 || len(got) != 2 {
+		t.Fatalf("aggregates = %+v, want carried query totals 5 and 6", got)
+	}
+	for _, aggregate := range secondBatch.GetAggregates() {
+		if !aggregate.GetMinmaxLifetime() {
+			t.Fatalf("aggregate %+v has minmax_lifetime false, want true because the min/max reset happened during the skipped harvest", aggregate)
+		}
+	}
+}
+
+func TestBuildHarvestBatchEmptyTextSuccessAdvancesSnapshot(t *testing.T) {
+	w := New(Config{LogicalID: 7, PhysicalID: 42, Fingerprint: fingerprinting.Options{}}, RealClock{})
+	info := pgss.Info{StatsReset: time.Unix(1, 0)}
+	key := pgss.Key{UserID: 1, DBID: 1, TopLevel: true, QueryID: 301}
+	prev := pgss.Snapshot{
+		Info: info,
+		Entries: map[pgss.Key]pgss.Stat{
+			key: {UserID: key.UserID, DBID: key.DBID, TopLevel: key.TopLevel, QueryID: key.QueryID, Calls: 10, TotalExecTime: 10, TotalTime: 10, MeanTime: 1},
+		},
+	}
+	firstStats := []pgss.Stat{
+		{UserID: key.UserID, DBID: key.DBID, TopLevel: key.TopLevel, QueryID: key.QueryID, Calls: 13, TotalExecTime: 13, TotalTime: 13, MeanTime: 1},
+	}
+	firstDeltas, firstNext := pgss.Diff(prev, firstStats, info)
+	emptyText := &sequenceTextFiller{
+		texts: map[int64]string{
+			key.QueryID: "",
+		},
+	}
+	firstBatch, advanced := w.buildHarvestBatchAndSnapshot(context.Background(), emptyText, prev, firstNext, firstDeltas, time.Unix(10, 0), time.Unix(20, 0))
+	if len(firstBatch.GetAggregates()) != 0 {
+		t.Fatalf("empty text batch has %d aggregates, want 0", len(firstBatch.GetAggregates()))
+	}
+
+	secondStats := []pgss.Stat{
+		{UserID: key.UserID, DBID: key.DBID, TopLevel: key.TopLevel, QueryID: key.QueryID, Calls: 15, TotalExecTime: 15, TotalTime: 15, MeanTime: 1},
+	}
+	secondDeltas, secondNext := pgss.Diff(advanced, secondStats, info)
+	goodText := &sequenceTextFiller{
+		texts: map[int64]string{
+			key.QueryID: "select id from widgets where id = 301",
+		},
+	}
+	secondBatch, _ := w.buildHarvestBatchAndSnapshot(context.Background(), goodText, advanced, secondNext, secondDeltas, time.Unix(20, 0), time.Unix(30, 0))
+	aggregate := findAggregate(t, []*rottenv1.SubmitHarvestRequest{secondBatch}, fingerprintOf(t, "select id from widgets where id = 301"))
+	if got := aggregate.GetMetrics().GetCalls(); got != 2 {
+		t.Fatalf("calls = %d, want only the second window's 2 calls after successful empty text", got)
+	}
+}
+
+func TestCarryMinmaxSentinelSurvivesStatePersistence(t *testing.T) {
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+	key := pgss.Key{UserID: 1, DBID: 1, TopLevel: true, QueryID: 401}
+	snap := pgss.Snapshot{
+		Info: pgss.Info{StatsReset: time.Unix(1, 0)},
+		Entries: map[pgss.Key]pgss.Stat{
+			key: {UserID: key.UserID, DBID: key.DBID, TopLevel: key.TopLevel, QueryID: key.QueryID, Calls: 1, MinmaxStatsSince: &textCarryMinmaxSentinel},
+		},
+	}
+	if err := store.Save(context.Background(), snap, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded.Snapshot.Entries[key].MinmaxStatsSince
+	if got == nil || !got.Equal(textCarryMinmaxSentinel) {
+		t.Fatalf("persisted minmax sentinel = %v, want %v", got, textCarryMinmaxSentinel)
+	}
+	curReset := textCarryMinmaxSentinel.Add(-time.Second)
+	delta := pgss.Delta{
+		Stat: pgss.Stat{UserID: key.UserID, DBID: key.DBID, TopLevel: key.TopLevel, QueryID: key.QueryID, Calls: 1, MinmaxStatsSince: &curReset},
+		Prev: &pgss.Stat{MinmaxStatsSince: got},
+	}
+	if _, _, lifetime := pgss.WindowMinMax(delta); !lifetime {
+		t.Fatal("persisted carry sentinel did not force min/max to remain lifetime")
+	}
+}
+
 func TestWorkerDiffingOutbox(t *testing.T) {
 	for _, version := range []int{14, 18} {
 		t.Run(fmt.Sprintf("pg%d", version), func(t *testing.T) {

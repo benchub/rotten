@@ -70,7 +70,8 @@ func (c *TextCache) Fill(ctx context.Context, stats []Stat) error {
 		if k.QueryID == 0 {
 			continue
 		}
-		if _, ok := c.text[k]; ok {
+		if q, ok := c.text[k]; ok {
+			stats[i].Query = q
 			continue
 		}
 		if _, ok := seen[k]; ok {

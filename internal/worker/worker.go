@@ -143,6 +143,17 @@ type ServerOutboxStore interface {
 	SaveSnapshotAndEnqueue(context.Context, pgss.Snapshot, time.Time, *rottenv1.SubmitHarvestRequest) (state.OutboxEnqueueResult, error)
 }
 
+const (
+	textFetchAttempts     = 3
+	textFetchRetryBackoff = 10 * time.Millisecond
+)
+
+var textCarryMinmaxSentinel = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
+
+type queryTextFiller interface {
+	Fill(context.Context, []pgss.Stat) error
+}
+
 // Clock is Run's source of time. Sleep returns ctx.Err() if ctx ends first.
 type Clock interface {
 	Now() time.Time
@@ -513,7 +524,8 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.T
 	if loaded.Baseline {
 		log.Println("baseline harvest: saving the snapshot and sending nothing")
 	} else if cfg.ServerOutbox != nil {
-		batch := w.buildHarvestBatch(ctx, texts, deltas, loaded.TakenAt, now)
+		var batch *rottenv1.SubmitHarvestRequest
+		batch, next = w.buildHarvestBatchAndSnapshot(ctx, texts, loaded.Snapshot, next, deltas, loaded.TakenAt, now)
 		result, err := cfg.ServerOutbox.SaveSnapshotAndEnqueue(ctx, next, now, batch)
 		if err != nil {
 			log.Println("couldn't save the snapshot and outbox batch, so the next harvest is a baseline:", err)
@@ -547,15 +559,136 @@ func (w *Worker) markAlive(reason string) {
 }
 
 func (w *Worker) buildHarvestBatch(ctx context.Context, texts *pgss.TextCache, deltas []pgss.Delta, start, end time.Time) *rottenv1.SubmitHarvestRequest {
+	batch, _ := w.buildHarvestBatchAndSnapshot(ctx, texts, pgss.Snapshot{}, pgss.Snapshot{}, deltas, start, end)
+	return batch
+}
+
+func (w *Worker) buildHarvestBatchAndSnapshot(ctx context.Context, texts queryTextFiller, prev, next pgss.Snapshot, deltas []pgss.Delta, start, end time.Time) (*rottenv1.SubmitHarvestRequest, pgss.Snapshot) {
 	picked := topNDeltas(deltas, topDeltasPerMetric)
 	rows := make([]pgss.Stat, len(picked))
 	for i := range picked {
 		rows[i] = picked[i].Stat
 	}
-	if err := texts.Fill(ctx, rows); err != nil {
-		log.Println("couldn't fetch query text, so entries without cached text are skipped this window:", err)
+	fillErr := w.fillQueryTextWithRetry(ctx, texts, rows)
+	if fillErr != nil {
+		log.Println("couldn't fetch query text, so entries without cached text are skipped this window:", fillErr)
+		next = carrySkippedTextSnapshot(prev, next, picked, rows)
 	}
-	return w.buildHarvestBatchFromRows(picked, rows, start, end)
+	return w.buildHarvestBatchFromRows(picked, rows, start, end), next
+}
+
+func (w *Worker) fillQueryTextWithRetry(ctx context.Context, texts queryTextFiller, rows []pgss.Stat) error {
+	var err error
+	for attempt := 0; attempt < textFetchAttempts; attempt++ {
+		err = texts.Fill(ctx, rows)
+		if err == nil {
+			return nil
+		}
+		if attempt == textFetchAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(textFetchRetryBackoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-w.gracefulStop:
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
+func carrySkippedTextSnapshot(prev, next pgss.Snapshot, picked []pgss.Delta, rows []pgss.Stat) pgss.Snapshot {
+	if next.Entries == nil {
+		return next
+	}
+	for i, d := range picked {
+		if i >= len(rows) || d.QueryID == 0 || rows[i].Query != "" {
+			continue
+		}
+		k := pgss.KeyOf(d.Stat)
+		if d.New {
+			next.Entries[k] = zeroCarryBaseline(d.Stat)
+			continue
+		}
+		if old, ok := prev.Entries[k]; ok {
+			carried := old
+			if carried.MinmaxStatsSince != nil || d.MinmaxStatsSince != nil {
+				t := textCarryMinmaxSentinel
+				carried.MinmaxStatsSince = &t
+			}
+			next.Entries[k] = carried
+		} else {
+			next.Entries[k] = zeroCarryBaseline(d.Stat)
+		}
+	}
+	return next
+}
+
+func zeroCarryBaseline(cur pgss.Stat) pgss.Stat {
+	base := cur
+	base.Query = ""
+	zeroStatCounters(&base)
+	if base.MinmaxStatsSince != nil {
+		t := textCarryMinmaxSentinel
+		base.MinmaxStatsSince = &t
+	}
+	return base
+}
+
+func zeroStatCounters(s *pgss.Stat) {
+	s.Plans = 0
+	s.TotalPlanTime = 0
+	s.Calls = 0
+	s.TotalExecTime = 0
+	s.TotalTime = 0
+	s.Rows = 0
+	s.SharedBlksHit = 0
+	s.SharedBlksRead = 0
+	s.SharedBlksDirtied = 0
+	s.SharedBlksWritten = 0
+	s.LocalBlksHit = 0
+	s.LocalBlksRead = 0
+	s.LocalBlksDirtied = 0
+	s.LocalBlksWritten = 0
+	s.TempBlksRead = 0
+	s.TempBlksWritten = 0
+	s.SharedBlkReadTime = 0
+	s.SharedBlkWriteTime = 0
+	s.WALRecords = 0
+	s.WALFPI = 0
+	s.WALBytes = 0
+	if s.TempBlkReadTime != nil {
+		v := 0.0
+		s.TempBlkReadTime = &v
+	}
+	if s.TempBlkWriteTime != nil {
+		v := 0.0
+		s.TempBlkWriteTime = &v
+	}
+	if s.LocalBlkReadTime != nil {
+		v := 0.0
+		s.LocalBlkReadTime = &v
+	}
+	if s.LocalBlkWriteTime != nil {
+		v := 0.0
+		s.LocalBlkWriteTime = &v
+	}
+	if s.WALBuffersFull != nil {
+		v := int64(0)
+		s.WALBuffersFull = &v
+	}
+	if s.ParallelWorkersToLaunch != nil {
+		v := int64(0)
+		s.ParallelWorkersToLaunch = &v
+	}
+	if s.ParallelWorkersLaunched != nil {
+		v := int64(0)
+		s.ParallelWorkersLaunched = &v
+	}
 }
 
 func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat, start, end time.Time) *rottenv1.SubmitHarvestRequest {
