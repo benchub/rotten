@@ -215,10 +215,24 @@ func (s *walker) Struct(v reflect.Value) error {
 // visible to pg_query's fingerprinting instead of letting IN (1::bigint)
 // collapse into IN (1). The same rule is applied to array element casts after
 // this rewrite, so cast ANY arrays group with the corresponding cast IN list
-// instead of the uncast list. The exception is ::int[] array casts, which are
-// the parser's resolved form for plain integer lists on an int column, and
-// individual ::int-family element casts, which PostgreSQL omits as no-ops in
-// common int-column cases. Those keep the existing uncast IN-list grouping.
+// instead of the uncast list. The exceptions are ::int[] array casts, which are
+// the parser's resolved form for plain integer lists on an int column,
+// individual ::int-family element casts, and unmodified text/uuid casts on
+// string literals or parameters, such as 'a'::text and $1::uuid. This matches
+// PostgreSQL when the column resolves the comparison to text, varchar, or uuid:
+// the literal or parameter takes the type instead of keeping a cast node.
+//
+// pg_stat_statements stores normalized text, so 1::bigint, '1'::bigint, and
+// $1::bigint all arrive here as $1::bigint; likewise 123::text and a prepared
+// $1::text both arrive as $1::text. PostgreSQL splits numeric literal casts
+// from the uncast form but groups prepared parameter casts with the uncast
+// parameter. Since text alone cannot tell those cases apart, Rotten preserves
+// numeric-looking parameter casts to avoid merging statements that PostgreSQL
+// keeps apart. Rotten instead merges $1::text so common ORM text parameters
+// group correctly, accepting divergences where 123::text merges with uncast
+// text and where text casts against name or char(n) columns merge even though
+// PostgreSQL keeps those forms apart. uuid has no comparable numeric-literal
+// ambiguity.
 //
 // PostgreSQL 18's squashed text for multi-element IN lists can drop element
 // casts entirely, recording IN ($1 /*, ... */) for both plain lists and some
@@ -275,10 +289,9 @@ func rewriteArrayToIn(e *pg_query.A_Expr) bool {
 	return elemType == nil || !isIntTypeName(elemType)
 }
 
-// preserveSingleInElementCasts turns elem::T into elem::T::T inside IN lists.
-// pg_query's fingerprint ignores a single cast on an IN-list element but keeps
-// nested casts, and PostgreSQL queryids split the single-cast form from the
-// uncast form.
+// preserveSingleInElementCasts turns elem::T into elem::T::T inside IN lists
+// when PostgreSQL keeps the cast in the query tree. pg_query's fingerprint
+// ignores a single cast on an IN-list element but keeps nested casts.
 func preserveSingleInElementCasts(e *pg_query.A_Expr) {
 	if e.Kind != pg_query.A_Expr_Kind_AEXPR_IN {
 		return
@@ -289,7 +302,7 @@ func preserveSingleInElementCasts(e *pg_query.A_Expr) {
 	}
 	for i, el := range list.Items {
 		tc := el.GetTypeCast()
-		if tc == nil || tc.Arg.GetTypeCast() != nil || isIntTypeName(tc.TypeName) {
+		if tc == nil || tc.Arg.GetTypeCast() != nil || isNoOpInListElementCast(tc.Arg, tc.TypeName) {
 			continue
 		}
 		list.Items[i] = &pg_query.Node{Node: &pg_query.Node_TypeCast{TypeCast: &pg_query.TypeCast{
@@ -298,6 +311,22 @@ func preserveSingleInElementCasts(e *pg_query.A_Expr) {
 			Location: -1,
 		}}}
 	}
+}
+
+func isNoOpInListElementCast(arg *pg_query.Node, tn *pg_query.TypeName) bool {
+	if typeNameHasModifierOrArray(tn) {
+		return false
+	}
+	if isIntTypeName(tn) {
+		return true
+	}
+	if arg == nil {
+		return false
+	}
+	if c := arg.GetAConst(); c != nil && c.GetSval() != nil {
+		return isTextOrUUIDTypeName(tn)
+	}
+	return arg.GetParamRef() != nil && isTextOrUUIDTypeName(tn)
 }
 
 // arrayElemType returns the element type of a one-dimensional array cast,
@@ -338,6 +367,24 @@ func isIntTypeName(tn *pg_query.TypeName) bool {
 	default:
 		return false
 	}
+}
+
+func typeNameHasModifierOrArray(tn *pg_query.TypeName) bool {
+	return tn != nil && (len(tn.Typmods) > 0 || len(tn.ArrayBounds) > 0)
+}
+
+func isTextOrUUIDTypeName(tn *pg_query.TypeName) bool {
+	if tn == nil || len(tn.Names) == 0 {
+		return false
+	}
+	if len(tn.Names) > 2 {
+		return false
+	}
+	if len(tn.Names) == 2 && stringNodeValue(tn.Names[0]) != "pg_catalog" {
+		return false
+	}
+	name := stringNodeValue(tn.Names[len(tn.Names)-1])
+	return name == "text" || name == "uuid"
 }
 
 // isOp reports whether name is the single unqualified operator op.

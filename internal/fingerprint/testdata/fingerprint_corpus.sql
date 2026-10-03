@@ -168,8 +168,12 @@ SELECT * FROM users WHERE id IN ($1 /*, ... */)
 SELECT * FROM users WHERE id IN ($1)
 -- case: in_list_f
 SELECT * FROM users WHERE id IN ($1,$2,$3)
--- Explicit element casts change Postgres queryid grouping, even though
--- pg_query's raw fingerprint ignores a single cast in an IN list.
+-- Explicit numeric element casts change Postgres queryid grouping, even though
+-- pg_query's raw fingerprint ignores a single cast in an IN list. Normalized
+-- text/uuid parameter casts stay with the uncast IN-list group when the
+-- comparison resolves to text, varchar, or uuid. This keeps common ORM
+-- $1::text forms grouped, while accepting documented divergences for rare
+-- numeric-literal-to-text casts and text casts against name or char(n) columns.
 -- case: in_list_cast_bigint
 SELECT * FROM users WHERE id IN (1::bigint)
 -- case: in_list_cast_bigint_many
@@ -178,6 +182,18 @@ SELECT * FROM users WHERE id IN (1::bigint, 2::bigint, 3::bigint)
 SELECT * FROM users WHERE id IN (1, 2::bigint)
 -- case: in_list_nested_cast
 SELECT * FROM users WHERE id IN (1::bigint::int)
+-- case: in_list_param_plain
+SELECT * FROM users WHERE user_uuid IN ($1)
+-- case: in_list_param_uuid_cast
+SELECT * FROM users WHERE user_uuid IN ($1::uuid)
+-- case: in_list_text_param_plain
+SELECT * FROM users WHERE name IN ($1)
+-- case: in_list_param_text_cast
+SELECT * FROM users WHERE name IN ($1::text)
+-- case: in_list_string_plain
+SELECT * FROM users WHERE name IN ('a')
+-- case: in_list_string_text_cast
+SELECT * FROM users WHERE name IN ('a'::text)
 -- = ANY(ARRAY[...]) shares a Postgres 18 queryid with IN (...), so it groups too.
 -- case: in_list_any_a
 SELECT * FROM users WHERE id = ANY(ARRAY[1])

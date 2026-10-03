@@ -298,6 +298,163 @@ func TestPostgresInListElementCastQueryIDs(t *testing.T) {
 	}
 }
 
+func TestPostgresInListParamAndStringCastQueryIDs(t *testing.T) {
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
+
+	type caseDef struct {
+		name  string
+		table string
+		sql   string
+		args  []any
+	}
+	cases := []caseDef{
+		{"bigint_literal_plain", "x_cast_bigint", "select * from x_cast_bigint where id in (1)", nil},
+		{"bigint_literal_cast", "x_cast_bigint", "select * from x_cast_bigint where id in (1::bigint)", nil},
+		{"bigint_param_plain", "x_cast_bigint", "select * from x_cast_bigint where id in ($1)", []any{int64(1)}},
+		{"bigint_param_cast", "x_cast_bigint", "select * from x_cast_bigint where id in ($1::bigint)", []any{int64(1)}},
+		{"uuid_literal_plain", "x_cast_uuid", "select * from x_cast_uuid where u in ('00000000-0000-0000-0000-000000000001')", nil},
+		{"uuid_literal_cast", "x_cast_uuid", "select * from x_cast_uuid where u in ('00000000-0000-0000-0000-000000000001'::uuid)", nil},
+		{"uuid_param_plain", "x_cast_uuid", "select * from x_cast_uuid where u in ($1)", []any{"00000000-0000-0000-0000-000000000001"}},
+		{"uuid_param_cast", "x_cast_uuid", "select * from x_cast_uuid where u in ($1::uuid)", []any{"00000000-0000-0000-0000-000000000001"}},
+		{"text_literal_plain", "x_cast_text", "select * from x_cast_text where s in ('a')", nil},
+		{"text_literal_cast", "x_cast_text", "select * from x_cast_text where s in ('a'::text)", nil},
+		{"text_param_plain", "x_cast_text", "select * from x_cast_text where s in ($1)", []any{"a"}},
+		{"text_param_cast", "x_cast_text", "select * from x_cast_text where s in ($1::text)", []any{"a"}},
+		{"varchar_param_cast", "x_cast_text", "select * from x_cast_text where s in ($1::varchar)", []any{"a"}},
+		{"varchar_param_cast_mod", "x_cast_text", "select * from x_cast_text where s in ($1::varchar(10))", []any{"a"}},
+		{"name_param_cast", "x_cast_text", "select * from x_cast_text where s in ($1::name)", []any{"a"}},
+		{"char_param_cast", "x_cast_text", "select * from x_cast_text where s in ($1::char)", []any{"a"}},
+		{"varchar_literal_mod_plain", "x_cast_varchar", "select * from x_cast_varchar where v in ('a')", nil},
+		{"varchar_literal_mod_cast", "x_cast_varchar", "select * from x_cast_varchar where v in ('a'::varchar(10))", nil},
+		{"varchar_text_literal_plain", "x_cast_varchar", "select * from x_cast_varchar where v in ('a')", nil},
+		{"varchar_text_literal_cast", "x_cast_varchar", "select * from x_cast_varchar where v in ('a'::text)", nil},
+		{"varchar_text_param_plain", "x_cast_varchar", "select * from x_cast_varchar where v in ($1)", []any{"a"}},
+		{"varchar_text_param_cast", "x_cast_varchar", "select * from x_cast_varchar where v in ($1::text)", []any{"a"}},
+		{"name_text_literal_plain", "x_cast_name", "select * from x_cast_name where n in ('a')", nil},
+		{"name_text_literal_cast", "x_cast_name", "select * from x_cast_name where n in ('a'::text)", nil},
+		{"name_text_param_plain", "x_cast_name", "select * from x_cast_name where n in ($1)", []any{"a"}},
+		{"name_text_param_cast", "x_cast_name", "select * from x_cast_name where n in ($1::text)", []any{"a"}},
+		{"char_text_literal_plain", "x_cast_char", "select * from x_cast_char where c in ('a')", nil},
+		{"char_text_literal_cast", "x_cast_char", "select * from x_cast_char where c in ('a'::text)", nil},
+		{"char_text_param_plain", "x_cast_char", "select * from x_cast_char where c in ($1)", []any{"a"}},
+		{"char_text_param_cast", "x_cast_char", "select * from x_cast_char where c in ($1::text)", []any{"a"}},
+		{"numeric_text_literal_plain", "x_cast_text", "select * from x_cast_text where s in ('123')", nil},
+		{"numeric_text_literal_cast", "x_cast_text", "select * from x_cast_text where s in (123::text)", nil},
+	}
+	for _, v := range []int{14, 15, 16, 17, 18} {
+		db := testdb.StartObserved(t, v)
+		conn := db.Connect(t)
+		ctx := context.Background()
+		for _, ddl := range []string{
+			"create table x_cast_bigint (id bigint)",
+			"create table x_cast_uuid (u uuid)",
+			"create table x_cast_text (s text)",
+			"create table x_cast_varchar (v varchar(20))",
+			"create table x_cast_name (n name)",
+			"create table x_cast_char (c char(5))",
+		} {
+			if _, err := conn.Exec(ctx, ddl); err != nil {
+				t.Fatal(err)
+			}
+		}
+		qids := map[string]int64{}
+		texts := map[string]string{}
+		for _, c := range cases {
+			qid, text := oneQueryID(t, conn, c.table, c.sql, c.args...)
+			qids[c.name] = qid
+			texts[c.name] = text
+		}
+		t.Logf("pg%d IN literal/param cast queryids: %v", v, qids)
+		t.Logf("pg%d IN literal/param cast texts: %v", v, texts)
+
+		assertLiveSplit := func(castName, plainName string) {
+			t.Helper()
+			if qids[castName] == qids[plainName] {
+				t.Errorf("pg%d live merged %s with %s as queryid %d", v, castName, plainName, qids[castName])
+			}
+		}
+		assertLiveSame := func(castName, plainName string) {
+			t.Helper()
+			if qids[castName] != qids[plainName] {
+				t.Errorf("pg%d live split %s from %s: %d != %d", v, castName, plainName, qids[castName], qids[plainName])
+			}
+		}
+		assertRottenSplit := func(castName, plainName string) {
+			t.Helper()
+			castFP, err := fingerprint.Normalized(texts[castName], fingerprint.Options{})
+			if err != nil {
+				t.Fatalf("%s rotten fingerprint: %v", castName, err)
+			}
+			plainFP, err := fingerprint.Normalized(texts[plainName], fingerprint.Options{})
+			if err != nil {
+				t.Fatalf("%s rotten fingerprint: %v", plainName, err)
+			}
+			if castFP == plainFP {
+				t.Errorf("pg%d rotten merged %s (%q) with %s (%q) as fingerprint %s", v, castName, texts[castName], plainName, texts[plainName], castFP)
+			}
+		}
+		assertRottenSame := func(castName, plainName string) {
+			t.Helper()
+			castFP, err := fingerprint.Normalized(texts[castName], fingerprint.Options{})
+			if err != nil {
+				t.Fatalf("%s rotten fingerprint: %v", castName, err)
+			}
+			plainFP, err := fingerprint.Normalized(texts[plainName], fingerprint.Options{})
+			if err != nil {
+				t.Fatalf("%s rotten fingerprint: %v", plainName, err)
+			}
+			if castFP != plainFP {
+				t.Errorf("pg%d rotten split %s (%q) from %s (%q): %s != %s", v, castName, texts[castName], plainName, texts[plainName], castFP, plainFP)
+			}
+		}
+
+		assertLiveSplit("bigint_literal_cast", "bigint_literal_plain")
+		for _, pair := range [][2]string{
+			{"bigint_param_cast", "bigint_param_plain"},
+			{"uuid_literal_cast", "uuid_literal_plain"},
+			{"uuid_param_cast", "uuid_param_plain"},
+			{"text_literal_cast", "text_literal_plain"},
+			{"text_param_cast", "text_param_plain"},
+			{"varchar_text_literal_cast", "varchar_text_literal_plain"},
+			{"varchar_text_param_cast", "varchar_text_param_plain"},
+		} {
+			assertLiveSame(pair[0], pair[1])
+		}
+		for _, pair := range [][2]string{
+			{"uuid_literal_cast", "uuid_literal_plain"},
+			{"uuid_param_cast", "uuid_param_plain"},
+			{"text_literal_cast", "text_literal_plain"},
+			{"text_param_cast", "text_param_plain"},
+			{"varchar_text_literal_cast", "varchar_text_literal_plain"},
+			{"varchar_text_param_cast", "varchar_text_param_plain"},
+		} {
+			assertRottenSame(pair[0], pair[1])
+		}
+		for _, pair := range [][2]string{
+			{"varchar_param_cast", "text_param_plain"},
+			{"varchar_param_cast_mod", "text_param_plain"},
+			{"varchar_literal_mod_cast", "varchar_literal_mod_plain"},
+			{"name_param_cast", "text_param_plain"},
+			{"char_param_cast", "text_param_plain"},
+		} {
+			assertLiveSplit(pair[0], pair[1])
+			assertRottenSplit(pair[0], pair[1])
+		}
+		for _, pair := range [][2]string{
+			{"name_text_literal_cast", "name_text_literal_plain"},
+			{"name_text_param_cast", "name_text_param_plain"},
+			{"char_text_literal_cast", "char_text_literal_plain"},
+			{"char_text_param_cast", "char_text_param_plain"},
+		} {
+			assertLiveSplit(pair[0], pair[1])
+			assertRottenSame(pair[0], pair[1])
+		}
+		assertLiveSplit("numeric_text_literal_cast", "numeric_text_literal_plain")
+		assertRottenSame("numeric_text_literal_cast", "numeric_text_literal_plain")
+	}
+}
+
 func TestPostgresNotInSubqueryQueryIDs(t *testing.T) {
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(os.Stderr)
