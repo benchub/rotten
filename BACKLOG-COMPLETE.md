@@ -973,3 +973,23 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Tests:** 820 UI examples.
   - **Review:** one Opus round. Its Medium finding (one Tab stop per point) was fixed.
   - **Known limitation:** an edge bucket can show less after zooming, because the report only counts events whose window fits inside the range. This is documented in the README.
+
+### 20261001-103222-52: Build the pass key admin pages.
+- **Do:** Admins can create keys (the secret shows once), list them, and revoke them, using `rotten_ui`'s narrow `api_keys` grants. Fill in `created_by` and `revoked_by`, and write each action to `ui_audit_log`, which needs a migration and grant.
+- **Grants:** `rotten_ui` can't read `secret_hash`, and can only insert `name, secret_hash, fqdn, created_by`. Add a test that `INSERT ... RETURNING id` works.
+- **Red test:**
+  - Viewers get 403.
+  - Create shows the secret once.
+  - A revoked key fails server auth within the TTL (shared fixture with -30).
+- **Done when:** Passes.
+- **Needs:** -30, -49, -105250-4.
+- **Completed:** 2026-10-03, 5b602ca.
+  - **Pages:** `/admin/keys`.
+  - **Secret:** shown only in the 201 create response, with `no-store` and `turbo-cache-control: no-cache`. Specs check that it isn't in the log, session, flash or cookies, or in the Turbo snapshot after Back.
+  - **SQL:** the UI's write SQL lives in `ui/app/sql/*.sql`. A Go test, `TestUIRevokedKeyRejectedWithinTTL`, runs those same files as `rotten_ui` against the real authenticator, using a fake clock.
+  - **Shared vectors:** `ui/spec/fixtures/pass_key_vectors.json`, checked in both Go and Ruby.
+  - **Audit log:** migration 0007 adds `ui_audit_log`; `rotten_ui` may insert and select only.
+  - **FQDN:** required.
+  - **Tests:** 873 UI examples.
+  - **Review:** one Opus round. The Medium finding (Turbo's snapshot cache) was fixed.
+  - **Follow-up:** 20261003-180000-1.

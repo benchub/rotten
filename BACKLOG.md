@@ -42,16 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-52: Build the pass key admin pages.
-- **Do:** Admins can create keys (the secret shows once), list them, and revoke them, using `rotten_ui`'s narrow `api_keys` grants. Fill in `created_by` and `revoked_by`, and write each action to `ui_audit_log`, which needs a migration and grant.
-- **Grants:** `rotten_ui` can't read `secret_hash`, and can only insert `name, secret_hash, fqdn, created_by`. Add a test that `INSERT ... RETURNING id` works.
-- **Red test:**
-  - Viewers get 403.
-  - Create shows the secret once.
-  - A revoked key fails server auth within the TTL (shared fixture with -30).
-- **Done when:** Passes.
-- **Needs:** -30, -49, -105250-4.
-
 ### 20261001-103222-53: Check report query performance.
 - **Do:** Seed about 10 million events across 21 partitions. Check report latency and plans, and add indexes as needed. Include a `fingerprint_timeseries` case that decides whether `events` needs an index on `(fingerprint_id, observed_window_start)`.
 - **Red test:** A benchmark-style test asserting partition pruning and a latency budget (for example, under two seconds for a three-hour range).
@@ -154,5 +144,16 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 ### 20261003-170000-2: Show an all-sources row in the fingerprint stats table.
 - **Do:** The stats table covers only the selected project, environment, cluster and role. Add an "all sources" row, using the lifetime `fingerprint_stats` data or an aggregate across all sources, so operators see the fingerprint's overall footprint.
 - **Red test:** A system spec on the fixture shows the all-sources totals.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261003-180000-1: Add an audit log viewer, and audit user admin actions.
+- **Do:** -52 added `ui_audit_log`, which `rotten_ui` can insert into and read but not change. Do two things:
+  - Add an admin-only, paginated page for reading it.
+  - Write audit rows for user admin actions too: the `users:*` rake tasks, and OIDC role changes at login if wanted.
+- **Red test:**
+  - Viewers get 403.
+  - Admins see the entries newest first.
+  - `users:disable` writes an audit row.
 - **Done when:** Passes.
 - **Needs:** none.
