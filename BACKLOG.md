@@ -94,12 +94,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-46: Report on replica utilization.
-- **Do:** Add `reports/replica_utilization_by_job.sql` and `..._by_controller_action.sql`. Make the role names parameters instead of hard-coding `master` and `slave`. Use full outer joins so work that only runs on one side still shows up.
-- **Red test:** A job that only runs on the primary shows 100% primary. Mixed jobs show the right percentages.
-- **Done when:** Passes, and `schema/example queries` is deleted, since `reports/` replaces it.
-- **Needs:** -42.
-
 ### 20261001-103222-47: Report on one fingerprint over time.
 - **Do:** Add `reports/fingerprint_timeseries.sql`, which buckets calls and time for one fingerprint and source. Add an index on `events (fingerprint_id, observed_window_start)` if EXPLAIN shows it's needed.
 - **Red test:** The fixture's buckets match. EXPLAIN shows partition pruning.

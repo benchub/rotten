@@ -447,3 +447,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - Network errors: EOF, and connections that were closed or reset.
   - SQLSTATE `57P0x`.
   - `context.Canceled` and `DeadlineExceeded`. Canceled stays Unavailable so that calls cut off by the -36 shutdown force-close get retried.
+
+### 20261001-103222-46: Report on replica utilization.
+- **Do:** Add `reports/replica_utilization_by_job.sql` and `..._by_controller_action.sql`. Make the role names parameters instead of hard-coding `master` and `slave`. Use full outer joins so work that only runs on one side still shows up.
+- **Red test:** A job that only runs on the primary shows 100% primary. Mixed jobs show the right percentages.
+- **Done when:** Passes, and `schema/example queries` is deleted, since `reports/` replaces it.
+- **Needs:** -42.
+- **Completed:** 2026-10-02, 9b3f002.
+  - **Attribution:** calls come from `event_context.c`. Time is split across an event's contexts in proportion to `c`. The legacy query, by contrast, counted an event's full calls and time once for each of its contexts.
+  - **Percentages:** the replica figure is 100 minus the primary figure, so the two always add up to 100.
+  - **Partition pruning:** the window filters are applied before the per-event context total, and an EXPLAIN test checks that pruning happens.
+  - **Cleanup:** `schema/example queries` is deleted. All five legacy queries now have replacements in `reports/`.
