@@ -216,8 +216,9 @@ How to use it
      `ObservationInterval`.
   5. `SanityCheck` is a query that will be run against the Observed DB before each window.
      Returning a boolean True value will tell rotten to proceed; a False will cause rotten
-     to quit. The assumption is that systemd will keep restarting rotten until SanityCheck
-     returns True, and also that you have a function you might call which tells you what the
+     to quit with a nonzero exit. A query that returns no rows or NULL is also a failed
+     sanity check. The assumption is that systemd will keep restarting rotten until
+     SanityCheck returns True, and also that you have a function you might call which tells you what the
      database you have connected to thinks it is.
      This is useful in environments where the host rotten is connecting to might not be what
      rotten intends. For example, you might want to be gathering statistics from a secondary
@@ -226,7 +227,14 @@ How to use it
      clients would want, it's not helpful for rotten's purposes. Potentially worse, rotten
      would not know when to reconnect once maintenance is done, and so would stay connected to
      the primary until it dies or is manually restarted.
-  6. `StatusInterval` is how often to report status (in seconds) to its log.
+     Transient observed-database connection failures do not exit the worker. The worker
+     reconnects with capped exponential backoff and jitter, then resumes harvesting against
+     the current pg_stat_statements counters.
+  6. `StatusInterval` is how often to report status (in seconds) to its log. With
+     `-noIdleHands`, the status reporter also acts as a watchdog: if the worker stops
+     completing loops, attempting harvests, or retrying reconnects for several observation
+     windows, it logs the last liveness reason and exits nonzero so the supervisor can
+     restart it. Healthy baseline harvests and reconnect retries count as liveness.
   7. `ObservationInterval` is how long (in seconds) to let pg_stat_statements gather info
      for. This is the most granular you can make your reports, and the lower you set this,
      the more data you will need to store in your rotten db.
@@ -258,6 +266,12 @@ How to use it
      the schema where `schema/observer.sql` created `pg_stat_statements_minmax_reset()`. Set
      it to match the `observer_schema` you passed to that script. Postgres 14 through 16
      ignore it.
+9. SIGINT and SIGTERM are graceful. The worker finishes the current harvest, stops the
+   watchdog/status reporter, retries outbox sends for up to 10 seconds, logs any durable
+   batches still queued, closes the local state store, and exits 0. A second signal cancels
+   the in-flight harvest immediately, skips or aborts the flush, closes the store, and exits
+   1 because the stop was forced. If the current harvest does not finish inside the 10-second
+   shutdown budget, the worker force-cancels it, closes the store, and exits 1.
 
 Known Issues
 ============

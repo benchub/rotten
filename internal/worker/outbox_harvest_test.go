@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -125,6 +127,17 @@ func observerConn(t *testing.T, dsn string) *pgx.Conn {
 	}
 	t.Cleanup(func() { conn.Close(context.Background()) })
 	return conn
+}
+
+func observerConnector(dsn func() string) ObservedConnector {
+	return func(ctx context.Context) (*pgx.Conn, error) {
+		cfg, err := pgx.ParseConfig(dsn())
+		if err != nil {
+			return nil, err
+		}
+		cfg.DefaultQueryExecMode = pgx.QueryExecModeExec
+		return pgx.ConnectConfig(ctx, cfg)
+	}
 }
 
 func runDiffWorkload(t *testing.T, conn *pgx.Conn, n int) {
@@ -400,6 +413,7 @@ func TestWorkerDiffingOutbox(t *testing.T) {
 				if got := statsReset(t, su); !got.Equal(resetBefore) {
 					t.Fatalf("stats_reset moved from %v to %v; worker must not run a full reset", resetBefore, got)
 				}
+
 				if version >= 17 {
 					var moved bool
 					if err := su.QueryRow(context.Background(), `select bool_and(minmax_stats_since > stats_since) from pg_stat_statements where query like '%diff_marker%'`).Scan(&moved); err != nil {
@@ -485,6 +499,209 @@ func TestWorkerDiffingOutbox(t *testing.T) {
 				expectBatchCalls(t, batches, h4, h5, 1)
 			})
 		})
+	}
+}
+
+func TestWorkerReconnectsToObservedDatabaseAfterRestart(t *testing.T) {
+	observed := startObservedForWorker(t)
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+
+	var currentDSN atomic.Value
+	currentDSN.Store(observed.DSNAs(t, "rotten_observer"))
+	var failedConnects atomic.Int32
+	connector := func(ctx context.Context) (*pgx.Conn, error) {
+		cfg, err := pgx.ParseConfig(currentDSN.Load().(string))
+		if err != nil {
+			return nil, err
+		}
+		cfg.DefaultQueryExecMode = pgx.QueryExecModeExec
+		conn, err := pgx.ConnectConfig(ctx, cfg)
+		if err != nil {
+			failedConnects.Add(1)
+		}
+		return conn, err
+	}
+	reC, reA, reJ := sampleRegexes(t)
+	cfg := Config{
+		ObservedDBConnect:   connector,
+		ReconnectBackoff:    func(int) time.Duration { return 10 * time.Millisecond },
+		ObservationInterval: 2,
+		SanityCheck:         "select true",
+		LogicalID:           11,
+		PhysicalID:          46,
+		ReController:        reC,
+		ReAction:            reA,
+		ReJobTag:            reJ,
+		State:               store,
+		ServerOutbox:        store,
+		Logger:              slog.Default(),
+	}
+	clk := &stepClock{sleeping: make(chan time.Duration), proceed: make(chan struct{})}
+	w := New(cfg, clk)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ran := make(chan error, 1)
+	go func() { ran <- w.Run(ctx) }()
+	clk.waitSleep(t)
+
+	workload := observed.Connect(t)
+	runDiffWorkload(t, workload, 4)
+	observed.Restart(t, func() {
+		clk.proceed <- struct{}{}
+		deadline := time.Now().Add(10 * time.Second)
+		for failedConnects.Load() < 2 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	currentDSN.Store(observed.DSNAs(t, "rotten_observer"))
+	clk.waitSleep(t)
+	if got := failedConnects.Load(); got < 2 {
+		t.Fatalf("failed connect attempts = %d, want at least 2", got)
+	}
+	cancel()
+	if err := <-ran; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run returned %v, want context.Canceled", err)
+	}
+	batches := drainOutboxBatches(t, store)
+	found := false
+	for _, batch := range batches {
+		for _, aggregate := range batch.GetAggregates() {
+			if aggregate.GetFingerprint() == fingerprintOf(t, diffQuery) && aggregate.GetMetrics().GetCalls() == 4 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("reconnected worker did not enqueue the post-restart workload: %+v", batches)
+	}
+}
+
+func TestRunStopAfterCurrentFinishesHarvestAndReturnsNil(t *testing.T) {
+	observed := startObservedForWorker(t)
+	st := &blockingState{
+		saveEntered: make(chan struct{}),
+		unblockSave: make(chan struct{}),
+	}
+	cfg := Config{
+		ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
+		ObservationInterval: 30,
+		SanityCheck:         "select true",
+		State:               st,
+		Logger:              slog.Default(),
+	}
+	w := New(cfg, RealClock{})
+	done := make(chan error, 1)
+	go func() { done <- w.Run(context.Background()) }()
+	select {
+	case <-st.saveEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("harvest did not reach Save")
+	}
+	w.StopAfterCurrent()
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned before current harvest finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(st.unblockSave)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after current harvest")
+	}
+}
+
+type blockingState struct {
+	saveEntered chan struct{}
+	unblockSave chan struct{}
+	once        sync.Once
+}
+
+func (s *blockingState) Load(context.Context) (state.Loaded, error) {
+	return emptyBaseline(), nil
+}
+
+func (s *blockingState) Save(ctx context.Context, snap pgss.Snapshot, takenAt time.Time) error {
+	s.once.Do(func() { close(s.saveEntered) })
+	select {
+	case <-s.unblockSave:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestRunReturnsErrorWhenSanityCheckIsFalse(t *testing.T) {
+	observed := startObservedForWorker(t)
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+	cfg := Config{
+		ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
+		ObservationInterval: 2,
+		SanityCheck:         "select false",
+		State:               store,
+		Logger:              slog.Default(),
+	}
+	w := New(cfg, RealClock{})
+	err := w.Run(context.Background())
+	if !errors.Is(err, ErrSanityCheckFailed) {
+		t.Fatalf("Run returned %v, want ErrSanityCheckFailed", err)
+	}
+}
+
+func TestRunReturnsErrorWhenSanityCheckIsNullOrNoRows(t *testing.T) {
+	observed := startObservedForWorker(t)
+	for _, query := range []string{"select null::boolean", "select true where false"} {
+		t.Run(query, func(t *testing.T) {
+			store := openStore(t, t.TempDir())
+			defer store.Close()
+			cfg := Config{
+				ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
+				ObservationInterval: 2,
+				SanityCheck:         query,
+				State:               store,
+				Logger:              slog.Default(),
+			}
+			w := New(cfg, RealClock{})
+			err := w.Run(context.Background())
+			if err == nil {
+				t.Fatal("Run returned nil, want sanity check error")
+			}
+			if retryObservedError(err) {
+				t.Fatalf("sanity check error should be fatal, got retryable %v", err)
+			}
+		})
+	}
+}
+
+func TestRunReturnsPromptlyWhenContextCancelsMidQuery(t *testing.T) {
+	observed := startObservedForWorker(t)
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+	cfg := Config{
+		ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
+		ObservationInterval: 2,
+		SanityCheck:         "select true from pg_sleep(30)",
+		State:               store,
+		Logger:              slog.Default(),
+	}
+	w := New(cfg, RealClock{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return promptly after context cancellation")
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,7 +36,7 @@ import (
 )
 
 var configFileFlag = flag.String("config", "", "the config file")
-var noIdleHandsFlag = flag.Bool("noIdleHands", false, "when set to true, kill us (ungracefully) if we seem to be doing nothing")
+var noIdleHandsFlag = flag.Bool("noIdleHands", false, "when set to true, enable a watchdog that exits nonzero if the worker stops making progress")
 var debugFlag = flag.Bool("debug", false, "when set to true, turn on debugging")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write mem profile to file")
@@ -253,6 +254,10 @@ type outboxCounter interface {
 	OutboxCounts(context.Context) (state.OutboxCounts, error)
 }
 
+type closeStore interface {
+	Close() error
+}
+
 type sourceRegistrar interface {
 	Register(context.Context, *rottenv1.RegisterRequest) (*rottenv1.RegisterResponse, error)
 }
@@ -264,17 +269,19 @@ type sourceRegistrationStore interface {
 
 var exitProcess = os.Exit
 
-func registerSourceWithCache(ctx context.Context, client sourceRegistrar, store sourceRegistrationStore, serverURL string, req *rottenv1.RegisterRequest, logger *slog.Logger) (state.SourceRegistration, error) {
-	if cached, ok, err := store.LoadSourceRegistration(ctx); err != nil {
+var ErrSignalShutdown = errors.New("signal shutdown")
+
+func registerSourceWithCache(startupCtx, backgroundCtx context.Context, client sourceRegistrar, store sourceRegistrationStore, serverURL string, req *rottenv1.RegisterRequest, logger *slog.Logger) (state.SourceRegistration, error) {
+	if cached, ok, err := store.LoadSourceRegistration(startupCtx); err != nil {
 		return state.SourceRegistration{}, fmt.Errorf("load cached source registration: %w", err)
 	} else if ok && sourceRegistrationMatches(cached, serverURL, req) {
-		if err := store.SaveSourceRegistration(ctx, cached); err != nil {
+		if err := store.SaveSourceRegistration(startupCtx, cached); err != nil {
 			return state.SourceRegistration{}, fmt.Errorf("reconcile cached source registration: %w", err)
 		}
-		go retryRegisterAndCache(ctx, client, store, serverURL, req, logger, cached, exitProcess)
+		go retryRegisterAndCache(backgroundCtx, client, store, serverURL, req, logger, cached, exitProcess)
 		return cached, nil
 	}
-	return registerUntilSuccess(ctx, client, store, serverURL, req, logger)
+	return registerUntilSuccess(startupCtx, client, store, serverURL, req, logger)
 }
 
 func retryRegisterAndCache(ctx context.Context, client sourceRegistrar, store sourceRegistrationStore, serverURL string, req *rottenv1.RegisterRequest, logger *slog.Logger, inUse state.SourceRegistration, exit func(int)) {
@@ -395,15 +402,205 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+func observedConnector(configuration *Configuration) (worker.ObservedConnector, error) {
+	base, err := pgx.ParseConfig(configuration.ObservedDBConn[0])
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create observedDBConfig: %w", err)
+	}
+	base.DefaultQueryExecMode = pgx.QueryExecModeExec
+	if base.TLSConfig != nil && base.TLSConfig.RootCAs != nil {
+		if *debugFlag {
+			log.Printf("We seem to have a root CA for observed DB; remaking the chain to be sure to capture any intermediate certs.")
+		}
+		base.TLSConfig, err = remakeSSLCertConfig(configuration.ObservedDBConn[0], "")
+		if err != nil {
+			return nil, fmt.Errorf("couldn't remake observed db TLS config: %w", err)
+		}
+	}
+	return func(ctx context.Context) (*pgx.Conn, error) {
+		cfg := base.Copy()
+		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return pgx.ConnectConfig(connectCtx, cfg)
+	}, nil
+}
+
+func signalContext(ctx context.Context, signals <-chan os.Signal, second func()) (context.Context, context.CancelFunc, <-chan struct{}, func() bool) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var consumed atomic.Bool
+	go func() {
+		defer close(done)
+		select {
+		case <-signals:
+			consumed.Store(true)
+			cancel()
+			select {
+			case <-signals:
+				consumed.Store(true)
+				if second != nil {
+					second()
+				}
+			case <-ctx.Done():
+			}
+		case <-ctx.Done():
+			select {
+			case <-signals:
+				consumed.Store(true)
+			default:
+			}
+		}
+	}()
+	return ctx, cancel, done, consumed.Load
+}
+
+func gracefulWorkerShutdown(ctx context.Context, signals <-chan os.Signal, runDone <-chan error, requestStop func(), cancelRun func(), drainer outboxDrainer, counts outboxCounter, store closeStore, flushTimeout time.Duration, logger *slog.Logger) (bool, error) {
+	var runErr error
+	signalShutdown := false
+	forced := false
+	stopped := false
+	stop := func() {
+		if !stopped {
+			requestStop()
+			stopped = true
+		}
+	}
+	handleSignal := func(sig os.Signal) {
+		signalShutdown = true
+		logger.Info("worker shutdown signal received", "signal", sig.String())
+		stop()
+		waitCtx, cancel := context.WithTimeout(ctx, flushTimeout)
+		select {
+		case runErr = <-runDone:
+		case sig := <-signals:
+			logger.Warn("second shutdown signal received; canceling worker immediately", "signal", sig.String())
+			cancelRun()
+			forced = true
+			runErr = waitForRunAfterCancel(runDone, 100*time.Millisecond, context.Canceled)
+		case <-waitCtx.Done():
+			cancelRun()
+			forced = true
+			runErr = waitForRunAfterCancel(runDone, 100*time.Millisecond, context.DeadlineExceeded)
+			if runErr == nil {
+				runErr = waitCtx.Err()
+			}
+		}
+		cancel()
+	}
+	select {
+	case sig := <-signals:
+		handleSignal(sig)
+	default:
+		select {
+		case sig := <-signals:
+			handleSignal(sig)
+		case runErr = <-runDone:
+		case <-ctx.Done():
+			stop()
+			runErr = ctx.Err()
+		}
+	}
+	stop()
+	var flushErr error
+	if drainer != nil && !forced {
+		flushCtx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+		defer cancel()
+		flushForced := make(chan os.Signal, 1)
+		go func() {
+			select {
+			case sig := <-signals:
+				logger.Warn("shutdown signal received during outbox flush; aborting flush", "signal", sig.String())
+				flushForced <- sig
+				cancel()
+			case <-flushCtx.Done():
+			}
+		}()
+		attempt := 0
+		for flushCtx.Err() == nil {
+			var sent int
+			sent, flushErr = drainer.Drain(flushCtx)
+			var c state.OutboxCounts
+			var countErr error
+			if counts != nil {
+				c, countErr = counts.OutboxCounts(flushCtx)
+			}
+			if countErr == nil && c.Queued == 0 {
+				flushErr = nil
+				logger.Info("worker outbox flush complete", "sent", sent)
+				break
+			}
+			attempt++
+			delay := jitteredOutboxBackoff(attempt)
+			if delay > time.Until(time.Now().Add(flushTimeout)) {
+				delay = 100 * time.Millisecond
+			}
+			if !sleepContext(flushCtx, delay) {
+				break
+			}
+		}
+		select {
+		case <-flushForced:
+			forced = true
+			flushErr = context.Canceled
+		default:
+		}
+		if flushCtx.Err() != nil && counts != nil {
+			if c, err := counts.OutboxCounts(context.Background()); err == nil {
+				logger.Warn("worker outbox flush deadline reached; durable batches remain queued", "queued", c.Queued, "dropped_cap", c.DroppedCap, "dropped_rejected", c.DroppedRejected, "dropped_stale_source", c.DroppedStaleSource)
+			}
+		}
+	}
+	var closeErr error
+	if store != nil {
+		closeErr = store.Close()
+	}
+	if forced && runErr != nil {
+		return signalShutdown, runErr
+	}
+	if forced && flushErr != nil {
+		return signalShutdown, flushErr
+	}
+	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		return signalShutdown, runErr
+	}
+	if flushErr != nil && !signalShutdown {
+		return signalShutdown, fmt.Errorf("flush outbox: %w", flushErr)
+	}
+	if closeErr != nil {
+		return signalShutdown, fmt.Errorf("close state store: %w", closeErr)
+	}
+	if signalShutdown {
+		return true, nil
+	}
+	return false, nil
+}
+
+func waitForRunAfterCancel(runDone <-chan error, d time.Duration, fallback error) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case err := <-runDone:
+		if err == nil {
+			return context.Canceled
+		}
+		return err
+	case <-timer.C:
+		return fallback
+	}
+}
+
+func shutdownExitCode(signalShutdown bool, err error) int {
+	if err == nil || errors.Is(err, ErrSignalShutdown) {
+		return 0
+	}
+	return 1
+}
+
 func main() {
 	var cfg worker.Config
-	var status_interval uint32
 
 	flag.Parse()
-	// TODO(20261001-103222-40): replace this with a signal-cancelled root
-	// context and give SIGTERM a bounded outbox flush.
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
+	rootCtx := context.Background()
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
 		if err != nil {
@@ -417,133 +614,131 @@ func main() {
 		os.Exit(0)
 	}
 
-	sigs := make(chan os.Signal, 1)
-	// catch all signals since not explicitly listing
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT)
-	// method invoked upon seeing signal
-	go func() {
-		s := <-sigs
-		log.Printf("RECEIVED SIGNAL: %s", s)
-		AppCleanup()
-		os.Exit(1)
-	}()
+	defer signal.Stop(sigs)
+	startupCtx, startupCancel, startupSignalDone, startupSignalConsumed := signalContext(rootCtx, sigs, nil)
+	defer startupCancel()
 
 	if *configFileFlag == "" {
-		log.Fatalln("I need a config file!")
-		// will now exit because Fatal
-	} else {
-		configuration, err := loadConfiguration(*configFileFlag)
-		if err != nil {
-			log.Fatalln("config file:", err)
-			// will now exit because Fatal
-		}
-
-		// Now build up the connection we're going to use for the observed db
-		// It reads the stats and, on 17+, runs the min/max reset.
-		observedDBConfig, err := pgx.ParseConfig(configuration.ObservedDBConn[0])
-		if err != nil {
-			log.Fatalln("couldn't create observedDBConfig", err)
-			// will now exit because Fatal
-		}
-
-		// Don't get in the way of pgBouncer transaction pooling
-		observedDBConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
-
-		if observedDBConfig.TLSConfig != nil {
-			if observedDBConfig.TLSConfig.RootCAs != nil {
-				// golang libraries don't seem to send intermediate certs, so we have to manually make sure that happens.
-				if *debugFlag {
-					log.Printf("We seem to have a root CA for observed DB; remaking the chain to be sure to capture any intermediate certs.")
-				}
-
-				observedDBConfig.TLSConfig, err = remakeSSLCertConfig(configuration.ObservedDBConn[0], "")
-				if err != nil {
-					log.Fatalln("couldn't remake observed db TLS config:", err)
-				}
-			}
-		}
-
-		observedDB, err := pgx.ConnectConfig(context.Background(), observedDBConfig)
-		if err != nil {
-			log.Fatalln("couldn't connect to observed db", err)
-			// will now exit because Fatal
-		}
-		defer observedDB.Close(context.Background())
-		cfg.ObservedDB = observedDB
-
-		stateDir, maxAge := stateSettings(configuration)
-		store, err := state.Open(stateDir, state.Options{MaxSnapshotAge: maxAge})
-		if err != nil {
-			log.Fatalln("couldn't open the state store:", err)
-			// will now exit because Fatal
-		}
-		if store.MovedAside != "" {
-			log.Println("the state store was corrupt; moved it to", store.MovedAside, "and started fresh")
-		}
-		defer store.Close()
-		cfg.State = store
-		cfg.ServerOutbox = store
-
-		status_interval = configuration.StatusInterval
-		cfg.ObservationInterval = configuration.ObservationInterval
-		cfg.SanityCheck = configuration.SanityCheck
-		cfg.MinmaxResetSchema = configuration.MinmaxResetSchema
-		if cfg.MinmaxResetSchema == "" {
-			cfg.MinmaxResetSchema = pgss.DefaultMinmaxResetSchema
-		}
-		cfg.Fingerprint, err = fingerprint.NewOptions(configuration.KeepSchemas, configuration.CursorPattern, configuration.TempTablePattern)
-		if err != nil {
-			log.Fatalln("bad fingerprint pattern in config:", err)
-			// will now exit because Fatal
-		}
-		fqdn := configuration.FQDN
-		project := configuration.Project
-		environment := configuration.Environment
-		cluster := configuration.Cluster
-		role := configuration.Role
-		cfg.ReController, cfg.ReAction, cfg.ReJobTag, err = compileRegexes(configuration.ContextController, configuration.ContextAction, configuration.ContextJob)
-		if err != nil {
-			log.Fatalln(err)
-			// will now exit because Fatal
-		}
-
-		logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-		client, err := serverclient.New(serverclient.Config{
-			ServerURL:   configuration.ServerURL,
-			PassKeyFile: configuration.PassKeyFile,
-			CAFile:      configuration.ServerCAFile,
-			Logger:      logger,
-		})
-		if err != nil {
-			log.Fatalln("couldn't build server client:", err)
-		}
-		reg, err := registerSourceWithCache(rootCtx, client, store, configuration.ServerURL, &rottenv1.RegisterRequest{
-			Project:     project,
-			Environment: environment,
-			Cluster:     cluster,
-			Role:        role,
-			Fqdn:        fqdn,
-		}, logger)
-		if err != nil {
-			log.Fatalln("couldn't register source with server:", err)
-			// will now exit because Fatal
-		}
-		cfg.LogicalID = reg.LogicalSourceID
-		cfg.PhysicalID = reg.PhysicalSourceID
-
-		sender := worker.NewOutboxSender(store, client, logger)
-		go runOutboxSender(rootCtx, sender, store, logger)
+		log.Println("I need a config file!")
+		os.Exit(1)
 	}
+	configuration, err := loadConfiguration(*configFileFlag)
+	if err != nil {
+		log.Println("config file:", err)
+		os.Exit(1)
+	}
+
+	cfg.ObservedDBConnect, err = observedConnector(configuration)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	stateDir, maxAge := stateSettings(configuration)
+	store, err := state.Open(stateDir, state.Options{MaxSnapshotAge: maxAge})
+	if err != nil {
+		log.Println("couldn't open the state store:", err)
+		os.Exit(1)
+	}
+	if store.MovedAside != "" {
+		log.Println("the state store was corrupt; moved it to", store.MovedAside, "and started fresh")
+	}
+	cfg.State = store
+	cfg.ServerOutbox = store
+
+	cfg.ObservationInterval = configuration.ObservationInterval
+	cfg.SanityCheck = configuration.SanityCheck
+	cfg.MinmaxResetSchema = configuration.MinmaxResetSchema
+	if cfg.MinmaxResetSchema == "" {
+		cfg.MinmaxResetSchema = pgss.DefaultMinmaxResetSchema
+	}
+	cfg.Fingerprint, err = fingerprint.NewOptions(configuration.KeepSchemas, configuration.CursorPattern, configuration.TempTablePattern)
+	if err != nil {
+		log.Println("bad fingerprint pattern in config:", err)
+		os.Exit(1)
+	}
+	cfg.ReController, cfg.ReAction, cfg.ReJobTag, err = compileRegexes(configuration.ContextController, configuration.ContextAction, configuration.ContextJob)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+	cfg.WatchdogExit = func(reason string) { os.Exit(1) }
+	cfg.Logger = logger
+
+	client, err := serverclient.New(serverclient.Config{
+		ServerURL:   configuration.ServerURL,
+		PassKeyFile: configuration.PassKeyFile,
+		CAFile:      configuration.ServerCAFile,
+		Logger:      logger,
+	})
+	if err != nil {
+		log.Println("couldn't build server client:", err)
+		os.Exit(1)
+	}
+	reg, err := registerSourceWithCache(startupCtx, rootCtx, client, store, configuration.ServerURL, &rottenv1.RegisterRequest{
+		Project:     configuration.Project,
+		Environment: configuration.Environment,
+		Cluster:     configuration.Cluster,
+		Role:        configuration.Role,
+		Fqdn:        configuration.FQDN,
+	}, logger)
+	if err != nil {
+		if startupCtx.Err() != nil {
+			AppCleanup()
+			os.Exit(0)
+		}
+		log.Println("couldn't register source with server:", err)
+		os.Exit(1)
+	}
+	if startupCtx.Err() != nil {
+		AppCleanup()
+		os.Exit(0)
+	}
+	startupCancel()
+	<-startupSignalDone
+	if startupSignalConsumed() {
+		AppCleanup()
+		os.Exit(0)
+	}
+	cfg.LogicalID = reg.LogicalSourceID
+	cfg.PhysicalID = reg.PhysicalSourceID
 
 	w := worker.New(cfg, worker.RealClock{})
 
-	// We like stats
-	go w.ReportProgress(rootCtx, *noIdleHandsFlag, status_interval)
+	sender := worker.NewOutboxSender(store, client, logger)
+	runCtx, runCancel := context.WithCancel(rootCtx)
+	defer runCancel()
+	outboxCtx, outboxCancel := context.WithCancel(rootCtx)
+	outboxDone := make(chan struct{})
+	go func() {
+		defer close(outboxDone)
+		runOutboxSender(outboxCtx, sender, store, logger)
+	}()
 
-	w.Run(rootCtx)
-
-	// until we implement graceful exiting, we'll never get here
-	// AppCleanup()
+	progressCtx, progressCancel := context.WithCancel(rootCtx)
+	go w.ReportProgress(progressCtx, *noIdleHandsFlag, configuration.StatusInterval)
+	runDone := make(chan error, 1)
+	go func() { runDone <- w.Run(runCtx) }()
+	requestStop := func() {
+		progressCancel()
+		w.StopAfterCurrent()
+		outboxCancel()
+		<-outboxDone
+	}
+	signalShutdown, err := gracefulWorkerShutdown(rootCtx, sigs, runDone, requestStop, runCancel, sender, store, store, 10*time.Second, logger)
+	if err != nil {
+		log.Println("worker stopped with error:", err)
+		AppCleanup()
+		os.Exit(shutdownExitCode(signalShutdown, err))
+	}
+	if signalShutdown {
+		AppCleanup()
+		os.Exit(shutdownExitCode(true, ErrSignalShutdown))
+	}
+	AppCleanup()
 }
 
 func AppCleanup() {

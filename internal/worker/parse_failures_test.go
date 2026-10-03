@@ -3,12 +3,17 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/benchub/rotten/internal/pgss"
 	"github.com/benchub/rotten/internal/testdb"
@@ -104,6 +109,7 @@ func TestParseFailuresCountedAndSampled(t *testing.T) {
 			if _, err := conn.Exec(ctx, q); err != nil {
 				t.Fatalf("%s: %v", q, err)
 			}
+
 		}
 	}
 	reader := pgss.NewReader(conn)
@@ -150,5 +156,146 @@ func TestParseFailuresCountedAndSampled(t *testing.T) {
 	}
 	if w.eventsPending.Load() != 0 || w.fingerprintCount() != 0 {
 		t.Fatal("failed queries should not queue events or create fingerprints")
+	}
+}
+
+func TestNoIdleHandsWatchdogFiresOnStalledWorker(t *testing.T) {
+	observed := startObservedForWorker(t)
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+	fired := make(chan string, 1)
+	w := New(Config{
+		ObservationInterval: 1,
+		ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
+		SanityCheck:         "select true from pg_sleep(30)",
+		State:               store,
+		MaxReconnectBackoff: 100 * time.Millisecond,
+		ConnectTimeout:      10 * time.Millisecond,
+		WatchdogMargin:      10 * time.Millisecond,
+		WatchdogExit: func(reason string) {
+			fired <- reason
+		},
+		Logger: slog.Default(),
+	}, RealClock{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	go w.ReportProgress(ctx, true, 1)
+	select {
+	case reason := <-fired:
+		if !strings.Contains(reason, "no worker liveness") {
+			t.Fatalf("watchdog reason = %q, want no worker liveness", reason)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("watchdog did not fire")
+	}
+	cancel()
+	<-done
+}
+
+func TestNoIdleHandsWatchdogDoesNotFireOnHealthyRunLoop(t *testing.T) {
+	observed := startObservedForWorker(t)
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+	fired := make(chan string, 1)
+	reC, reA, reJ := sampleRegexes(t)
+	w := New(Config{
+		ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
+		ObservationInterval: 2,
+		SanityCheck:         "select true",
+		LogicalID:           12,
+		PhysicalID:          47,
+		ReController:        reC,
+		ReAction:            reA,
+		ReJobTag:            reJ,
+		State:               store,
+		ServerOutbox:        store,
+		MaxReconnectBackoff: 100 * time.Millisecond,
+		ConnectTimeout:      10 * time.Millisecond,
+		WatchdogMargin:      10 * time.Millisecond,
+		WatchdogExit: func(reason string) {
+			fired <- reason
+		},
+		Logger: slog.Default(),
+	}, RealClock{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	go w.ReportProgress(ctx, true, 1)
+	time.Sleep(4 * time.Second)
+	mid := w.liveness.Load()
+	if mid == 0 {
+		t.Fatal("liveness counter did not advance by midpoint")
+	}
+	time.Sleep(4 * time.Second)
+	if got := w.liveness.Load(); got <= mid {
+		t.Fatalf("liveness counter = %d at end, want greater than midpoint %d", got, mid)
+	}
+	cancel()
+	select {
+	case reason := <-fired:
+		t.Fatalf("watchdog fired on healthy worker: %s", reason)
+	default:
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+}
+
+func TestWatchdogTimeoutCoversDefaultReconnectBackoff(t *testing.T) {
+	w := New(Config{ObservationInterval: 1}, RealClock{})
+	got := w.watchdogTimeout(time.Second, time.Second)
+	wantAtLeast := w.maxReconnectBackoff() + w.connectTimeout() + w.watchdogMargin()
+	if got < wantAtLeast {
+		t.Fatalf("watchdog timeout = %s, want at least reconnect term %s", got, wantAtLeast)
+	}
+	if got == 3*time.Second {
+		t.Fatal("watchdog timeout used only 3*base and ignored reconnect backoff")
+	}
+}
+
+func TestNoIdleHandsWatchdogDoesNotFireDuringReconnectBackoffCap(t *testing.T) {
+	fired := make(chan string, 1)
+	w := New(Config{
+		ObservedDBConnect: func(context.Context) (*pgx.Conn, error) {
+			return nil, syscall.ECONNREFUSED
+		},
+		ReconnectBackoff: func(int) time.Duration {
+			return 200 * time.Millisecond
+		},
+		MaxReconnectBackoff: 200 * time.Millisecond,
+		ConnectTimeout:      10 * time.Millisecond,
+		WatchdogMargin:      10 * time.Millisecond,
+		ObservationInterval: 1,
+		SanityCheck:         "select true",
+		WatchdogExit: func(reason string) {
+			fired <- reason
+		},
+		Logger: slog.Default(),
+	}, RealClock{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	go w.ReportProgress(ctx, true, 1)
+	time.Sleep(4 * time.Second)
+	cancel()
+	select {
+	case reason := <-fired:
+		t.Fatalf("watchdog fired during reconnect attempts: %s", reason)
+	default:
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop")
 	}
 }

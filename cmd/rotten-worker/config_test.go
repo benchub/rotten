@@ -159,7 +159,7 @@ func TestRegisterSourceWithCacheUsesCachedIDsWhenServerIsDown(t *testing.T) {
 	client := &fakeRegistrar{err: errors.New("server down")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	got, err := registerSourceWithCache(ctx, client, store, "https://server", req, discardLogger())
+	got, err := registerSourceWithCache(ctx, context.Background(), client, store, "https://server", req, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestRegisterSourceWithCacheReconcilesCachedOutboxBeforeStartup(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	client := &fakeRegistrar{err: errors.New("server down")}
-	got, err := registerSourceWithCache(ctx, client, store, "https://server", req, discardLogger())
+	got, err := registerSourceWithCache(ctx, context.Background(), client, store, "https://server", req, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,12 +223,58 @@ func TestRegisterSourceWithCacheIgnoresCacheOnIdentityMismatch(t *testing.T) {
 	}
 	req := &rottenv1.RegisterRequest{Project: "p", Environment: "e", Cluster: "c", Role: "new", Fqdn: "db"}
 	client := &fakeRegistrar{resp: &rottenv1.RegisterResponse{LogicalSourceId: 8, PhysicalSourceId: 43}}
-	got, err := registerSourceWithCache(context.Background(), client, store, "https://server", req, discardLogger())
+	got, err := registerSourceWithCache(context.Background(), context.Background(), client, store, "https://server", req, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.LogicalSourceID != 8 || got.PhysicalSourceID != 43 || client.calls != 1 {
 		t.Fatalf("got %+v after %d calls, want blocking register with 8/43", got, client.calls)
+	}
+}
+
+func TestCachedRegistrationBackgroundRetrySurvivesStartupCancel(t *testing.T) {
+	store := openConfigStore(t)
+	req := &rottenv1.RegisterRequest{Project: "p", Environment: "e", Cluster: "c", Role: "r", Fqdn: "db"}
+	cached := state.SourceRegistration{
+		ServerURL:        "https://server",
+		Project:          "p",
+		Environment:      "e",
+		Cluster:          "c",
+		Role:             "r",
+		FQDN:             "db",
+		LogicalSourceID:  7,
+		PhysicalSourceID: 42,
+	}
+	if err := store.SaveSourceRegistration(context.Background(), cached); err != nil {
+		t.Fatal(err)
+	}
+	startupCtx, startupCancel := context.WithCancel(context.Background())
+	processCtx, processCancel := context.WithCancel(context.Background())
+	defer processCancel()
+	client := &fakeRegistrar{
+		resp:  &rottenv1.RegisterResponse{LogicalSourceId: 8, PhysicalSourceId: 43},
+		block: make(chan struct{}),
+	}
+	exited := make(chan int, 1)
+	oldExit := exitProcess
+	exitProcess = func(code int) { exited <- code }
+	t.Cleanup(func() { exitProcess = oldExit })
+	got, err := registerSourceWithCache(startupCtx, processCtx, client, store, "https://server", req, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != cached {
+		t.Fatalf("registration = %+v, want cached %+v", got, cached)
+	}
+	startupCancel()
+	close(client.block)
+	select {
+	case code := <-exited:
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("background registration did not survive startup cancellation")
 	}
 }
 
@@ -334,13 +380,24 @@ type fakeRegistrar struct {
 	resp  *rottenv1.RegisterResponse
 	err   error
 	errs  []error
+	block chan struct{}
 	calls int
 	reqs  []*rottenv1.RegisterRequest
 }
 
-func (f *fakeRegistrar) Register(_ context.Context, req *rottenv1.RegisterRequest) (*rottenv1.RegisterResponse, error) {
+func (f *fakeRegistrar) Register(ctx context.Context, req *rottenv1.RegisterRequest) (*rottenv1.RegisterResponse, error) {
 	f.calls++
 	f.reqs = append(f.reqs, req)
+	if f.block != nil {
+		select {
+		case <-f.block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	if len(f.errs) > 0 {
 		err := f.errs[0]
 		f.errs = f.errs[1:]

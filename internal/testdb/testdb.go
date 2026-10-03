@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -76,6 +77,55 @@ func (d *DB) Stop(t testing.TB) {
 	if err := d.c.Terminate(context.Background()); err != nil {
 		t.Fatalf("testdb: stop container: %v", err)
 	}
+}
+
+// Restart stops and starts the same database container, runs whileStopped
+// after the stop and before the start, then refreshes the host DSN in case
+// Docker assigns a new mapped port.
+func (d *DB) Restart(t testing.TB, whileStopped ...func()) {
+	t.Helper()
+	ctx := context.Background()
+	timeout := 10 * time.Second
+	if err := d.c.Stop(ctx, &timeout); err != nil {
+		t.Fatalf("testdb: stop container for restart: %v", err)
+	}
+	for _, fn := range whileStopped {
+		fn()
+	}
+	if err := d.c.Start(ctx); err != nil {
+		t.Fatalf("testdb: start container after restart: %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		host, err := d.c.Host(ctx)
+		if err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		port, err := d.c.MappedPort(ctx, "5432/tcp")
+		if err == nil {
+			u := url.URL{
+				Scheme:   "postgres",
+				User:     url.UserPassword("postgres", "postgres"),
+				Host:     net.JoinHostPort(host, port.Port()),
+				Path:     d.dbName,
+				RawQuery: "sslmode=disable",
+			}
+			d.DSN = u.String()
+			conn, err := pgx.Connect(ctx, d.DSN)
+			if err == nil {
+				conn.Close(ctx)
+				return
+			}
+			lastErr = err
+		} else {
+			lastErr = err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("testdb: restarted container did not become ready: %v", lastErr)
 }
 
 // Connect opens a superuser connection and closes it at test cleanup.

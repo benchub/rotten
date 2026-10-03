@@ -6,15 +6,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"log/slog"
+	"math/rand/v2"
+	"net"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
@@ -81,7 +88,17 @@ type QueryEvent struct {
 // Config is what Run needs: the connections main opened and the settings
 // main read from the config file.
 type Config struct {
-	ObservedDB          *pgx.Conn
+	// ObservedDBConnect opens a fresh connection to the observed database.
+	// When set, Run reconnects with backoff after transient connection
+	// failures. ObservedDB is used only when this is nil.
+	ObservedDBConnect ObservedConnector
+	ObservedDB        *pgx.Conn
+	// ReconnectBackoff returns the delay before reconnect attempt n. Nil
+	// uses a capped exponential backoff.
+	ReconnectBackoff    func(attempt int) time.Duration
+	MaxReconnectBackoff time.Duration
+	ConnectTimeout      time.Duration
+	WatchdogMargin      time.Duration
 	ObservationInterval uint32
 	SanityCheck         string
 	LogicalID           uint32
@@ -101,7 +118,20 @@ type Config struct {
 	// is for -39's config cutover; until main wires it, the worker keeps the
 	// direct rotten DB write path.
 	ServerOutbox ServerOutboxStore
+	// WatchdogExit is called when noIdleHands fires. Nil exits the process
+	// with status 1.
+	WatchdogExit func(reason string)
+	Logger       *slog.Logger
 }
+
+// ErrSanityCheckFailed is returned when the configured sanity check runs and
+// returns false. Supervisors should treat it as an intentional nonzero exit.
+var ErrSanityCheckFailed = errors.New("sanity check fails")
+
+var errGracefulStop = errors.New("worker graceful stop")
+
+// ObservedConnector opens a new observed database connection.
+type ObservedConnector func(context.Context) (*pgx.Conn, error)
 
 // StateStore is the part of *state.Store that Run uses.
 type StateStore interface {
@@ -144,9 +174,11 @@ type Worker struct {
 	// Progress stats. Run writes them and ReportProgress reads them from
 	// another goroutine, so they're atomics. lastWindowEnd holds the last
 	// harvest's time in Unix seconds.
-	eventCount    atomic.Uint64
-	lastWindowEnd atomic.Int64
-	eventsPending atomic.Uint32
+	eventCount     atomic.Uint64
+	lastWindowEnd  atomic.Int64
+	eventsPending  atomic.Uint32
+	liveness       atomic.Uint64
+	livenessReason atomic.Value
 
 	// Count and samples are one snapshot for the progress goroutine.
 	parseFailuresMu     sync.Mutex
@@ -163,13 +195,36 @@ type Worker struct {
 	// How many event-processing goroutines are running. The server-outbox
 	// worker path never starts any; this remains for progress log continuity.
 	processing atomic.Uint32
+
+	gracefulStop     chan struct{}
+	gracefulStopOnce sync.Once
 }
 
 // New returns a Worker for cfg that tells time with clk.
 func New(cfg Config, clk Clock) *Worker {
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
 	return &Worker{
-		cfg: cfg,
-		clk: clk,
+		cfg:          cfg,
+		clk:          clk,
+		gracefulStop: make(chan struct{}),
+	}
+}
+
+// StopAfterCurrent asks Run to return after the current harvest, or
+// immediately if it is sleeping between harvests. It does not cancel in-flight
+// database work; cancel Run's context for an urgent stop.
+func (w *Worker) StopAfterCurrent() {
+	w.gracefulStopOnce.Do(func() { close(w.gracefulStop) })
+}
+
+func (w *Worker) stopping() bool {
+	select {
+	case <-w.gracefulStop:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -178,40 +233,231 @@ func New(cfg Config, clk Clock) *Worker {
 // interval. The first harvest happens right away; with no saved snapshot
 // it's a baseline and sends nothing. Run never resets pg_stat_statements'
 // counters.
-//
-// It returns only when ctx ends, and only at its sleep. Observed database
-// errors still exit through log.Fatalln, as they always have. main starts
-// ReportProgress before calling Run.
 func (w *Worker) Run(ctx context.Context) error {
 	cfg := w.cfg
-	reader := pgss.NewReader(cfg.ObservedDB)
-	texts := pgss.NewTextCache(reader)
 	interval := time.Duration(cfg.ObservationInterval) * time.Second
+	var observed *pgx.Conn
+	var reader *pgss.Reader
+	var texts *pgss.TextCache
+	ownsObserved := cfg.ObservedDBConnect != nil
+	defer func() {
+		if ownsObserved && observed != nil {
+			_ = observed.Close(context.Background())
+		}
+	}()
+	connectAttempt := 0
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		w.markAlive("loop")
+		if w.stopping() {
+			return nil
+		}
+		if observed == nil {
+			conn, err := w.connectObserved(ctx, connectAttempt)
+			if err != nil {
+				if errors.Is(err, errGracefulStop) {
+					return nil
+				}
+				return err
+			}
+			w.markAlive("connected")
+			observed = conn
+			reader = pgss.NewReader(observed)
+			texts = pgss.NewTextCache(reader)
+			connectAttempt = 0
+		}
 		doIt := true
 		log.Println("Performing sanity check")
-		if err := cfg.ObservedDB.QueryRow(context.Background(), cfg.SanityCheck).Scan(&doIt); err != nil {
-			log.Fatalln("couldn't run sanity check test", err)
+		if err := observed.QueryRow(ctx, cfg.SanityCheck).Scan(&doIt); err != nil {
+			if retryObservedError(err) {
+				w.markAlive("sanity reconnect")
+				w.cfg.Logger.Warn("observed database sanity check failed; reconnecting", "err", err)
+				w.closeObserved(observed)
+				observed = nil
+				reader = nil
+				texts = nil
+				connectAttempt++
+				if err := w.sleepOrStop(ctx, w.reconnectBackoff(connectAttempt)); err != nil {
+					if errors.Is(err, errGracefulStop) {
+						return nil
+					}
+					return err
+				}
+				continue
+			}
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrSanityCheckFailed
+			}
+			return fmt.Errorf("couldn't run sanity check test: %w", err)
 		}
 		if !doIt {
-			log.Fatalln("sanity check fails; exiting")
-			// will now exit because Fatal
+			return ErrSanityCheckFailed
 		}
 
 		now := w.clk.Now()
-		w.harvest(reader, texts, now)
+		if err := w.harvest(ctx, reader, texts, now); err != nil {
+			if retryObservedError(err) {
+				w.markAlive("harvest reconnect")
+				w.cfg.Logger.Warn("observed database harvest failed; reconnecting", "err", err)
+				w.closeObserved(observed)
+				observed = nil
+				reader = nil
+				texts = nil
+				connectAttempt++
+				if err := w.sleepOrStop(ctx, w.reconnectBackoff(connectAttempt)); err != nil {
+					if errors.Is(err, errGracefulStop) {
+						return nil
+					}
+					return err
+				}
+				continue
+			}
+			return err
+		}
+
+		if w.stopping() {
+			return nil
+		}
 
 		if elapsed := w.clk.Now().Sub(now); elapsed < interval {
 			slackoff := interval - elapsed
 			log.Println("doing nothing for", slackoff.Round(time.Millisecond), "more")
-			if err := w.clk.Sleep(ctx, slackoff); err != nil {
+			sleepCtx, cancel := context.WithCancel(ctx)
+			go func() {
+				select {
+				case <-w.gracefulStop:
+					cancel()
+				case <-sleepCtx.Done():
+				}
+			}()
+			err := w.clk.Sleep(sleepCtx, slackoff)
+			cancel()
+			if err != nil {
+				if w.stopping() {
+					return nil
+				}
 				return err
 			}
 		} else {
 			log.Println("ruh oh, our harvest took", (elapsed - interval).Round(time.Millisecond), "longer than the observation window")
 		}
 		log.Println("main loop complete")
+	}
+}
+
+func (w *Worker) connectObserved(ctx context.Context, attempt int) (*pgx.Conn, error) {
+	if w.cfg.ObservedDBConnect == nil {
+		if w.cfg.ObservedDB == nil {
+			return nil, errors.New("observed database connection is required")
+		}
+		return w.cfg.ObservedDB, nil
+	}
+	for {
+		conn, err := w.cfg.ObservedDBConnect(ctx)
+		if err == nil {
+			w.markAlive("connect attempt succeeded")
+			return conn, nil
+		}
+		w.markAlive("connect attempt failed")
+		attempt++
+		delay := w.reconnectBackoff(attempt)
+		w.cfg.Logger.Warn("observed database connection failed; retrying", "err", err, "attempt", attempt, "retry_in", delay.String())
+		if err := w.sleepOrStop(ctx, delay); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (w *Worker) reconnectBackoff(attempt int) time.Duration {
+	if w.cfg.ReconnectBackoff != nil {
+		return w.cfg.ReconnectBackoff(attempt)
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	shift := attempt - 1
+	if shift > 6 {
+		shift = 6
+	}
+	delay := time.Second << shift
+	maxBackoff := w.maxReconnectBackoff()
+	if delay > maxBackoff {
+		delay = maxBackoff
+	}
+	half := delay / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
+}
+
+func (w *Worker) maxReconnectBackoff() time.Duration {
+	if w.cfg.MaxReconnectBackoff > 0 {
+		return w.cfg.MaxReconnectBackoff
+	}
+	return time.Minute
+}
+
+func (w *Worker) connectTimeout() time.Duration {
+	if w.cfg.ConnectTimeout > 0 {
+		return w.cfg.ConnectTimeout
+	}
+	return 5 * time.Second
+}
+
+func (w *Worker) watchdogMargin() time.Duration {
+	if w.cfg.WatchdogMargin > 0 {
+		return w.cfg.WatchdogMargin
+	}
+	return time.Second
+}
+
+func (w *Worker) closeObserved(conn *pgx.Conn) {
+	if conn != nil && w.cfg.ObservedDBConnect != nil {
+		_ = conn.Close(context.Background())
+	}
+}
+
+func retryObservedError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if pgconn.SafeToRetry(err) || pgconn.Timeout(err) || isNetworkUnavailable(err) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if strings.HasPrefix(pgErr.Code, "08") || pgErr.Code == "57P01" || pgErr.Code == "57P02" || pgErr.Code == "57P03" {
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func isNetworkUnavailable(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, pgconn.ErrConnClosed) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	for _, target := range []error{syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ECONNREFUSED, syscall.EPIPE} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
+func (w *Worker) sleepOrStop(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-w.gracefulStop:
+		return errGracefulStop
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -229,21 +475,20 @@ func emptyBaseline() state.Loaded {
 // A baseline harvest (no usable snapshot, a state store error on Load, or a
 // failed Save last time) saves the snapshot and sends nothing, because Diff
 // against it reports lifetime totals or counts a window twice.
-func (w *Worker) harvest(reader *pgss.Reader, texts *pgss.TextCache, now time.Time) {
-	ctx := context.Background()
+func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.TextCache, now time.Time) error {
 	cfg := w.cfg
+	w.markAlive("harvest attempt")
 	w.resetParseFailures()
 	w.eventsPending.Store(0)
 
 	log.Println("retrieving stats results")
 	info, err := reader.Info(ctx)
 	if err != nil {
-		log.Fatalln("couldn't read pg_stat_statements_info", err)
+		return fmt.Errorf("couldn't read pg_stat_statements_info: %w", err)
 	}
 	stats, err := reader.ReadStats(ctx)
 	if err != nil {
-		log.Fatalln("couldn't select from pg_stat_statements", err)
-		// will now exit because Fatal
+		return fmt.Errorf("couldn't select from pg_stat_statements: %w", err)
 	}
 	// Right after the read, so the next window's min and max cover only
 	// that window. This resets min and max only, never the counters.
@@ -273,25 +518,32 @@ func (w *Worker) harvest(reader *pgss.Reader, texts *pgss.TextCache, now time.Ti
 		if err != nil {
 			log.Println("couldn't save the snapshot and outbox batch, so the next harvest is a baseline:", err)
 			w.staleState = true
-			return
+			return nil
 		}
 		if result.DroppedCap > 0 {
 			log.Println("worker outbox cap dropped oldest batches", result.DroppedCap)
 		}
 		w.staleState = false
-		return
+		return nil
 	} else {
 		log.Println("no server outbox configured; dropping harvest and treating next harvest as a baseline")
 		w.staleState = true
-		return
+		return nil
 	}
 
 	if err := cfg.State.Save(ctx, next, now); err != nil {
 		log.Println("couldn't save the snapshot, so the next harvest is a baseline:", err)
 		w.staleState = true
-		return
+		return nil
 	}
 	w.staleState = false
+	w.markAlive("harvest completed")
+	return nil
+}
+
+func (w *Worker) markAlive(reason string) {
+	w.liveness.Add(1)
+	w.livenessReason.Store(reason)
 }
 
 func (w *Worker) buildHarvestBatch(ctx context.Context, texts *pgss.TextCache, deltas []pgss.Delta, start, end time.Time) *rottenv1.SubmitHarvestRequest {
@@ -451,39 +703,62 @@ func serverContextKey(controller, action, jobTag string) string {
 }
 
 // ReportProgress logs the progress counters every interval seconds. It
-// returns when ctx ends. main passes context.Background(), so in production
-// it never does. With noIdleHands set, two intervals in a row with no new
-// events make it panic, so the process dies ungracefully.
+// returns when ctx ends. With noIdleHands set, two intervals in a row with no
+// new events fire the watchdog.
 func (w *Worker) ReportProgress(ctx context.Context, noIdleHands bool, interval uint32) {
+	w.reportProgress(ctx, noIdleHands, interval, RealClock{})
+}
+
+func (w *Worker) reportProgress(ctx context.Context, noIdleHands bool, interval uint32, clk Clock) {
 	observation_interval := w.cfg.ObservationInterval
-	almostDead := false
-	lastProcessed := w.eventCount.Load()
+	lastLive := w.liveness.Load()
+	lastLiveAt := time.Now()
+	watchdogTimeout := w.watchdogTimeout(time.Duration(interval)*time.Second, time.Duration(observation_interval)*time.Second)
 	w.lastWindowEnd.Store(time.Now().Unix())
 
 	for {
 		closed := time.Now().Unix() - w.lastWindowEnd.Load()
 		processed := w.eventCount.Load()
+		live := w.liveness.Load()
+		if live != lastLive {
+			lastLive = live
+			lastLiveAt = time.Now()
+		}
 		failures, samples := w.parseFailureSnapshot()
 
 		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", w.eventsPending.Load(), "unique events queued,", failures, "fingerprints failed. Overall,", processed, "processed")
 		if failures > 0 {
 			log.Printf("fingerprint failure samples (up to %d): %q", parseFailureSampleLimit, samples)
 		}
-		if noIdleHands && lastProcessed == processed {
-			if almostDead {
-				var m map[string]int
-
-				m["stacktracetime"] = 1
+		if noIdleHands && time.Since(lastLiveAt) > watchdogTimeout {
+			reason := fmt.Sprintf("no worker liveness for %s (last: %v)", time.Since(lastLiveAt).Round(time.Millisecond), w.livenessReason.Load())
+			w.cfg.Logger.Error("noIdleHands watchdog firing", "reason", reason, "interval_seconds", interval, "observation_interval_seconds", observation_interval)
+			if w.cfg.WatchdogExit != nil {
+				w.cfg.WatchdogExit(reason)
 			} else {
-				almostDead = true
+				os.Exit(1)
 			}
-		} else {
-			almostDead = false
+			return
 		}
 
-		lastProcessed = processed
-		if err := (RealClock{}).Sleep(ctx, time.Duration(interval)*time.Second); err != nil {
+		if err := clk.Sleep(ctx, time.Duration(interval)*time.Second); err != nil {
 			return
 		}
 	}
+}
+
+func (w *Worker) watchdogTimeout(status, observation time.Duration) time.Duration {
+	base := observation
+	if status > base {
+		base = status
+	}
+	if base <= 0 {
+		base = time.Second
+	}
+	loopTimeout := 3 * base
+	reconnectTimeout := w.maxReconnectBackoff() + w.connectTimeout() + w.watchdogMargin()
+	if reconnectTimeout > loopTimeout {
+		return reconnectTimeout
+	}
+	return loopTimeout
 }
