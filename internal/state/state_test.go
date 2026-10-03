@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	"github.com/benchub/rotten/internal/pgss"
 )
 
@@ -284,6 +289,147 @@ func TestFailedSaveKeepsOldSnapshot(t *testing.T) {
 		t.Fatalf("Tx: want errLater, got %v", err)
 	}
 	check()
+}
+
+func TestSaveSnapshotAndEnqueueIsAtomic(t *testing.T) {
+	now := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	s := open(t, t.TempDir(), now)
+	old := snapOf(testInfo, minimalStat())
+	if err := s.Save(ctx, old, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TEMP TRIGGER boom BEFORE INSERT ON snapshot
+		WHEN NEW.queryid = 99 BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+	next := minimalStat()
+	next.QueryID = 99
+	if _, err := s.SaveSnapshotAndEnqueue(ctx, snapOf(testInfo, next), now, sampleHarvestBatch("42:1:2")); err == nil {
+		t.Fatal("SaveSnapshotAndEnqueue: want trigger error")
+	}
+	loaded, err := s.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameSnapshot(t, old, loaded.Snapshot)
+	if got, err := s.NextOutboxBatch(ctx); err != nil {
+		t.Fatal(err)
+	} else if got != nil {
+		t.Fatalf("outbox batch committed despite snapshot failure: %+v", got)
+	}
+}
+
+func TestOutboxCapDropsOldestAndCounts(t *testing.T) {
+	now := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	s, err := Open(t.TempDir(), Options{Now: func() time.Time { return now }, OutboxCap: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	for _, id := range []string{"42:1:2", "42:2:3", "42:3:4"} {
+		if _, err := s.EnqueueHarvest(ctx, sampleHarvestBatch(id), now); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+	counts, err := s.OutboxCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Queued != 2 || counts.DroppedCap != 1 {
+		t.Fatalf("counts = %+v, want queued=2 dropped_cap=1", counts)
+	}
+	first, err := s.NextOutboxBatch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || first.BatchID != "42:2:3" {
+		t.Fatalf("oldest remaining batch = %+v, want 42:2:3", first)
+	}
+}
+
+func TestOutboxStoresDeterministicProtoBytes(t *testing.T) {
+	now := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	s := open(t, t.TempDir(), now)
+	msg := sampleHarvestBatch("42:1:2")
+	want, err := (proto.MarshalOptions{Deterministic: true}).Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnqueueHarvest(ctx, msg, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.NextOutboxBatch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("NextOutboxBatch returned nil")
+	}
+	if string(got.Payload) != string(want) {
+		t.Fatalf("payload bytes are not deterministic proto bytes")
+	}
+	var roundTrip rottenv1.SubmitHarvestRequest
+	if err := proto.Unmarshal(got.Payload, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	again, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&roundTrip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != string(want) {
+		t.Fatalf("remarshaled payload changed bytes")
+	}
+}
+
+func TestOpenMigratesV1StoreToOutboxSchema(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(schemaV1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	s := open(t, dir, now)
+	if _, err := s.EnqueueHarvest(context.Background(), sampleHarvestBatch("42:1:2"), now); err != nil {
+		t.Fatalf("enqueue after migration: %v", err)
+	}
+	counts, err := s.OutboxCounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Queued != 1 {
+		t.Fatalf("queued = %d, want 1", counts.Queued)
+	}
+}
+
+func sampleHarvestBatch(id string) *rottenv1.SubmitHarvestRequest {
+	start := time.UnixMicro(1).UTC()
+	end := time.UnixMicro(2).UTC()
+	return &rottenv1.SubmitHarvestRequest{
+		BatchId:          id,
+		LogicalSourceId:  7,
+		PhysicalSourceId: 42,
+		WindowStart:      timestamppb.New(start),
+		WindowEnd:        timestamppb.New(end),
+		Aggregates: []*rottenv1.FingerprintAggregate{{
+			Fingerprint: "02a281c251c3a43d2fe7457dff01f76c5cc523f8c8",
+			Normalized:  "select $1",
+			Metrics:     &rottenv1.Metrics{Calls: 1, TotalTime: 1, MinTime: 1, MaxTime: 1, MeanTime: 1},
+			Contexts:    []*rottenv1.QueryContext{{Count: 1}},
+		}},
+	}
 }
 
 func TestSecondOpenFails(t *testing.T) {

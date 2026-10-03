@@ -11,7 +11,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 
+	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
+	"github.com/benchub/rotten/internal/harvestlimits"
 	"github.com/benchub/rotten/internal/pgss"
 	"github.com/benchub/rotten/internal/state"
 	"github.com/benchub/rotten/internal/testdb"
@@ -115,6 +118,33 @@ func (r *diffRig) start(t *testing.T, logical, physical uint32, store StateStore
 		ReAction:            reA,
 		ReJobTag:            reJ,
 		State:               store,
+	}
+	clk := &stepClock{sleeping: make(chan time.Duration), proceed: make(chan struct{})}
+	w := New(cfg, clk)
+	parkStats(t, w)
+	ctx, cancel := context.WithCancel(context.Background())
+	rn := &running{w: w, clk: clk, cancel: cancel, ran: make(chan error, 1)}
+	go func() { rn.ran <- w.Run(ctx) }()
+	t.Cleanup(func() { rn.stop(t) })
+	clk.waitSleep(t)
+	rn.harvests = append(rn.harvests, w.lastHarvest.Load())
+	return rn
+}
+
+func (r *diffRig) startOutbox(t *testing.T, logical, physical uint32, store *state.Store) *running {
+	t.Helper()
+	reC, reA, reJ := sampleRegexes(t)
+	cfg := Config{
+		ObservedDB:          observerConn(t, r.obsDSN),
+		ObservationInterval: 2,
+		SanityCheck:         "select true",
+		LogicalID:           logical,
+		PhysicalID:          physical,
+		ReController:        reC,
+		ReAction:            reA,
+		ReJobTag:            reJ,
+		State:               store,
+		ServerOutbox:        store,
 	}
 	clk := &stepClock{sleeping: make(chan time.Duration), proceed: make(chan struct{})}
 	w := New(cfg, clk)
@@ -436,5 +466,68 @@ func TestWorkerDiffing(t *testing.T) {
 				rn.stop(t)
 			})
 		})
+	}
+}
+func TestWorkerOutboxHarvestQueuesValidPayloadsInWindowOrder(t *testing.T) {
+	_, pool := startIdentityDB(t)
+	rig := newDiffRig(t, 18, pool)
+	logical, physical := rig.source(t, "outbox")
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+	rn := rig.startOutbox(t, logical, physical, store)
+	base := rn.harvests[0]
+
+	rig.work(t, 1)
+	h1 := rn.window(t)
+	rig.work(t, 2)
+	rn.window(t)
+	rig.work(t, 3)
+	rn.window(t)
+	rn.stop(t)
+
+	first, err := store.NextOutboxBatch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil {
+		t.Fatal("outbox is empty, want first queued harvest")
+	}
+	var msg rottenv1.SubmitHarvestRequest
+	if err := proto.Unmarshal(first.Payload, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := harvestlimits.ValidateHarvest(&msg, time.Now().UTC(), harvestlimits.CheckFutureSkew); err != nil {
+		t.Fatalf("queued payload failed harvest validation: %v", err)
+	}
+
+	client := &fakeSubmitter{}
+	sender := NewOutboxSender(store, client, nil)
+	if sent, err := sender.Drain(context.Background()); err != nil || sent != 3 {
+		t.Fatalf("Drain sent=%d err=%v, want three queued harvests", sent, err)
+	}
+	if len(client.batchIDs) != 3 {
+		t.Fatalf("sent batch count = %d, want 3", len(client.batchIDs))
+	}
+	var lastEnd int64
+	for i, batchID := range client.batchIDs {
+		var gotPhysical uint32
+		var start, end int64
+		if _, err := fmt.Sscanf(batchID, "%d:%d:%d", &gotPhysical, &start, &end); err != nil {
+			t.Fatalf("parse batch_id %q: %v", batchID, err)
+		}
+		if gotPhysical != physical {
+			t.Fatalf("batch %d physical = %d, want %d", i, gotPhysical, physical)
+		}
+		if i == 0 {
+			if time.UnixMicro(start).Unix() != base || time.UnixMicro(end).Unix() != h1 {
+				t.Fatalf("first batch window seconds = [%d,%d], want [%d,%d]", time.UnixMicro(start).Unix(), time.UnixMicro(end).Unix(), base, h1)
+			}
+		} else if start != lastEnd {
+			t.Fatalf("batch %d starts at %d, want previous end %d; order=%v", i, start, lastEnd, client.batchIDs)
+		}
+		if end <= start {
+			t.Fatalf("batch %d window [%d,%d] is not increasing", i, start, end)
+		}
+		lastEnd = end
 	}
 }

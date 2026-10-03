@@ -35,6 +35,9 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
+	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	"github.com/benchub/rotten/internal/pgss"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -43,9 +46,12 @@ import (
 // FileName is the store's file name inside StateDir.
 const FileName = "state.db"
 
-// schemaVersion is PRAGMA user_version. Task -38 bumps it to 2 when it adds
-// the outbox table.
-const schemaVersion = 1
+// DefaultOutboxCap is the default maximum queued harvest batches, about one
+// day at five-minute windows.
+const DefaultOutboxCap = 288
+
+// schemaVersion is PRAGMA user_version.
+const schemaVersion = 2
 
 const schemaV1 = `
 CREATE TABLE snapshot_meta (
@@ -97,11 +103,28 @@ CREATE TABLE snapshot (
 ) STRICT;
 `
 
+const schemaV2Outbox = `
+CREATE TABLE outbox (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	batch_id   TEXT NOT NULL UNIQUE,
+	payload    BLOB NOT NULL,
+	created_at INTEGER NOT NULL -- µs since epoch
+) STRICT;
+CREATE TABLE outbox_stats (
+	id               INTEGER PRIMARY KEY CHECK (id = 1),
+	dropped_cap      INTEGER NOT NULL DEFAULT 0,
+	dropped_rejected INTEGER NOT NULL DEFAULT 0
+) STRICT;
+INSERT INTO outbox_stats (id, dropped_cap, dropped_rejected) VALUES (1, 0, 0);
+`
+
 // Options configures Open.
 type Options struct {
 	// MaxSnapshotAge: Load treats an older snapshot as a baseline. Zero
 	// means no limit.
 	MaxSnapshotAge time.Duration
+	// OutboxCap limits queued harvest batches. Zero uses DefaultOutboxCap.
+	OutboxCap int
 	// Now defaults to time.Now.
 	Now func() time.Time
 }
@@ -131,12 +154,35 @@ type Loaded struct {
 	TakenAt  time.Time
 }
 
+// OutboxBatch is one serialized SubmitHarvest request waiting to be sent.
+type OutboxBatch struct {
+	ID        int64
+	BatchID   string
+	Payload   []byte
+	CreatedAt time.Time
+}
+
+// OutboxCounts reports queue length and durable drop counters.
+type OutboxCounts struct {
+	Queued          int
+	DroppedCap      uint64
+	DroppedRejected uint64
+}
+
+// OutboxEnqueueResult reports cap drops caused by one enqueue.
+type OutboxEnqueueResult struct {
+	DroppedCap int
+}
+
 // Open opens or creates the store in dir. If the file is corrupt, Open
 // renames it to state.db.corrupt-<UTC timestamp> (with any -wal and -shm
 // files), sets MovedAside, and starts a fresh, empty store.
 func Open(dir string, opts Options) (*Store, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.OutboxCap == 0 {
+		opts.OutboxCap = DefaultOutboxCap
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("state dir: %w", err)
@@ -352,8 +398,20 @@ func initDB(db *sql.DB) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(schemaV1); err != nil {
-		return err
+	switch v {
+	case 0:
+		if _, err := tx.Exec(schemaV1); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(schemaV2Outbox); err != nil {
+			return err
+		}
+	case 1:
+		if _, err := tx.Exec(schemaV2Outbox); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported schema version %d", v)
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return err
@@ -403,6 +461,164 @@ func (s *Store) Tx(ctx context.Context, fn func(Tx) error) error {
 // Save atomically replaces the stored snapshot.
 func (s *Store) Save(ctx context.Context, snap pgss.Snapshot, takenAt time.Time) error {
 	return s.Tx(ctx, func(tx Tx) error { return SaveSnapshot(ctx, tx, snap, takenAt) })
+}
+
+// SaveSnapshotAndEnqueue saves the next snapshot and queues batch in the
+// same transaction. If the outbox exceeds its cap after the enqueue, the
+// oldest batches are dropped in that same transaction and counted.
+func (s *Store) SaveSnapshotAndEnqueue(ctx context.Context, snap pgss.Snapshot, takenAt time.Time, batch *rottenv1.SubmitHarvestRequest) (OutboxEnqueueResult, error) {
+	var result OutboxEnqueueResult
+	payload, err := marshalHarvest(batch)
+	if err != nil {
+		return result, err
+	}
+	err = s.Tx(ctx, func(tx Tx) error {
+		if err := SaveSnapshot(ctx, tx, snap, takenAt); err != nil {
+			return err
+		}
+		var err error
+		result, err = s.enqueuePayload(ctx, tx, batch.GetBatchId(), payload, takenAt)
+		return err
+	})
+	return result, err
+}
+
+// EnqueueHarvest queues batch without changing the snapshot.
+func (s *Store) EnqueueHarvest(ctx context.Context, batch *rottenv1.SubmitHarvestRequest, createdAt time.Time) (OutboxEnqueueResult, error) {
+	var result OutboxEnqueueResult
+	payload, err := marshalHarvest(batch)
+	if err != nil {
+		return result, err
+	}
+	err = s.Tx(ctx, func(tx Tx) error {
+		var err error
+		result, err = s.enqueuePayload(ctx, tx, batch.GetBatchId(), payload, createdAt)
+		return err
+	})
+	return result, err
+}
+
+func marshalHarvest(batch *rottenv1.SubmitHarvestRequest) ([]byte, error) {
+	if batch == nil {
+		return nil, errors.New("harvest batch is required")
+	}
+	if batch.GetBatchId() == "" {
+		return nil, errors.New("harvest batch_id is required")
+	}
+	payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(batch)
+	if err != nil {
+		return nil, fmt.Errorf("marshal harvest batch: %w", err)
+	}
+	return payload, nil
+}
+
+func (s *Store) enqueuePayload(ctx context.Context, tx Tx, batchID string, payload []byte, createdAt time.Time) (OutboxEnqueueResult, error) {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO outbox (batch_id, payload, created_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(batch_id) DO UPDATE SET payload = excluded.payload`, batchID, payload, createdAt.UnixMicro()); err != nil {
+		return OutboxEnqueueResult{}, err
+	}
+	return s.enforceOutboxCap(ctx, tx)
+}
+
+func (s *Store) enforceOutboxCap(ctx context.Context, tx Tx) (OutboxEnqueueResult, error) {
+	if s.opts.OutboxCap < 0 {
+		return OutboxEnqueueResult{}, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM outbox ORDER BY id ASC LIMIT (
+		SELECT max(count(*) - ?, 0) FROM outbox
+	)`, s.opts.OutboxCap)
+	if err != nil {
+		return OutboxEnqueueResult{}, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return OutboxEnqueueResult{}, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return OutboxEnqueueResult{}, err
+	}
+	if len(ids) == 0 {
+		return OutboxEnqueueResult{}, nil
+	}
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM outbox WHERE id = ?", id); err != nil {
+			return OutboxEnqueueResult{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE outbox_stats SET dropped_cap = dropped_cap + ? WHERE id = 1`, len(ids)); err != nil {
+		return OutboxEnqueueResult{}, err
+	}
+	return OutboxEnqueueResult{DroppedCap: len(ids)}, nil
+}
+
+// NextOutboxBatch returns the oldest queued batch, or nil when the queue is empty.
+func (s *Store) NextOutboxBatch(ctx context.Context) (*OutboxBatch, error) {
+	var batch *OutboxBatch
+	err := s.Tx(ctx, func(tx Tx) error {
+		row := tx.QueryRowContext(ctx, `SELECT id, batch_id, payload, created_at FROM outbox ORDER BY id ASC LIMIT 1`)
+		var b OutboxBatch
+		var created int64
+		if err := row.Scan(&b.ID, &b.BatchID, &b.Payload, &created); errors.Is(err, sql.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		b.CreatedAt = micros(created)
+		batch = &b
+		return nil
+	})
+	return batch, err
+}
+
+// DeleteOutboxBatch deletes a batch after the server acknowledges it.
+func (s *Store) DeleteOutboxBatch(ctx context.Context, id int64) error {
+	return s.Tx(ctx, func(tx Tx) error {
+		_, err := tx.ExecContext(ctx, "DELETE FROM outbox WHERE id = ?", id)
+		return err
+	})
+}
+
+// DropRejectedOutboxBatch deletes a non-retryable rejected batch and counts it.
+func (s *Store) DropRejectedOutboxBatch(ctx context.Context, id int64) error {
+	return s.Tx(ctx, func(tx Tx) error {
+		res, err := tx.ExecContext(ctx, "DELETE FROM outbox WHERE id = ?", id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE outbox_stats SET dropped_rejected = dropped_rejected + ? WHERE id = 1`, n)
+		return err
+	})
+}
+
+// OutboxCounts returns queue length and drop counters.
+func (s *Store) OutboxCounts(ctx context.Context) (OutboxCounts, error) {
+	var counts OutboxCounts
+	err := s.Tx(ctx, func(tx Tx) error {
+		var capDropped, rejectedDropped int64
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM outbox`).Scan(&counts.Queued); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT dropped_cap, dropped_rejected FROM outbox_stats WHERE id = 1`).Scan(&capDropped, &rejectedDropped); err != nil {
+			return err
+		}
+		counts.DroppedCap = uint64(capDropped)
+		counts.DroppedRejected = uint64(rejectedDropped)
+		return nil
+	})
+	return counts, err
 }
 
 // SaveSnapshot replaces the stored snapshot inside tx. It's atomic only as

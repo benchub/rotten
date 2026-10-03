@@ -99,10 +99,9 @@ func TestRetryPolicy(t *testing.T) {
 			wantHits: 1,
 		},
 		{
-			name:     "does not retry resource exhausted",
+			name:     "retries server resource exhausted",
 			errs:     []error{connect.NewError(connect.CodeResourceExhausted, errors.New("rate limited"))},
-			wantCode: connect.CodeResourceExhausted,
-			wantHits: 1,
+			wantHits: 2,
 		},
 	}
 	for _, tc := range cases {

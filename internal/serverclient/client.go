@@ -193,6 +193,37 @@ func (c *Client) SubmitHarvest(ctx context.Context, msg *rottenv1.SubmitHarvestR
 	return resp, clips, nil
 }
 
+// HarvestTooLargeError marks a locally detected permanent oversize harvest.
+// Server-sent ResourceExhausted is operational and retryable; this client-side
+// case is safe for the outbox sender to drop because the same stored bytes will
+// never fit.
+type HarvestTooLargeError struct {
+	Err error
+}
+
+func (e *HarvestTooLargeError) Error() string {
+	if e == nil || e.Err == nil {
+		return "harvest message is too large"
+	}
+	return e.Err.Error()
+}
+
+func (e *HarvestTooLargeError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func NewHarvestTooLargeError(err error) error {
+	return connect.NewError(connect.CodeResourceExhausted, &HarvestTooLargeError{Err: err})
+}
+
+func IsHarvestTooLarge(err error) bool {
+	var tooLarge *HarvestTooLargeError
+	return errors.As(err, &tooLarge)
+}
+
 func request[M any](c *Client, msg *M) *connect.Request[M] {
 	req := connect.NewRequest(msg)
 	req.Header().Set("Authorization", "Bearer "+c.key)
@@ -237,9 +268,9 @@ func retryable(err error) bool {
 		return false
 	}
 	switch code := connect.CodeOf(err); code {
-	case connect.CodeUnavailable, connect.CodeDeadlineExceeded, connect.CodeAborted:
+	case connect.CodeUnavailable, connect.CodeDeadlineExceeded, connect.CodeAborted, connect.CodeResourceExhausted:
 		return true
-	case connect.CodeUnauthenticated, connect.CodePermissionDenied, connect.CodeInvalidArgument, connect.CodeFailedPrecondition, connect.CodeAlreadyExists, connect.CodeResourceExhausted:
+	case connect.CodeUnauthenticated, connect.CodePermissionDenied, connect.CodeInvalidArgument, connect.CodeFailedPrecondition, connect.CodeAlreadyExists:
 		return false
 	}
 	var netErr net.Error
@@ -286,7 +317,7 @@ func preflightHarvest(msg *rottenv1.SubmitHarvestRequest) error {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("harvest request is required"))
 	}
 	if size := proto.Size(msg); size > harvestlimits.MaxIngestMessageBytes {
-		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("harvest message exceeds %d bytes", harvestlimits.MaxIngestMessageBytes))
+		return NewHarvestTooLargeError(fmt.Errorf("harvest message exceeds %d bytes", harvestlimits.MaxIngestMessageBytes))
 	}
 	// Future-skew validation depends on the server's clock, so the client
 	// deliberately skips only that shared check.

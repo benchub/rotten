@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,7 +17,9 @@ import (
 	runningstat "github.com/benchub/runningstat"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/identity"
 	"github.com/benchub/rotten/internal/pgss"
@@ -96,12 +100,21 @@ type Config struct {
 	MinmaxResetSchema string
 	// State holds the snapshot between harvests. main opens a *state.Store.
 	State StateStore
+	// ServerOutbox, when set, makes harvest enqueue a SubmitHarvest batch
+	// and save the next snapshot in one local transaction. This library hook
+	// is for -39's config cutover; until main wires it, the worker keeps the
+	// direct rotten DB write path.
+	ServerOutbox ServerOutboxStore
 }
 
 // StateStore is the part of *state.Store that Run uses.
 type StateStore interface {
 	Load(ctx context.Context) (state.Loaded, error)
 	Save(ctx context.Context, snap pgss.Snapshot, takenAt time.Time) error
+}
+
+type ServerOutboxStore interface {
+	SaveSnapshotAndEnqueue(context.Context, pgss.Snapshot, time.Time, *rottenv1.SubmitHarvestRequest) (state.OutboxEnqueueResult, error)
 }
 
 // Clock is Run's source of time. Sleep returns ctx.Err() if ctx ends first.
@@ -232,8 +245,13 @@ func emptyBaseline() state.Loaded {
 }
 
 // harvest reads pg_stat_statements, diffs it against the saved snapshot, and
-// sends the top entries' activity for the window from the snapshot's
-// taken_at to now. Then it saves the new snapshot, taken at now.
+// sends the top entries' activity for the window from the snapshot's taken_at
+// to now. Then it saves the new snapshot, taken at now. In the legacy direct
+// DB path, processEvent still runs asynchronously before the snapshot save: a
+// crash after the save can lose a window, and a crash between direct writes
+// and the save can count it twice. The ServerOutbox path closes that gap by
+// saving the serialized SubmitHarvest batch and next snapshot together, then
+// deleting the batch only after the server acks it.
 //
 // A baseline harvest (no usable snapshot, a state store error on Load, or a
 // failed Save last time) saves the snapshot and sends nothing, because Diff
@@ -276,6 +294,19 @@ func (w *Worker) harvest(reader *pgss.Reader, texts *pgss.TextCache, now time.Ti
 
 	if loaded.Baseline {
 		log.Println("baseline harvest: saving the snapshot and sending nothing")
+	} else if cfg.ServerOutbox != nil {
+		batch := w.buildHarvestBatch(ctx, texts, deltas, loaded.TakenAt, now)
+		result, err := cfg.ServerOutbox.SaveSnapshotAndEnqueue(ctx, next, now, batch)
+		if err != nil {
+			log.Println("couldn't save the snapshot and outbox batch, so the next harvest is a baseline:", err)
+			w.staleState = true
+			return
+		}
+		if result.DroppedCap > 0 {
+			log.Println("worker outbox cap dropped oldest batches", result.DroppedCap)
+		}
+		w.staleState = false
+		return
 	} else {
 		w.send(ctx, texts, deltas, loaded.TakenAt, now)
 	}
@@ -376,6 +407,139 @@ func (w *Worker) send(ctx context.Context, texts *pgss.TextCache, deltas []pgss.
 		go w.processEvent(cfg.RottenDB, cfg.LogicalID, cfg.PhysicalID, cfg.ObservationInterval, fingerprint, &eventToBeGCedLater)
 		w.eventsPending.Add(^uint32(0)) // decrement
 	}
+}
+
+func (w *Worker) buildHarvestBatch(ctx context.Context, texts *pgss.TextCache, deltas []pgss.Delta, start, end time.Time) *rottenv1.SubmitHarvestRequest {
+	cfg := w.cfg
+	picked := topNDeltas(deltas, topDeltasPerMetric)
+	rows := make([]pgss.Stat, len(picked))
+	for i := range picked {
+		rows[i] = picked[i].Stat
+	}
+	if err := texts.Fill(ctx, rows); err != nil {
+		log.Println("couldn't fetch query text, so entries without cached text are skipped this window:", err)
+	}
+	events := make(map[string]QueryEvent)
+	for i, d := range picked {
+		if d.Calls <= 0 || d.QueryID == 0 {
+			continue
+		}
+		d.Query = rows[i].Query
+		if d.Query == "" {
+			continue
+		}
+		event := eventFromDelta(d)
+		event.query = d.Query
+		event.observationTimeStart = PoorMansTime{sec: start.Unix()}
+		event.observationTimeEnd = PoorMansTime{sec: end.Unix()}
+		fingerprint, err := fingerprinting.Normalized(event.query, cfg.Fingerprint)
+		if err != nil {
+			w.recordParseFailure(event.query)
+			continue
+		}
+		event.context = map[string]uint32{
+			serverContextKey(
+				extractContextValue(event.query, cfg.ReController),
+				extractContextValue(event.query, cfg.ReAction),
+				extractContextValue(event.query, cfg.ReJobTag),
+			): uint32(event.calls),
+		}
+		if existing, ok := events[fingerprint]; ok {
+			events[fingerprint] = mergeEvent(existing, event)
+		} else {
+			events[fingerprint] = event
+		}
+	}
+	aggregates := make([]*rottenv1.FingerprintAggregate, 0, len(events))
+	for fingerprint, event := range events {
+		normalized, err := fingerprinting.Query(event.query)
+		if err != nil {
+			w.recordParseFailure(event.query)
+			continue
+		}
+		aggregates = append(aggregates, eventAggregate(fingerprint, normalized, event))
+	}
+	sort.Slice(aggregates, func(i, j int) bool {
+		return aggregates[i].GetFingerprint() < aggregates[j].GetFingerprint()
+	})
+	return &rottenv1.SubmitHarvestRequest{
+		BatchId:          fmt.Sprintf("%d:%d:%d", cfg.PhysicalID, start.UnixMicro(), end.UnixMicro()),
+		LogicalSourceId:  cfg.LogicalID,
+		PhysicalSourceId: cfg.PhysicalID,
+		WindowStart:      timestamppb.New(start),
+		WindowEnd:        timestamppb.New(end),
+		Aggregates:       aggregates,
+	}
+}
+
+func eventAggregate(fingerprint, normalized string, event QueryEvent) *rottenv1.FingerprintAggregate {
+	metrics := &rottenv1.Metrics{
+		Calls:             uint64(event.calls),
+		TotalTime:         event.total_time,
+		MinTime:           event.min_time,
+		MaxTime:           event.max_time,
+		MeanTime:          event.mean_time,
+		Rows:              uint64(event.rows),
+		SharedBlksHit:     uint64(event.shared_blks_hit),
+		SharedBlksRead:    uint64(event.shared_blks_read),
+		SharedBlksDirtied: uint64(event.shared_blks_dirtied),
+		SharedBlksWritten: uint64(event.shared_blks_written),
+		LocalBlksHit:      uint64(event.local_blks_hit),
+		LocalBlksRead:     uint64(event.local_blks_read),
+		LocalBlksDirtied:  uint64(event.local_blks_dirtied),
+		LocalBlksWritten:  uint64(event.local_blks_written),
+		TempBlksRead:      uint64(event.temp_blks_read),
+		TempBlksWritten:   uint64(event.temp_blks_written),
+		BlkReadTime:       event.blk_read_time,
+		BlkWriteTime:      event.blk_write_time,
+	}
+	if !event.stddev_absent {
+		metrics.StddevTime = &event.stddev_time
+	}
+	contexts := make([]*rottenv1.QueryContext, 0, len(event.context))
+	for key, count := range event.context {
+		parts := strings.SplitN(key, "\x00", 3)
+		for len(parts) < 3 {
+			parts = append(parts, "")
+		}
+		contexts = append(contexts, &rottenv1.QueryContext{
+			Controller: parts[0],
+			Action:     parts[1],
+			JobTag:     parts[2],
+			Count:      uint64(count),
+		})
+	}
+	sort.Slice(contexts, func(i, j int) bool {
+		if contexts[i].GetController() != contexts[j].GetController() {
+			return contexts[i].GetController() < contexts[j].GetController()
+		}
+		if contexts[i].GetAction() != contexts[j].GetAction() {
+			return contexts[i].GetAction() < contexts[j].GetAction()
+		}
+		return contexts[i].GetJobTag() < contexts[j].GetJobTag()
+	})
+	return &rottenv1.FingerprintAggregate{
+		Fingerprint:    fingerprint,
+		Normalized:     normalized,
+		Contexts:       contexts,
+		Metrics:        metrics,
+		MinmaxLifetime: event.minmax_lifetime,
+	}
+}
+
+func extractContextValue(query string, re *regexp.Regexp) string {
+	if re == nil {
+		return ""
+	}
+	matches := re.FindStringSubmatch(query)
+	if len(matches) <= 1 {
+		return ""
+	}
+	return matches[len(matches)-1]
+}
+
+func serverContextKey(controller, action, jobTag string) string {
+	return controller + "\x00" + action + "\x00" + jobTag
 }
 
 // mergeEvent folds b into a, for two events with the same fingerprint in the

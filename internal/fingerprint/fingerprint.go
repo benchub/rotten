@@ -356,6 +356,18 @@ func Normalized(query string, opts Options) (fingerprint string, err error) {
 	return fingerprint, nil
 }
 
+// Query returns pg_query's normalized form of query for storage with a
+// fingerprint. The ingest server stores this representative text when it
+// first sees a fingerprint.
+func Query(query string) (string, error) {
+	normalized, err := pg_query.Normalize(query)
+	if err != nil {
+		log.Println("couldn't normalize query", query, err)
+		return "", errors.New("failed to normalize")
+	}
+	return normalized, nil
+}
+
 // deparseFallback handles a query whose munged parse tree couldn't be
 // deparsed. deparseErr is the Deparse error, used only for logging.
 func deparseFallback(query string, pats *patterns, deparseErr error) (string, error) {
