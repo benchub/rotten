@@ -157,11 +157,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes, and someone who isn't the author can follow the setup.
 - **Needs:** -41, -50.
 
-### 20261003-110000-1: Audit the remaining object-list shapes for schema collapse.
-- **Do:** -131002-1 collapses schemas in object lists by type, using an allow-list. Rarer forms are left alone: OPERATOR, CAST, TRANSFORM, DOMCONSTRAINT, and collations and conversions in ALTER forms. Audit them and add the ones whose list shapes are clear, with golden cases.
-- **Red test:** Golden pairs for each newly handled type, plus negative cases for anything that's still left alone.
-- **Done when:** Passes, and `make golden` shows only additions.
-- **Needs:** none.
 
 ### 20261003-120000-1: Build the UI dev image natively on arm64 if possible.
 - **Do:** `make ui-image` and the compose `ui` service force `--platform linux/amd64`, so on Apple Silicon the RSpec and Chromium image runs under emulation. Find out why it was pinned (Chromium and chromedriver availability on Debian arm64?). If a native build works, use the native platform; if not, document why the pin stays.

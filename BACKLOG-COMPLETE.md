@@ -815,3 +815,19 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
     - The `pg_isready` loop in `test-ui` is capped and fails loudly.
   - **`make test-all` is now the gate.**
   - **Follow-up:** 20261003-120000-1, the amd64-pinned UI dev image.
+
+### 20261003-110000-1: Audit the remaining object-list shapes for schema collapse.
+- **Do:** -131002-1 collapses schemas in object lists by type, using an allow-list. Rarer forms are left alone: OPERATOR, CAST, TRANSFORM, DOMCONSTRAINT, and collations and conversions in ALTER forms. Audit them and add the ones whose list shapes are clear, with golden cases.
+- **Red test:** Golden pairs for each newly handled type, plus negative cases for anything that's still left alone.
+- **Done when:** Passes, and `make golden` shows only additions.
+- **Needs:** none.
+- **Completed:** 2026-10-03, 7811596.
+  - **Newly collapsed:**
+    - OPERATOR object names.
+    - The domain in DOMCONSTRAINT. The constraint name is never collapsed.
+    - ALTER DOMAIN ... RENAME CONSTRAINT.
+    - ALTER COLLATION ... REFRESH VERSION.
+    - ALTER OPERATOR ... SET.
+  - **Regression locks only:** CAST, TRANSFORM and ALTER CONVERSION were already handled by the general TypeName walker or the allow-list, so they only get regression tests.
+  - **Left alone:** the `OPERATOR(a.+)` expression syntax, which has a negative golden case.
+  - **Golden changes:** additions only.
