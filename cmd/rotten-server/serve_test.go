@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -76,6 +77,45 @@ func TestServeConfiguration(t *testing.T) {
 		if code := run(tc.args, &out, &errb); code != tc.code || !strings.Contains(errb.String(), tc.want) {
 			t.Errorf("%v: code %d, stderr %q; want %d, %q", tc.args, code, errb.String(), tc.code, tc.want)
 		}
+	}
+}
+
+func TestServeConfigFileEnvAndFlagPrecedence(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "server.json")
+	b, err := json.Marshal(ServeFileConfig{
+		DSN:             "file-dsn",
+		Listen:          "file-listen",
+		TLSCert:         "file-cert",
+		TLSKey:          "file-key",
+		ShutdownTimeout: 20,
+		HealthTimeout:   2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROTTEN_SERVER_DSN", "env-dsn")
+	t.Setenv("ROTTEN_SERVER_LISTEN", "env-listen")
+	t.Setenv("ROTTEN_SERVER_TLS_CERT", "env-cert")
+	t.Setenv("ROTTEN_SERVER_TLS_KEY", "env-key")
+	t.Setenv("ROTTEN_SERVER_SHUTDOWN_TIMEOUT", "30")
+	t.Setenv("ROTTEN_SERVER_HEALTH_TIMEOUT", "3")
+
+	cfg, err := loadServeConfig([]string{
+		"-config", file,
+		"-listen", "flag-listen",
+		"-shutdown-timeout", "40",
+	}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DSN != "env-dsn" || cfg.Listen != "flag-listen" || cfg.TLSCert != "env-cert" || cfg.TLSKey != "env-key" {
+		t.Fatalf("cfg = %+v; want env values except flag listen", cfg)
+	}
+	if cfg.ShutdownTimeout != 40*time.Second || cfg.HealthTimeout != 3*time.Second {
+		t.Fatalf("timeouts = %v, %v; want 40s flag and 3s env", cfg.ShutdownTimeout, cfg.HealthTimeout)
 	}
 }
 
@@ -189,25 +229,61 @@ func eventually(t *testing.T, check func() bool, detail func() string) {
 	t.Fatalf("timed out: %s", detail())
 }
 
-func startServe(t *testing.T, dsn, certFile, keyFile string) (string, *exec.Cmd, *serveLogs) {
+func logsNeverReady() string { return "health never reported unhealthy" }
+
+type serveProcess struct {
+	addr   string
+	cmd    *exec.Cmd
+	logs   *serveLogs
+	done   chan error
+	mu     sync.Mutex
+	exited bool
+}
+
+func (p *serveProcess) markExited() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.exited = true
+}
+
+func (p *serveProcess) hasExited() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.exited
+}
+
+func (p *serveProcess) wait(timeout time.Duration) (error, bool) {
+	select {
+	case err := <-p.done:
+		p.markExited()
+		return err, true
+	case <-time.After(timeout):
+		return nil, false
+	}
+}
+
+func startServe(t *testing.T, dsn, certFile, keyFile string, extraEnv ...string) *serveProcess {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestServeProcess$")
 	cmd.Env = append(os.Environ(), "ROTTEN_TEST_SERVE_PROCESS=1",
 		"ROTTEN_INGEST_DSN="+dsn, "ROTTEN_TLS_CERT="+certFile, "ROTTEN_TLS_KEY="+keyFile)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	logs := &serveLogs{}
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	exited := false
+	proc := &serveProcess{cmd: cmd, logs: logs, done: done}
 	t.Cleanup(func() {
-		if exited {
+		if proc.hasExited() {
 			return
 		}
 		select {
 		case err := <-done:
+			proc.markExited()
 			t.Errorf("server exited early: %v\n%s", err, logs.String())
 			return
 		default:
@@ -230,7 +306,7 @@ func startServe(t *testing.T, dsn, certFile, keyFile string) (string, *exec.Cmd,
 	eventually(t, func() bool {
 		select {
 		case err := <-done:
-			exited = true
+			proc.markExited()
 			t.Fatalf("server exited before listening: %v\n%s", err, logs.String())
 		default:
 		}
@@ -242,7 +318,26 @@ func startServe(t *testing.T, dsn, certFile, keyFile string) (string, *exec.Cmd,
 		}
 		return false
 	}, logs.String)
-	return addr, cmd, logs
+	proc.addr = addr
+	return proc
+}
+
+func serveHarvestRequest(logical, physical uint32, start time.Time, suffix string) *connect.Request[rottenv1.SubmitHarvestRequest] {
+	end := start.Add(30 * time.Second)
+	msg := &rottenv1.SubmitHarvestRequest{
+		BatchId:          fmt.Sprintf("%d:%d:%d", physical, start.UnixMicro(), end.UnixMicro()),
+		LogicalSourceId:  logical,
+		PhysicalSourceId: physical,
+		WindowStart:      timestamppb.New(start),
+		WindowEnd:        timestamppb.New(end),
+		Aggregates: []*rottenv1.FingerprintAggregate{{
+			Fingerprint: "serve-" + suffix,
+			Normalized:  "select $1",
+			Contexts:    []*rottenv1.QueryContext{{Controller: "serve", Action: "drain", Count: 1}},
+			Metrics:     &rottenv1.Metrics{Calls: 1, TotalTime: 2},
+		}},
+	}
+	return connect.NewRequest(msg)
 }
 
 func dialTLS(addr string, config *tls.Config) (*tls.Conn, error) {
@@ -282,6 +377,226 @@ func keepAliveRequest(t *testing.T, conn *tls.Conn, reader *bufio.Reader) {
 	}
 }
 
+func TestServeHealthChecksDatabase(t *testing.T) {
+	db := testdb.StartRotten(t)
+	ca := newTestCA(t)
+	cert, priv := ca.pair(t, 1)
+	certFile, keyFile := writePair(t, cert, priv)
+	proc := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: ca.config()}, Timeout: 3 * time.Second}
+
+	resp, err := client.Get("https://" + proc.addr + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "ok\n" {
+		t.Fatalf("healthy response %s %q; want 200 ok", resp.Status, body)
+	}
+
+	db.Stop(t)
+	eventually(t, func() bool {
+		resp, err := client.Get("https://" + proc.addr + "/healthz")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "postgres") || strings.Contains(string(body), db.DSN) {
+			t.Fatalf("unhealthy response leaked database detail: %q", body)
+		}
+		return resp.StatusCode == http.StatusServiceUnavailable && string(body) == "unhealthy\n"
+	}, logsNeverReady)
+}
+
+func TestServeSIGTERMDuringHarvestDrains(t *testing.T) {
+	db := testdb.StartRotten(t)
+	ctx := context.Background()
+	owner, err := pgxpool.New(ctx, db.DSNAs(t, testdb.OwnerRole))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	key, err := auth.CreateKey(ctx, owner, "drain-test", "drain.example", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := newTestCA(t)
+	cert, priv := ca.pair(t, 1)
+	certFile, keyFile := writePair(t, cert, priv)
+	proc := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+
+	tr := &http.Transport{TLSClientConfig: ca.config(), ForceAttemptHTTP2: true}
+	defer tr.CloseIdleConnections()
+	api := rottenv1connect.NewIngestServiceClient(&http.Client{Transport: tr}, "https://"+proc.addr)
+	regReq := connect.NewRequest(&rottenv1.RegisterRequest{
+		Project: "drain", Environment: "test", Cluster: "cluster", Role: "primary", Fqdn: "drain.example",
+	})
+	regReq.Header().Set("Authorization", "Bearer "+key.Token)
+	reg, err := api.Register(ctx, regReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ingestPool, err := pgxpool.New(ctx, db.DSNAs(t, testdb.IngestRole))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingestPool.Close()
+	lockConn, err := ingestPool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Release()
+	if _, err := lockConn.Exec(ctx, "begin"); err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Exec(context.Background(), "rollback")
+	if _, err := lockConn.Exec(ctx, "select pg_advisory_xact_lock($1::bigint)", int64(reg.Msg.GetPhysicalSourceId())); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	harvest := serveHarvestRequest(reg.Msg.GetLogicalSourceId(), reg.Msg.GetPhysicalSourceId(), start, "drain")
+	harvest.Header().Set("Authorization", "Bearer "+key.Token)
+	done := make(chan error, 1)
+	go func() {
+		_, err := api.SubmitHarvest(context.Background(), harvest)
+		done <- err
+	}()
+	waitForWaitingAdvisoryLock(t, owner)
+	if err := proc.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	waitForLog(t, proc.logs, "shutting down")
+	if _, err := lockConn.Exec(context.Background(), "commit"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("in-flight harvest did not drain cleanly: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("in-flight harvest did not finish")
+	}
+
+	var count int
+	if err := owner.QueryRow(ctx, "select count(*) from rotten.ingested_batches where batch_id = $1", harvest.Msg.GetBatchId()).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("ingested_batches count = %d, want committed exactly once", count)
+	}
+	if err, ok := proc.wait(10 * time.Second); !ok || err != nil {
+		t.Fatalf("server exit after drained shutdown = %v, ok=%v\n%s", err, ok, proc.logs.String())
+	}
+}
+
+func TestServeShutdownTimeoutCancelsStuckHarvest(t *testing.T) {
+	db := testdb.StartRotten(t)
+	ctx := context.Background()
+	owner, err := pgxpool.New(ctx, db.DSNAs(t, testdb.OwnerRole))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	key, err := auth.CreateKey(ctx, owner, "timeout-test", "timeout.example", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := newTestCA(t)
+	cert, priv := ca.pair(t, 1)
+	certFile, keyFile := writePair(t, cert, priv)
+	proc := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile, "ROTTEN_SERVER_SHUTDOWN_TIMEOUT=1")
+
+	tr := &http.Transport{TLSClientConfig: ca.config(), ForceAttemptHTTP2: true}
+	defer tr.CloseIdleConnections()
+	api := rottenv1connect.NewIngestServiceClient(&http.Client{Transport: tr}, "https://"+proc.addr)
+	regReq := connect.NewRequest(&rottenv1.RegisterRequest{
+		Project: "timeout", Environment: "test", Cluster: "cluster", Role: "primary", Fqdn: "timeout.example",
+	})
+	regReq.Header().Set("Authorization", "Bearer "+key.Token)
+	reg, err := api.Register(ctx, regReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ingestPool, err := pgxpool.New(ctx, db.DSNAs(t, testdb.IngestRole))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ingestPool.Close()
+	lockConn, err := ingestPool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Release()
+	if _, err := lockConn.Exec(ctx, "begin"); err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Exec(context.Background(), "rollback")
+	if _, err := lockConn.Exec(ctx, "select pg_advisory_xact_lock($1::bigint)", int64(reg.Msg.GetPhysicalSourceId())); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	harvest := serveHarvestRequest(reg.Msg.GetLogicalSourceId(), reg.Msg.GetPhysicalSourceId(), start, "timeout")
+	harvest.Header().Set("Authorization", "Bearer "+key.Token)
+	done := make(chan error, 1)
+	go func() {
+		_, err := api.SubmitHarvest(context.Background(), harvest)
+		done <- err
+	}()
+	waitForWaitingAdvisoryLock(t, owner)
+	if err := proc.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	waitForLog(t, proc.logs, "shutting down")
+	if err, ok := proc.wait(5 * time.Second); !ok {
+		t.Fatalf("server did not exit after shutdown timeout\n%s", proc.logs.String())
+	} else if err == nil {
+		t.Fatalf("server exit was nil; want nonzero timeout exit\n%s", proc.logs.String())
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stuck harvest call did not return after server exit")
+	}
+	var count int
+	if err := owner.QueryRow(ctx, "select count(*) from rotten.ingested_batches where batch_id = $1", harvest.Msg.GetBatchId()).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("ingested_batches count = %d, want rollback/no commit", count)
+	}
+}
+
+func waitForWaitingAdvisoryLock(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	eventually(t, func() bool {
+		var count int
+		if err := pool.QueryRow(context.Background(), "select count(*) from pg_locks where locktype = 'advisory' and granted = false").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count > 0
+	}, func() string { return "no backend waited on advisory lock" })
+}
+
+func waitForLog(t *testing.T, logs *serveLogs, substr string) {
+	t.Helper()
+	eventually(t, func() bool {
+		return strings.Contains(logs.String(), substr)
+	}, logs.String)
+}
+
 func TestServeTLS(t *testing.T) {
 	db := testdb.StartRotten(t)
 	owner, err := pgxpool.New(context.Background(), db.DSNAs(t, testdb.OwnerRole))
@@ -296,7 +611,8 @@ func TestServeTLS(t *testing.T) {
 	ca := newTestCA(t)
 	cert, priv := ca.pair(t, 1)
 	certFile, keyFile := writePair(t, cert, priv)
-	addr, _, _ := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+	proc := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+	addr := proc.addr
 	assertSerial(t, addr, ca.config(), 1)
 
 	t.Run("plaintext refused", func(t *testing.T) {
@@ -402,7 +718,8 @@ func TestServeTLSRotation(t *testing.T) {
 			cert1, key1 := ca.pair(t, 1)
 			cert2, key2 := ca.pair(t, 2)
 			certFile, keyFile := writePair(t, cert1, key1)
-			addr, cmd, logs := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+			proc := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+			addr, cmd, logs := proc.addr, proc.cmd, proc.logs
 			conf := ca.config()
 			conf.ClientSessionCache = tls.NewLRUClientSessionCache(4)
 			old, err := dialTLS(addr, conf)

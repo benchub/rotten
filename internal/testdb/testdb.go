@@ -59,6 +59,15 @@ type DB struct {
 	dbName string
 }
 
+// Stop terminates the database container early. Cleanup still tolerates the
+// already-stopped container.
+func (d *DB) Stop(t testing.TB) {
+	t.Helper()
+	if err := d.c.Terminate(context.Background()); err != nil {
+		t.Fatalf("testdb: stop container: %v", err)
+	}
+}
+
 // Connect opens a superuser connection and closes it at test cleanup.
 func (d *DB) Connect(t testing.TB) *pgx.Conn {
 	t.Helper()

@@ -14,7 +14,7 @@ import (
 
 const usage = `usage: rotten-server migrate [-dsn DSN] [-retention DAYS]
        rotten-server keys create|list|revoke ...
-       rotten-server serve [-listen ADDRESS] [-dsn DSN] -tls-cert FILE -tls-key FILE
+       rotten-server serve [-config FILE] [-listen ADDRESS] [-dsn DSN] -tls-cert FILE -tls-key FILE
 
 migrate applies every pending schema migration to the rotten database. Run it
 as rotten_owner. The DSN comes from -dsn, or else ROTTEN_OWNER_DSN.

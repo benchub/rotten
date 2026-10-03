@@ -103,18 +103,38 @@ How to use it
    Clients must trust the server's CA and verify its hostname. Worker bearer keys,
    not client certificates, authenticate RPCs. The existing Connect API is mounted
    with pass-key authentication, including HTTP/2 support. `Register` creates
-   or reuses source rows for the worker. `SubmitHarvest` currently returns
-   `Unimplemented` after successful authentication; its write path is a
-   separate backlog task.
+   or reuses source rows for the worker. `SubmitHarvest` writes one harvest
+   batch transactionally and deduplicates retries by `batch_id`.
 
-   | Flag | Environment fallback | Default |
-   | --- | --- | --- |
-   | `-dsn` | `ROTTEN_INGEST_DSN` | Required; use `rotten_ingest` |
-   | `-listen` | `ROTTEN_LISTEN` | `:8443` |
-   | `-tls-cert` | `ROTTEN_TLS_CERT` | Required PEM certificate chain, leaf first |
-   | `-tls-key` | `ROTTEN_TLS_KEY` | Required matching PEM private key |
+   The server can also read a JSON config file with the same exported-key
+   format as the worker config:
+  ```json
+  {
+    "DSN": "postgres://rotten_ingest@host/rotten",
+    "Listen": ":8443",
+    "TLSCert": "/path/to/server-chain.pem",
+    "TLSKey": "/path/to/server-key.pem",
+    "ShutdownTimeout": 10,
+    "HealthTimeout": 1
+  }
+  ```
+   `ShutdownTimeout` and `HealthTimeout` are whole seconds. Precedence is
+   flags, then `ROTTEN_SERVER_*` environment variables, then the config file,
+   then defaults. For compatibility when no config file is used, the old
+   `ROTTEN_INGEST_DSN`, `ROTTEN_LISTEN`, `ROTTEN_TLS_CERT`, and
+   `ROTTEN_TLS_KEY` names still work.
 
-   Explicit flags override env values. The certificate and key must load before
+   | Flag | Config key | Environment override | Default |
+   | --- | --- | --- | --- |
+   | `-config` | n/a | n/a | No config file |
+   | `-dsn` | `DSN` | `ROTTEN_SERVER_DSN` | Required; use `rotten_ingest` |
+   | `-listen` | `Listen` | `ROTTEN_SERVER_LISTEN` | `:8443` |
+   | `-tls-cert` | `TLSCert` | `ROTTEN_SERVER_TLS_CERT` | Required PEM certificate chain, leaf first |
+   | `-tls-key` | `TLSKey` | `ROTTEN_SERVER_TLS_KEY` | Required matching PEM private key |
+   | `-shutdown-timeout` | `ShutdownTimeout` | `ROTTEN_SERVER_SHUTDOWN_TIMEOUT` | `10` seconds |
+   | `-health-timeout` | `HealthTimeout` | `ROTTEN_SERVER_HEALTH_TIMEOUT` | `1` second |
+
+   Explicit flags override env and config values. The certificate and key must load before
    the server connects to the database or opens its listener; invalid files abort
    startup. Keep the key file readable only by the server's service account.
    Replace both files to rotate certificates. The server reads their contents every
@@ -127,8 +147,16 @@ How to use it
    New TLS connections use the new certificate; existing connections remain open
    with their original TLS session. TLS session resumption is disabled to ensure
    reconnecting clients always verify the current certificate. SIGINT/SIGTERM stop
-   the listener and reload loop; in-flight request draining, health checks, and
-   operational configuration remain task -36.
+   accepting new connections, drain in-flight requests for up to
+   `ShutdownTimeout`, and stop the certificate reload and prune loops. If that
+   timeout expires, the server cancels outstanding request contexts, force-closes
+   HTTP connections so database transactions roll back, logs the timeout, and
+   exits nonzero instead of waiting indefinitely for pooled connections. The
+   unauthenticated `GET /healthz` readiness endpoint does a short database ping:
+   it returns `200 ok` when the rotten DB is reachable and `503 unhealthy` when
+   it is not, without including database error text in the response. Use it for
+   load-balancer or Kubernetes readiness; process liveness is still the service
+   manager's job.
 
    **Ingest validation limits.** The server rejects semantically invalid
    `SubmitHarvest` and `Register` requests before opening a database transaction.

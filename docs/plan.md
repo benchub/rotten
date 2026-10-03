@@ -86,6 +86,25 @@ On the worker. That keeps the `pg_query` C parser away from input that comes in 
 
 We'll use **unary calls over a long-lived, kept-alive connection**, not long streams. A batch goes out every observation window, so streaming adds complexity without much benefit. Unary calls also make revocation simple: the server checks the key on every call.
 
+Operationally, `rotten-server serve` uses structured JSON logs through `slog`.
+It can read a JSON config file with the same exported-key format as the worker
+config. The server keys are `DSN`, `Listen`, `TLSCert`, `TLSKey`,
+`ShutdownTimeout`, and `HealthTimeout`; the timeout values are whole seconds.
+Precedence is command-line flags, then `ROTTEN_SERVER_DSN`,
+`ROTTEN_SERVER_LISTEN`, `ROTTEN_SERVER_TLS_CERT`, `ROTTEN_SERVER_TLS_KEY`,
+`ROTTEN_SERVER_SHUTDOWN_TIMEOUT`, and `ROTTEN_SERVER_HEALTH_TIMEOUT`, then the
+config file, then defaults. SIGINT/SIGTERM stops accepting new connections,
+lets in-flight calls complete for up to `ShutdownTimeout` (default 10 seconds),
+and stops the TLS reload and prune loops. If the timeout expires, the server
+cancels outstanding request contexts, force-closes HTTP connections so database
+transactions roll back, logs the timeout, and exits nonzero instead of waiting
+indefinitely for pooled connections. The unauthenticated `GET /healthz`
+readiness endpoint does a short database ping using `HealthTimeout` (default 1
+second), returns `200 ok` when the rotten DB is reachable, and returns
+`503 unhealthy` without database error text when it is not. This is readiness
+for load balancers and Kubernetes; liveness remains the supervisor's process
+check.
+
 Semantic validation runs before any database transaction:
 
 | Input | Limit |
