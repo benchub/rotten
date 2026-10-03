@@ -141,13 +141,14 @@ var ReportEvents = []SeedEvent{
 	{"bridge13p", "users", 5 * h, 1000, 400, nil},
 }
 
-// ReportStats is the fixture's fingerprint_stats. slow's history is tight on
-// source 0 (mean 5, deviation 1) and on canvas7p (mean 8, deviation 0.9), so
-// the recent 40 ms window is far outside both, and the different means show
-// which stats row a report used. users is a non-outlier control.
+// ReportStats is the fixture's fingerprint_stats. The stored slow mean_time
+// rows include the recent 40 ms sample, the way real ingest keeps current
+// fingerprint_stats. Removing the in-range sample leaves source 0 at mean 5,
+// deviation 1, and canvas7p at mean 8, deviation 0.9. users is a non-outlier
+// control.
 var ReportStats = []SeedStat{
-	{"slow", "", "mean_time", 1000, 5, 1, 5},
-	{"slow", "canvas7p", "mean_time", 800, 8, 0.9, 8},
+	{"slow", "", "mean_time", 1001, 5.034965034965035, 1.4908977911903367, 5},
+	{"slow", "canvas7p", "mean_time", 801, 8.039950062421973, 1.4447800862079763, 8},
 	{"users", "", "mean_time", 50000, 0.5, 0.2, 0},
 	{"users", "canvas13p", "mean_time", 30000, 0.5, 0.1, 0},
 	{"slow", "", "calls", 1000, 20, 3, 20},
@@ -244,6 +245,7 @@ type SeedTotals struct{ Calls, Time float64 }
 type Reports struct {
 	Anchor        time.Time
 	SourceIDs     map[string]int   // SeedSource.Key -> logical_sources.id
+	PhysicalIDs   map[string]int   // SeedSource.Key -> physical_sources.id
 	FingerprintID map[string]int64 // SeedFingerprint.Key -> fingerprints.id
 	EventIDs      []int64          // parallel to ReportEvents
 	ControllerIDs map[string]int
@@ -273,6 +275,7 @@ func SeedReports(t testing.TB, db *DB) *Reports {
 
 	r := &Reports{
 		SourceIDs:            map[string]int{},
+		PhysicalIDs:          map[string]int{},
 		FingerprintID:        map[string]int64{},
 		ControllerIDs:        map[string]int{},
 		ActionIDs:            map[string]int{},
@@ -299,6 +302,7 @@ func SeedReports(t testing.TB, db *DB) *Reports {
 			t.Fatalf("seed: physical source %s: %v", s.Key, err)
 		}
 		physical[s.Key] = pid
+		r.PhysicalIDs[s.Key] = pid
 	}
 	for _, f := range ReportFingerprints {
 		var id int64
