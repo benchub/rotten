@@ -83,12 +83,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-47: Report on one fingerprint over time.
-- **Do:** Add `reports/fingerprint_timeseries.sql`, which buckets calls and time for one fingerprint and source. Add an index on `events (fingerprint_id, observed_window_start)` if EXPLAIN shows it's needed.
-- **Red test:** The fixture's buckets match. EXPLAIN shows partition pruning.
-- **Done when:** Passes.
-- **Needs:** -42.
-
 ### 20261001-103222-48: Set up the UI skeleton.
 - **Do:** Create a Rails 8.1 app in `ui/` on Ruby 3.4, set up like this:
   - RSpec, Capybara, FactoryBot, and Shoulda Matchers.

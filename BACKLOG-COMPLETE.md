@@ -476,3 +476,15 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Retries:** retried on Unavailable, DeadlineExceeded, Aborted and transport errors. Never retried on ResourceExhausted, InvalidArgument or the auth errors.
   - **Defaults:** 30 s per call, 5 attempts, 200 ms–5 s jittered backoff, and stdlib HTTP/2 pings (`golang.org/x/net` was blocked by the sandbox and isn't needed).
   - **Invalid UTF-8:** repaired with U+FFFD before clipping.
+
+### 20261001-103222-47: Report on one fingerprint over time.
+- **Do:** Add `reports/fingerprint_timeseries.sql`, which buckets calls and time for one fingerprint and source. Add an index on `events (fingerprint_id, observed_window_start)` if EXPLAIN shows it's needed.
+- **Red test:** The fixture's buckets match. EXPLAIN shows partition pruning.
+- **Done when:** Passes.
+- **Needs:** -42.
+- **Completed:** 2026-10-02, 742f371.
+  - **Buckets:** the width `$7` is normalized to a fixed duration, so day widths don't drift across DST. Widths with a month or year part are rejected.
+  - **Partial bucket:** the trailing partial bucket is kept, and its end is clamped to `$6`.
+  - **Limits:** at most 10,000 buckets; more raises an error. A width that isn't positive raises an error. An empty or inverted range returns no rows.
+  - **Source:** role is aggregated, and empty buckets come back as zero.
+  - **Index:** none added. The decision is deferred to the -53 scale test.
