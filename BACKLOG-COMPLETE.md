@@ -578,3 +578,15 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Do:** In `run`, increment the processing counter before `go processEvent`, not inside it.
 - **Needs:** -13.
 - **Completed:** 2026-10-03, b08c871. Superseded: -39 removed `processEvent`. Harvest now builds the batch synchronously.
+
+### 20261003-060000-1: Unblock the outbox after the server reassigns source IDs.
+- **Do:** Since -39, the worker caches its registered logical and physical IDs together with its identity and `ServerURL`. If the server later assigns different IDs (the rotten DB was rebuilt, a link was removed, or a `StateDir` was restored on another host), the worker exits and re-registers. Batches already queued under the old IDs then get `PermissionDenied`. The sender keeps retrying them in strict order, so the outbox stays blocked until the 288-batch cap drops them, about a day. Decide on a safe way out. For example, when the cached IDs have changed, re-stamp the queued batches with the new IDs, or drop and count them. Keep the dedupe on `batch_id` correct either way, since `batch_id` includes the physical ID.
+- **Red test:** Queue batches under IDs A, then switch the cache to IDs B and have the server reject A with `PermissionDenied`. Newer windows reach the server without waiting for the cap.
+- **Done when:** Passes, and `docs/plan.md` describes the behaviour.
+- **Needs:** none. Found in review of -39.
+- **Completed:** 2026-10-03, 07b0a22.
+  - **When it runs:** a per-row, idempotent reconcile runs in the same transaction on every `SaveSourceRegistration`, and at startup on the cached path before the sender starts.
+  - **Same identity:** rows whose embedded IDs differ from the current ones are re-stamped. The proto is decoded, given the new IDs and a rebuilt `batch_id`, and re-encoded deterministically.
+  - **Changed identity:** rows whose IDs differ are dropped and counted in `dropped_stale_source`. Rows that already carry the current IDs are kept, so a `ServerURL`-only change loses nothing.
+  - **Schema:** state schema v4.
+  - **No double counting:** the reviewer found no duplicate risk, because `physical_sources.fqdn` is unique.

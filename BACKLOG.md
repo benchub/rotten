@@ -32,12 +32,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261003-060000-1: Unblock the outbox after the server reassigns source IDs.
-- **Do:** Since -39, the worker caches its registered logical and physical IDs together with its identity and `ServerURL`. If the server later assigns different IDs (the rotten DB was rebuilt, a link was removed, or a `StateDir` was restored on another host), the worker exits and re-registers. Batches already queued under the old IDs then get `PermissionDenied`. The sender keeps retrying them in strict order, so the outbox stays blocked until the 288-batch cap drops them, about a day. Decide on a safe way out. For example, when the cached IDs have changed, re-stamp the queued batches with the new IDs, or drop and count them. Keep the dedupe on `batch_id` correct either way, since `batch_id` includes the physical ID.
-- **Red test:** Queue batches under IDs A, then switch the cache to IDs B and have the server reject A with `PermissionDenied`. Newer windows reach the server without waiting for the cap.
-- **Done when:** Passes, and `docs/plan.md` describes the behaviour.
-- **Needs:** none. Found in review of -39.
-
 ### 20261001-103222-40: Make the worker resilient.
 - **Do:**
   - Reconnect to the observed database with backoff instead of calling `log.Fatal`.
