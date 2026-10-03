@@ -663,3 +663,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Cached keys:** they never need a token. A wrong secret or revoked status on a cached key charges the bucket but doesn't block.
   - **Startup preload:** non-revoked keys are preloaded into the cache at startup, which is non-fatal, so valid workers behind a load balancer aren't throttled after a restart.
   - **Configuration:** the limits are set through flags, `ROTTEN_SERVER_*` env vars and the config file, and documented in the README.
+
+### 20261001-113241-2: Guard the uint32 context counts.
+- **Do:** The context histogram stores `uint32(calls)`. That truncates fractional values, and a call count above 4,294,967,295 overflows (out-of-range float-to-int conversion is implementation-defined in Go). Sums of counts can also wrap. Decide on a wider type or a clamp.
+- **Red test:** A `mergeEvent` test with counts near the uint32 limit.
+- **Done when:** Tests pass, and large counts don't wrap.
+- **Needs:** -8.
+- **Completed:** 2026-10-02, a79937a.
+  - **Wider type:** context counts are now uint64 in the worker and `bigint` in the database (migration 0004_context_counts_bigint.sql).
+    - Migration 0004 rewrites the table under an ACCESS EXCLUSIVE lock, so schedule it for a quiet window on a large database.
+  - **Ingest cap:** both Calls and context counts are capped at MaxContextCount = 2^53. Ingest also rejects duplicate contexts and context sums greater than calls.
+  - **Report types:** report sums are `numeric` and replica-utilization totals are double precision. Clients that decode them as float64 lose precision above 2^53.
