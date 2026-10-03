@@ -383,3 +383,23 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -33.
 - **Completed:** 2026-10-02, 540df26. Stats rows are pre-inserted with zero counts and then locked, so concurrent first inserts don't collide. A batch that repeats a fingerprint is rejected with `InvalidArgument`, since clients merge duplicates before sending. The worker's matching race is 20261002-171500-1.
+
+### 20261001-103222-35: Validate input and set limits.
+- **Do:** Cap message size, fingerprints per batch, context entries, and string lengths. Reject a window that has `end <= start`, is more than five minutes in the future, or is longer than the max. Reject NaN or negative counters.
+- **Limits from -29:** Cap total message size, the number of aggregates and contexts, and the lengths of `normalized`, the context strings, and `fingerprint`.
+- **Red test:** Each limit gets rejected with `InvalidArgument`, and nothing is written.
+- **Done when:** Passes.
+- **Needs:** -33.
+- **Completed:** 2026-10-02, 5223581.
+  - Limits are sized to the worker's real batches: 2000 aggregates and 2000 contexts (a test pins these against the worker's top-N bound), 8 KiB for `normalized`, and 32 MiB per message.
+  - A worst-case batch test shows that a message at every cap still fits.
+  - The longest window allowed is 24 hours, with no limit on how far in the past it can be, so outbox replays still work.
+  - Float metrics are capped at 1e15 so a huge value can't overflow `fingerprint_stats`.
+  - Truncating text on the client side belongs to -37.
+
+### 20261001-103222-43: Report on top queries by call count.
+- **Do:** Add `reports/top_by_calls.sql`, with parameters for source filter, time range, and limit. Fix the window filter (use `observed_window_start` and `observed_window_end`, and allow partition pruning).
+- **Red test:** On the fixture, it returns the expected order, totals, and top five contexts.
+- **Done when:** Passes.
+- **Needs:** -42.
+- **Completed:** 2026-10-02, 8b9e5ff. Only windows that fall fully inside the time range are counted, the same as the legacy query. Context sums are `bigint`. The filter covers project, environment and cluster, and adds up both roles.

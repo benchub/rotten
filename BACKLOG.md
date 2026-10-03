@@ -8,6 +8,20 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - New task IDs use the `YYYYMMDD-HHMMSS-N` format: when the task was written, plus a counter.
 - Before calling a task done, run `make test-all` (or `make test` before the UI exists). This repo has no CI, so these targets are the gate.
 
+**Decisions (user, 2026-10-02).** These settle open choices in the tasks below. A task's own text wins only where it's more specific.
+- **-36, server config:** Same file format as the worker's config. `ROTTEN_SERVER_*` env vars override file values.
+- **-39, worker config cutover:** Hard switch. Drop `RottenDBConn` and the other old keys, and require the new ones. If old keys are present, fail fast with a clear message.
+- **-38, outbox cap:** 288 batches by default (about a day at 5-minute windows). Configurable.
+- **-40, SIGTERM flush:** 10 seconds.
+- **-114554-1, -120544-1, -171500-1 (worker stats-path bugs):** Skip them. Close them as superseded when -39 removes that code.
+- **-143630-1, lifetime min/max:** The server skips `min_time`/`max_time` samples when `minmax_lifetime` is set. The flag already travels in the proto.
+- **-143630-2, failed text fetch:** Don't advance the snapshot for skipped entries. Carry their deltas into the next window.
+- **-113241-2, context counts:** Widen to uint64/bigint end to end.
+- **-143308-1, unauthenticated key lookups:** Rate-limit failed auth per client IP. DB errors stay `Unavailable`.
+- **-135352-2, -140616-1, fingerprint grouping:** Match Postgres queryid grouping wherever practical. Don't merge what Postgres keeps apart.
+- **-53, 10M-row performance test:** A separate opt-in target, `make test-perf`. It's not part of `make test-all`.
+- **Report tasks -43 to -47** may run in parallel with Phase D.
+
 ---
 
 ## Phase A: Test harness and characterization.
@@ -17,13 +31,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 ## Phase C: Diffing against a snapshot (item 2).
 
 ## Phase D: Rotten server (item 1).
-
-### 20261001-103222-35: Validate input and set limits.
-- **Do:** Cap message size, fingerprints per batch, context entries, and string lengths. Reject a window that has `end <= start`, is more than five minutes in the future, or is longer than the max. Reject NaN or negative counters.
-- **Limits from -29:** Cap total message size, the number of aggregates and contexts, and the lengths of `normalized`, the context strings, and `fingerprint`.
-- **Red test:** Each limit gets rejected with `InvalidArgument`, and nothing is written.
-- **Done when:** Passes.
-- **Needs:** -33.
 
 ### 20261001-103222-36: Add server operations basics.
 - **Do:**
@@ -49,10 +56,12 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ### 20261001-103222-37: Build the worker's server client.
 - **Do:** Use a Connect client with TLS (system roots or a configured CA), a bearer key from `PassKeyFile`, HTTP/2 keepalive, per-call timeouts, and exponential backoff with jitter.
+- **Fit the server's limits (from -35):** Before sending, truncate each `normalized` to the server's `MaxNormalizedBytes` at a UTF-8 boundary, and clip context strings the same way. A batch the server rejects with `InvalidArgument` or `ResourceExhausted` is never retried, so the worker must not send one it can predict will fail. Log and count anything clipped.
 - **Red test:**
   - Requests reach a test server with the right header.
   - It retries `Unavailable` but doesn't retry `Unauthenticated` or `InvalidArgument`.
   - It reconnects after the server restarts.
+  - A batch with an over-long `normalized` (including a multi-byte character at the cut point) is truncated to valid UTF-8 within the limit and accepted.
 - **Done when:** Passes.
 - **Needs:** -30, -31.
 
@@ -100,12 +109,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 ## Phase E: Reports and UI (item 5).
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
-
-### 20261001-103222-43: Report on top queries by call count.
-- **Do:** Add `reports/top_by_calls.sql`, with parameters for source filter, time range, and limit. Fix the window filter (use `observed_window_start` and `observed_window_end`, and allow partition pruning).
-- **Red test:** On the fixture, it returns the expected order, totals, and top five contexts.
-- **Done when:** Passes.
-- **Needs:** -42.
 
 ### 20261001-103222-44: Report on top queries by total time.
 - **Do:** Add `reports/top_by_total_time.sql`.
