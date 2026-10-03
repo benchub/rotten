@@ -15,10 +15,15 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **-40, SIGTERM flush:** 10 seconds.
 - **-114554-1, -120544-1, -171500-1 (worker stats-path bugs):** Skip them. Close them as superseded when -39 removes that code.
 - **-143630-1, lifetime min/max:** The server skips `min_time`/`max_time` samples when `minmax_lifetime` is set. The flag already travels in the proto.
-- **-143630-2, failed text fetch:** Don't advance the snapshot for skipped entries. Carry their deltas into the next window.
+- **-143630-2, failed text fetch:** Superseded on 2026-10-03 by the "user, 2026-10-03" entry below.
 - **-113241-2, context counts:** Widen to uint64/bigint end to end.
 - **-143308-1, unauthenticated key lookups:** Rate-limit failed auth per client IP. DB errors stay `Unavailable`.
 - **-135352-2, -140616-1, fingerprint grouping:** Match Postgres queryid grouping wherever practical. Don't merge what Postgres keeps apart.
+
+**Decisions (user, 2026-10-03).**
+- **-143630-2, failed text fetch:** Retry the fetch briefly within the harvest. If it still fails, don't advance the snapshot for the skipped entries, and carry their deltas into the next window.
+- **-140616-1, IN-list element casts:** Un-merge to match Postgres. A single cast on an element splits too, so `id IN (1::bigint)` no longer groups with `id IN (1)`.
+- **-50, report statement timeout:** 15s by default.
 - **-53, 10M-row performance test:** A separate opt-in target, `make test-perf`. It's not part of `make test-all`.
 - **Report tasks -43 to -47** may run in parallel with Phase D.
 
@@ -156,12 +161,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes, and someone who isn't the author can follow the setup.
 - **Needs:** -41, -50.
 
-### 20261001-132234-1: Fix the flaky "port 5432/tcp not found" in StartObserved.
-- **Do:** `TestObserverSQL` failed once in a full `make test` run with `testdb: connection string: port "5432/tcp" not found`, then passed on rerun. Find out why `ConnectionString` runs before the port is mapped, and make `start` wait for it.
-- **Red test:** Hard to force. Loop `TestObserverSQL` under `-count` until it fails, then show the fix holds for the same loop.
-- **Done when:** A long loop of the testdb tests passes.
-- **Needs:** none.
-
 ### 20261001-135352-2: Decide whether `<> ALL(subquery)` should group with `NOT IN (subquery)`.
 - **Do:** They mean the same thing, but Postgres parses `NOT IN (subquery)` as `NOT (x = ANY (subquery))`, so its queryid differs from `<> ALL (subquery)`. Task -134632-1 leaves them apart to match Postgres. Check whether pg_stat_statements on 16 and 18 ever merges them. Group them only if it does.
 - **Red test:** A cross-version case for each form.
@@ -174,23 +173,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** 20261001-135352-1.
 
-### 20261001-143630-1: Keep lifetime min and max out of fingerprint_stats.
-- **Do:** On 14 through 16 (and 17+ when the min/max reset fails), `pgss.WindowMinMax` returns lifetime values. The worker flags them on the event (`minmax_lifetime`) but still pushes them into the `min_time` and `max_time` samples, so one old outlier shows up in every window. Leave them out the way an absent stddev is left out, or carry the flag to the server (see -29 and -34).
-- **Red test:** A lifetime max from a diffed delta doesn't change `fingerprint_stats` for `max_time`, and a window-only one does.
-- **Done when:** Passes.
-- **Needs:** 20261001-103222-25.
-
 ### 20261001-143630-2: Don't lose a window when the text fetch fails.
 - **Do:** If `TextCache.Fill` fails, the worker skips the top entries without cached text, but still saves the snapshot, so their activity for that window is lost. Decide whether to retry the fetch, or to send what it can and carry the skipped entries into the next window.
 - **Red test:** A failed text fetch, then a good one, sends every call exactly once.
 - **Done when:** Passes.
 - **Needs:** 20261001-103222-25.
-
-### 20261003-090000-1: Fix the flaky TestLastUsedThrottled in internal/auth.
-- **Do:** A reviewer saw `TestLastUsedThrottled` (`internal/auth/auth_test.go:214`) fail during a run of `go test ./internal/...` outside the docker gate, on a branch that didn't touch `internal/auth`. It passed in `make test`. Find the timing assumption and make the test deterministic, for example with an injectable clock.
-- **Red test:** Loop the test under `-count` until it fails, then show that the fix holds for the same loop.
-- **Done when:** A long loop passes.
-- **Needs:** none.
 
 ### 20261003-110000-1: Audit the remaining object-list shapes for schema collapse.
 - **Do:** -131002-1 collapses schemas in object lists by type, using an allow-list. Rarer forms are left alone: OPERATOR, CAST, TRANSFORM, DOMCONSTRAINT, and collations and conversions in ALTER forms. Audit them and add the ones whose list shapes are clear, with golden cases.

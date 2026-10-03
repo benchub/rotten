@@ -703,3 +703,33 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Completed:** 2026-10-03, 8fc4094.
   - Migration 0005 replaces only the two comments; its Down restores the 0001 text.
   - The example in the proto and doc comment is now `SELECT 1` → `50fde20626009aba`, which matches pg_query_go's own test data.
+
+### 20261001-132234-1: Fix the flaky "port 5432/tcp not found" in StartObserved.
+- **Do:** `TestObserverSQL` failed once in a full `make test` run with `testdb: connection string: port "5432/tcp" not found`, then passed on rerun. Find out why `ConnectionString` runs before the port is mapped, and make `start` wait for it.
+- **Red test:** Hard to force. Loop `TestObserverSQL` under `-count` until it fails, then show the fix holds for the same loop.
+- **Done when:** A long loop of the testdb tests passes.
+- **Needs:** none.
+- **Completed:** 2026-10-03, 0930ef8.
+  - **Cause:** `postgres.ConnectionString` calls `MappedPort` only once, and the log-only wait didn't wait for Docker to publish the port.
+  - **Fix:** the startup wait now includes `wait.ForListeningPort("5432/tcp")` alongside the log wait, under a single 3-minute deadline. Getting the DSN retries within a bound and respects the context, and restart readiness uses the same path.
+  - **Test:** a helper test covers the retry with a fake resolver. 20 loops of the package pass.
+
+### 20261001-143630-1: Keep lifetime min and max out of fingerprint_stats.
+- **Do:** On 14 through 16 (and 17+ when the min/max reset fails), `pgss.WindowMinMax` returns lifetime values. The worker flags them on the event (`minmax_lifetime`) but still pushes them into the `min_time` and `max_time` samples, so one old outlier shows up in every window. Leave them out the way an absent stddev is left out, or carry the flag to the server (see -29 and -34).
+- **Red test:** A lifetime max from a diffed delta doesn't change `fingerprint_stats` for `max_time`, and a window-only one does.
+- **Done when:** Passes.
+- **Needs:** 20261001-103222-25.
+- **Completed:** 2026-10-03, 037c904.
+  - **Server:** skips the `min_time`/`max_time` samples when `minmax_lifetime` is set. There's no wire change.
+  - **Worker merge (`mergeMinMax`):** window-only values win over lifetime values, and the flag stays true only when every merged entry is lifetime.
+  - **Docs:** the proto contract comment was updated to match.
+
+### 20261003-090000-1: Fix the flaky TestLastUsedThrottled in internal/auth.
+- **Do:** A reviewer saw `TestLastUsedThrottled` (`internal/auth/auth_test.go:214`) fail during a run of `go test ./internal/...` outside the docker gate, on a branch that didn't touch `internal/auth`. It passed in `make test`. Find the timing assumption and make the test deterministic, for example with an injectable clock.
+- **Red test:** Loop the test under `-count` until it fails, then show that the fix holds for the same loop.
+- **Done when:** A long loop passes.
+- **Needs:** none.
+- **Completed:** 2026-10-03, 10ee49e. The flake wasn't reproducible.
+  - **Already deterministic:** the test already used an injected fake clock, and `touch()` is synchronous.
+  - **Likely cause:** a failed `Touch`, which is logged only as a warning, would leave `last_used_at` nil.
+  - **Added:** stricter touch assertions, a log dump on failure, and `TestLastUsedTouchFailureLogged`, which shows that a failed Touch produces exactly that symptom.
