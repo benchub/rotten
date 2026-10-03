@@ -16,6 +16,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"runtime/pprof"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgservicefile"
 	"github.com/jackc/pgx/v5"
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
@@ -76,105 +78,351 @@ func stateSettings(c *Configuration) (dir string, maxAge time.Duration) {
 	return c.StateDir, time.Duration(c.MaxSnapshotAge) * time.Second
 }
 
-func remakeSSLCertConfig(connectionString string, host string) (*tls.Config, error) {
-	// hacky hack solution to get the rootca files, as well as the client certs, so that we can build up a cert chain with all the intermediate certs.
-	connectionStringSettings := make(map[string]string)
-
-	// Split the string by spaces to get each key-value pair
-	pairs := strings.Split(connectionString, " ")
-
-	for _, pair := range pairs {
-		// Split each pair by the equals sign to separate the key from the value
-		kv := strings.Split(pair, "=")
-		if len(kv) == 2 {
-			// Insert the key and value into the map
-			connectionStringSettings[kv[0]] = kv[1]
-		}
+func remakeSSLCertConfigFromTLS(base *tls.Config, sslrootcert string, host string) (*tls.Config, bool) {
+	if base == nil || len(base.Certificates) == 0 || sslrootcert == "" || sslrootcert == "system" {
+		return base, false
 	}
-
-	// If we didn't pass in a host we want to explicitly use, just
-	// use the first host in our list of hosts (i.e. host=host1[,host2[,host3]])
-	if host == "" {
-		host = strings.Split(connectionStringSettings["host"], ",")[0]
-	}
-
-	// Load root CA cert
-	rootCertPool := x509.NewCertPool()
-	rootCert, err := os.ReadFile(connectionStringSettings["sslrootcert"])
+	rootCert, err := os.ReadFile(sslrootcert)
 	if err != nil {
-		return nil, fmt.Errorf("error loading root certificate: %w", err)
+		return base, false
 	}
-
-	// Load client cert & key
-	clientCert, err := os.ReadFile(connectionStringSettings["sslcert"])
+	rootChain, err := certDERsFromPEM(rootCert)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read client certificate file: %w", err)
-	}
-	clientKey, err := os.ReadFile(connectionStringSettings["sslkey"])
-	if err != nil {
-		return nil, fmt.Errorf("failed to read client key file: %w", err)
-	}
-
-	ok := rootCertPool.AppendCertsFromPEM(rootCert)
-	if !ok {
-		return nil, fmt.Errorf("failed to append root certificate to pool")
+		return base, false
 	}
 
 	if *debugFlag {
-		var block *pem.Block
-		log.Println("Loaded Root CA Certificates:")
-		rootsPEM := rootCert
-		block, rootsPEM = pem.Decode(rootsPEM)
-		if block != nil {
-			if block.Type == "CERTIFICATE" {
-				caCert, err := x509.ParseCertificate(block.Bytes)
-				if err != nil {
-					return nil, fmt.Errorf("error parsing certificate: %w", err)
-				}
-				log.Printf("\tSubject: %s\n", caCert.Subject)
-			}
-		}
+		logRootCertificates(rootCert)
 	}
 
-	// Append the client cert and CA chain to get a full certificate chain
-	clientChain := append(clientCert, []byte("\n")...)
-	clientChain = append(clientChain, rootCert...)
-	clientCerts, err := tls.X509KeyPair(clientChain, clientKey)
-	if err != nil {
-		return nil, fmt.Errorf("error loading client key pair: %w", err)
-	}
+	tlsConfig := base.Clone()
+	clientCerts := tlsConfig.Certificates[0]
+	clientCerts.Certificate = append(append([][]byte{}, clientCerts.Certificate...), rootChain...)
+	tlsConfig.Certificates = []tls.Certificate{clientCerts}
 
 	if *debugFlag {
-		log.Println("Client Certificate and Chain:")
-		for _, cert := range clientCerts.Certificate {
-			parsedCert, err := x509.ParseCertificate(cert)
-			if err != nil {
-				return nil, fmt.Errorf("error parsing client certificate: %w", err)
-			}
-			log.Printf("\tSubject: %s\n", parsedCert.Subject)
-		}
-	}
-
-	if *debugFlag {
+		logClientChain(clientCerts)
 		log.Println("Making tls config for", host)
 	}
-	// Create a custom TLS config with specific versions and cipher suites
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{clientCerts},
-		ClientCAs:    rootCertPool,
-		RootCAs:      rootCertPool,
-		ServerName:   host, // Set the ServerName to the host you are connecting to
-		MinVersion:   tls.VersionTLS12,
-		MaxVersion:   tls.VersionTLS13,
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-		},
+	tlsConfig.ServerName = host
+	tlsConfig.MinVersion = tls.VersionTLS12
+	tlsConfig.MaxVersion = tls.VersionTLS13
+	tlsConfig.CipherSuites = []uint16{
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 	}
 
-	return tlsConfig, nil
+	return tlsConfig, true
+}
+
+func logRootCertificates(rootCert []byte) {
+	var block *pem.Block
+	log.Println("Loaded Root CA Certificates:")
+	rootsPEM := rootCert
+	block, rootsPEM = pem.Decode(rootsPEM)
+	if block != nil && block.Type == "CERTIFICATE" {
+		caCert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			log.Printf("\terror parsing certificate: %v\n", err)
+			return
+		}
+		log.Printf("\tSubject: %s\n", caCert.Subject)
+	}
+}
+
+func logClientChain(clientCerts tls.Certificate) {
+	log.Println("Client Certificate and Chain:")
+	for _, cert := range clientCerts.Certificate {
+		parsedCert, err := x509.ParseCertificate(cert)
+		if err != nil {
+			log.Printf("\terror parsing client certificate: %v\n", err)
+			return
+		}
+		log.Printf("\tSubject: %s\n", parsedCert.Subject)
+	}
+}
+
+func certDERsFromPEM(pemBytes []byte) ([][]byte, error) {
+	var ders [][]byte
+	for {
+		var block *pem.Block
+		block, pemBytes = pem.Decode(pemBytes)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+			return nil, fmt.Errorf("error parsing certificate: %w", err)
+		}
+		ders = append(ders, block.Bytes)
+	}
+	if len(ders) == 0 {
+		return nil, fmt.Errorf("failed to append root certificate to pool")
+	}
+	return ders, nil
+}
+
+func isPostgresURL(connectionString string) bool {
+	return strings.HasPrefix(connectionString, "postgres://") || strings.HasPrefix(connectionString, "postgresql://")
+}
+
+func resolveSSLRootCert(connectionString string) (string, error) {
+	defaults := defaultSSLSettings()
+	env := envSSLSettings()
+	conn, err := parseConnStringSettings(connectionString)
+	if err != nil {
+		return "", err
+	}
+	settings := mergeStringSettings(defaults, env, conn)
+	if service := settings["service"]; service != "" {
+		serviceSettings, err := serviceSSLSettings(settings["servicefile"], service)
+		if err != nil {
+			return "", err
+		}
+		settings = mergeStringSettings(defaults, env, serviceSettings, conn)
+	}
+	return settings["sslrootcert"], nil
+}
+
+func defaultSSLSettings() map[string]string {
+	settings := make(map[string]string)
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		settings["servicefile"] = filepath.Join(homeDir, ".pg_service.conf")
+		sslrootcert := filepath.Join(homeDir, ".postgresql", "root.crt")
+		if _, err := os.Stat(sslrootcert); err == nil {
+			settings["sslrootcert"] = sslrootcert
+		}
+	}
+	return settings
+}
+
+func envSSLSettings() map[string]string {
+	settings := make(map[string]string)
+	if v := os.Getenv("PGSSLROOTCERT"); v != "" {
+		settings["sslrootcert"] = v
+	}
+	if v := os.Getenv("PGSERVICE"); v != "" {
+		settings["service"] = v
+	}
+	if v := os.Getenv("PGSERVICEFILE"); v != "" {
+		settings["servicefile"] = v
+	}
+	return settings
+}
+
+func serviceSSLSettings(servicefilePath, serviceName string) (map[string]string, error) {
+	if servicefilePath == "" || serviceName == "" {
+		return nil, nil
+	}
+	servicefile, err := pgservicefile.ReadServicefile(servicefilePath)
+	if err != nil {
+		return nil, err
+	}
+	service, err := servicefile.GetService(serviceName)
+	if err != nil {
+		return nil, err
+	}
+	settings := make(map[string]string)
+	for k, v := range service.Settings {
+		switch k {
+		case "sslrootcert", "service", "servicefile":
+			settings[k] = v
+		}
+	}
+	return settings, nil
+}
+
+func mergeStringSettings(settingSets ...map[string]string) map[string]string {
+	settings := make(map[string]string)
+	for _, set := range settingSets {
+		for k, v := range set {
+			settings[k] = v
+		}
+	}
+	return settings
+}
+
+func parseConnStringSettings(s string) (map[string]string, error) {
+	if isPostgresURL(s) {
+		return parseURLConnStringSettings(s)
+	}
+	return parseKeywordValueConnStringSettings(s)
+}
+
+func parseURLConnStringSettings(s string) (map[string]string, error) {
+	settings := make(map[string]string)
+	if strings.IndexByte(s, 0) >= 0 {
+		return nil, fmt.Errorf("forbidden NUL byte in connection string")
+	}
+	p, ok := strings.CutPrefix(s, "postgresql://")
+	if !ok {
+		p, ok = strings.CutPrefix(s, "postgres://")
+	}
+	if !ok {
+		return nil, fmt.Errorf("invalid URI")
+	}
+	if i := strings.IndexAny(p, "@/"); i >= 0 && p[i] == '@' {
+		p = p[i+1:]
+	}
+	queryStart := strings.IndexByte(p, '?')
+	if queryStart < 0 {
+		return settings, nil
+	}
+	params := p[queryStart+1:]
+	for params != "" {
+		pair := params
+		if i := strings.IndexByte(params, '&'); i >= 0 {
+			pair = params[:i]
+			params = params[i+1:]
+		} else {
+			params = ""
+		}
+		rawKey, rawValue, found := strings.Cut(pair, "=")
+		if !found {
+			return nil, fmt.Errorf(`missing key/value separator "=" in URI query parameter: "%s"`, rawKey)
+		}
+		if strings.IndexByte(rawValue, '=') >= 0 {
+			return nil, fmt.Errorf(`extra key/value separator "=" in URI query parameter: "%s"`, rawKey)
+		}
+		key, err := uriDecode(rawKey)
+		if err != nil {
+			return nil, err
+		}
+		value, err := uriDecode(rawValue)
+		if err != nil {
+			return nil, err
+		}
+		switch key {
+		case "sslrootcert", "service", "servicefile":
+			settings[key] = value
+		}
+	}
+	return settings, nil
+}
+
+func uriDecode(raw string) (string, error) {
+	var b strings.Builder
+	b.Grow(len(raw))
+
+	i := 0
+	for i < len(raw) && raw[i] == ' ' {
+		i++
+	}
+	for i < len(raw) && raw[i] != ' ' {
+		if raw[i] != '%' {
+			b.WriteByte(raw[i])
+			i++
+			continue
+		}
+		if i+2 >= len(raw) {
+			return "", fmt.Errorf(`invalid percent-encoded token: "%s"`, raw)
+		}
+		hi, ok1 := hexDigit(raw[i+1])
+		lo, ok2 := hexDigit(raw[i+2])
+		if !ok1 || !ok2 {
+			return "", fmt.Errorf(`invalid percent-encoded token: "%s"`, raw)
+		}
+		c := hi<<4 | lo
+		if c == 0 {
+			return "", fmt.Errorf(`forbidden value %%00 in percent-encoded value: "%s"`, raw)
+		}
+		b.WriteByte(c)
+		i += 3
+	}
+	for i < len(raw) && raw[i] == ' ' {
+		i++
+	}
+	if i < len(raw) {
+		return "", fmt.Errorf(`unexpected spaces found in "%s", use percent-encoded spaces (%%20) instead`, raw)
+	}
+
+	return b.String(), nil
+}
+
+func hexDigit(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func parseKeywordValueConnStringSettings(s string) (map[string]string, error) {
+	settings := make(map[string]string)
+	s = strings.TrimLeft(s, " \t\n\r\v\f")
+	for len(s) > 0 {
+		eqIdx := strings.IndexRune(s, '=')
+		if eqIdx < 0 {
+			return nil, fmt.Errorf("invalid keyword/value")
+		}
+		key := strings.Trim(s[:eqIdx], " \t\n\r\v\f")
+		if strings.ContainsAny(key, " \t\n\r\v\f") || key == "" {
+			return nil, fmt.Errorf("invalid keyword/value")
+		}
+		s = strings.TrimLeft(s[eqIdx+1:], " \t\n\r\v\f")
+		val := ""
+		if len(s) > 0 && s[0] == '\'' {
+			var b strings.Builder
+			s = s[1:]
+			closed := false
+			for len(s) > 0 {
+				if s[0] == '\'' {
+					s = s[1:]
+					closed = true
+					break
+				}
+				if s[0] == '\\' {
+					s = s[1:]
+					if len(s) == 0 {
+						return nil, fmt.Errorf("unterminated quoted string in connection info string")
+					}
+				}
+				b.WriteByte(s[0])
+				s = s[1:]
+			}
+			if !closed {
+				return nil, fmt.Errorf("unterminated quoted string in connection info string")
+			}
+			val = b.String()
+		} else {
+			var b strings.Builder
+			for len(s) > 0 && !asciiSpace(s[0]) {
+				if s[0] == '\\' {
+					s = s[1:]
+					if len(s) == 0 {
+						break
+					}
+				}
+				b.WriteByte(s[0])
+				s = s[1:]
+			}
+			val = b.String()
+		}
+		switch key {
+		case "sslrootcert", "service", "servicefile":
+			settings[key] = val
+		}
+		s = strings.TrimLeft(s, " \t\n\r\v\f")
+	}
+	return settings, nil
+}
+
+func asciiSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '\v', '\f':
+		return true
+	default:
+		return false
+	}
 }
 
 func loadConfiguration(path string) (*Configuration, error) {
@@ -402,20 +650,37 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func observedConnector(configuration *Configuration) (worker.ObservedConnector, error) {
+func observedConfig(configuration *Configuration) (*pgx.ConnConfig, error) {
 	base, err := pgx.ParseConfig(configuration.ObservedDBConn[0])
 	if err != nil {
 		return nil, fmt.Errorf("couldn't create observedDBConfig: %w", err)
 	}
 	base.DefaultQueryExecMode = pgx.QueryExecModeExec
-	if base.TLSConfig != nil && base.TLSConfig.RootCAs != nil {
+	sslrootcert, err := resolveSSLRootCert(configuration.ObservedDBConn[0])
+	if err != nil {
 		if *debugFlag {
-			log.Printf("We seem to have a root CA for observed DB; remaking the chain to be sure to capture any intermediate certs.")
+			log.Printf("couldn't resolve observed db sslrootcert; keeping pgx TLS config: %v", err)
 		}
-		base.TLSConfig, err = remakeSSLCertConfig(configuration.ObservedDBConn[0], "")
-		if err != nil {
-			return nil, fmt.Errorf("couldn't remake observed db TLS config: %w", err)
+		sslrootcert = ""
+	}
+	if remade, ok := remakeSSLCertConfigFromTLS(base.TLSConfig, sslrootcert, base.Host); ok {
+		if *debugFlag {
+			log.Printf("Remade observed DB TLS chain to capture intermediate certs.")
 		}
+		base.TLSConfig = remade
+	}
+	for _, fallback := range base.Fallbacks {
+		if remade, ok := remakeSSLCertConfigFromTLS(fallback.TLSConfig, sslrootcert, fallback.Host); ok {
+			fallback.TLSConfig = remade
+		}
+	}
+	return base, nil
+}
+
+func observedConnector(configuration *Configuration) (worker.ObservedConnector, error) {
+	base, err := observedConfig(configuration)
+	if err != nil {
+		return nil, err
 	}
 	return func(ctx context.Context) (*pgx.Conn, error) {
 		cfg := base.Copy()

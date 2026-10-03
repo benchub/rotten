@@ -117,15 +117,8 @@ func chainDERs(t *testing.T, cfg *tls.Config) [][]byte {
 	return cfg.Certificates[0].Certificate
 }
 
-// With a root file holding intermediate + root, the chain sent is
-// client, intermediate, root: the whole root file is appended after the
-// client cert. That's the layout the code expects.
-func TestRemakeSSLCertConfigBundleRootFile(t *testing.T) {
-	f := newTLSFixture(t)
-	cfg, err := remakeSSLCertConfig(f.connString("db1.example,db2.example,db3.example", "bundle.crt"), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+func assertRemadeChain(t *testing.T, cfg *tls.Config, f *tlsFixture) {
+	t.Helper()
 	got := chainDERs(t, cfg)
 	want := [][]byte{f.client.der, f.inter.der, f.root.der}
 	if len(got) != len(want) {
@@ -136,121 +129,191 @@ func TestRemakeSSLCertConfigBundleRootFile(t *testing.T) {
 			t.Errorf("chain[%d] is not the expected cert", i)
 		}
 	}
-	if cfg.ServerName != "db1.example" {
-		t.Errorf("ServerName = %q, want first host db1.example", cfg.ServerName)
-	}
-	// RootCAs and ClientCAs are the same pool, holding both bundle certs.
-	if cfg.RootCAs == nil || cfg.RootCAs != cfg.ClientCAs {
-		t.Errorf("RootCAs and ClientCAs should be the same non-nil pool")
-	}
-	for _, c := range []*testCert{f.inter, f.root} {
-		if _, err := c.cert.Verify(x509.VerifyOptions{Roots: cfg.RootCAs}); err != nil {
-			t.Errorf("%s not trusted by RootCAs: %v", c.cert.Subject.CommonName, err)
-		}
-	}
-	if cfg.MinVersion != tls.VersionTLS12 || cfg.MaxVersion != tls.VersionTLS13 {
-		t.Errorf("versions = %x..%x, want TLS1.2..TLS1.3", cfg.MinVersion, cfg.MaxVersion)
-	}
-	wantSuites := []uint16{
-		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-	}
-	if len(cfg.CipherSuites) != len(wantSuites) {
-		t.Fatalf("CipherSuites = %v, want %v", cfg.CipherSuites, wantSuites)
-	}
-	for i := range wantSuites {
-		if cfg.CipherSuites[i] != wantSuites[i] {
-			t.Errorf("CipherSuites[%d] = %x, want %x", i, cfg.CipherSuites[i], wantSuites[i])
-		}
-	}
 }
 
-// With a root-only file, the intermediate never makes it into the chain.
-// The code has no other source for intermediates.
-func TestRemakeSSLCertConfigRootOnlyOmitsIntermediate(t *testing.T) {
+func TestObservedConfigRemakesTLSForFallbackHosts(t *testing.T) {
 	f := newTLSFixture(t)
-	cfg, err := remakeSSLCertConfig(f.connString("db1.example", "root.crt"), "")
+	cfg, err := observedConfig(&Configuration{
+		ObservedDBConn: []string{f.connString("db1.example,db2.example,db3.example", "bundle.crt")},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := chainDERs(t, cfg)
-	if len(got) != 2 || !bytes.Equal(got[0], f.client.der) || !bytes.Equal(got[1], f.root.der) {
-		t.Fatalf("chain = %d certs, want client then root", len(got))
+	assertRemadeChain(t, cfg.TLSConfig, f)
+	if got, want := cfg.Host, "db1.example"; got != want {
+		t.Fatalf("primary Host = %q, want %q", got, want)
+	}
+	if len(cfg.Fallbacks) != 2 {
+		t.Fatalf("fallback count = %d, want 2", len(cfg.Fallbacks))
+	}
+	for i, fallback := range cfg.Fallbacks {
+		if fallback.TLSConfig == nil {
+			t.Fatalf("fallback %d has nil TLSConfig", i)
+		}
+		assertRemadeChain(t, fallback.TLSConfig, f)
+		if got, want := fallback.TLSConfig.ServerName, fallback.Host; got != want {
+			t.Errorf("fallback %d ServerName = %q, want %q", i, got, want)
+		}
 	}
 }
 
-func TestRemakeSSLCertConfigServerName(t *testing.T) {
+func TestObservedConfigAllowModeRemakesTLSFallback(t *testing.T) {
 	f := newTLSFixture(t)
-	cases := []struct {
-		name, hosts, explicit, want string
-	}{
-		{"single host", "db1.example", "", "db1.example"},
-		{"first of list", "db1.example,db2.example", "", "db1.example"},
-		{"explicit fallback host wins", "db1.example,db2.example,db3.example", "db3.example", "db3.example"},
-		{"explicit host not in list", "db1.example", "other.example", "other.example"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			cfg, err := remakeSSLCertConfig(f.connString(c.hosts, "bundle.crt"), c.explicit)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.ServerName != c.want {
-				t.Errorf("ServerName = %q, want %q", cfg.ServerName, c.want)
-			}
-		})
-	}
-	// No host= key at all: ServerName comes out empty.
-	cfg, err := remakeSSLCertConfig("sslrootcert="+filepath.Join(f.dir, "bundle.crt")+
-		" sslcert="+filepath.Join(f.dir, "client.crt")+
-		" sslkey="+filepath.Join(f.dir, "client.key"), "")
+	cfg, err := observedConfig(&Configuration{
+		ObservedDBConn: []string{"host=db1.example dbname=x sslmode=allow" +
+			" sslrootcert=" + filepath.Join(f.dir, "bundle.crt") +
+			" sslcert=" + filepath.Join(f.dir, "client.crt") +
+			" sslkey=" + filepath.Join(f.dir, "client.key")},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ServerName != "" {
-		t.Errorf("ServerName = %q, want empty", cfg.ServerName)
+	if cfg.TLSConfig != nil {
+		t.Fatalf("sslmode=allow primary TLSConfig = %v, want nil", cfg.TLSConfig)
+	}
+	if len(cfg.Fallbacks) != 1 {
+		t.Fatalf("fallback count = %d, want 1", len(cfg.Fallbacks))
+	}
+	assertRemadeChain(t, cfg.Fallbacks[0].TLSConfig, f)
+}
+
+func TestObservedConfigSkipsRootOnlyTLS(t *testing.T) {
+	f := newTLSFixture(t)
+	cfg, err := observedConfig(&Configuration{
+		ObservedDBConn: []string{"host=db1.example dbname=x sslmode=verify-full" +
+			" sslrootcert=" + filepath.Join(f.dir, "bundle.crt")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TLSConfig.Certificates) != 0 {
+		t.Fatalf("certificate count = %d, want 0", len(cfg.TLSConfig.Certificates))
 	}
 }
 
-func TestRemakeSSLCertConfigErrors(t *testing.T) {
+func TestObservedConfigSkipsSystemRootCert(t *testing.T) {
+	cfg, err := observedConfig(&Configuration{
+		ObservedDBConn: []string{"host=db1.example dbname=x sslmode=verify-full sslrootcert=system"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TLSConfig == nil {
+		t.Fatal("TLSConfig is nil")
+	}
+	if len(cfg.TLSConfig.Certificates) != 0 {
+		t.Fatalf("certificate count = %d, want 0", len(cfg.TLSConfig.Certificates))
+	}
+}
+
+func TestObservedConfigHonorsPGSSLROOTCERT(t *testing.T) {
 	f := newTLSFixture(t)
-	good := map[string]string{
-		"sslrootcert": filepath.Join(f.dir, "bundle.crt"),
-		"sslcert":     filepath.Join(f.dir, "client.crt"),
-		"sslkey":      filepath.Join(f.dir, "client.key"),
+	t.Setenv("PGSSLROOTCERT", filepath.Join(f.dir, "bundle.crt"))
+	cfg, err := observedConfig(&Configuration{
+		ObservedDBConn: []string{"host=db1.example dbname=x sslmode=verify-full" +
+			" sslcert=" + filepath.Join(f.dir, "client.crt") +
+			" sslkey=" + filepath.Join(f.dir, "client.key")},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	build := func(override, value string) string {
-		s := "host=db1.example"
-		for _, k := range []string{"sslrootcert", "sslcert", "sslkey"} {
-			v := good[k]
-			if k == override {
-				v = value
-			}
-			s += " " + k + "=" + v
+	assertRemadeChain(t, cfg.TLSConfig, f)
+}
+
+func TestObservedConfigURLQuestionMarkInUserInfoDoesNotHideSSLRootCert(t *testing.T) {
+	f := newTLSFixture(t)
+	env := newTLSFixture(t)
+	t.Setenv("PGSSLROOTCERT", filepath.Join(env.dir, "bundle.crt"))
+	connString := "postgres://u:p?x@db1.example/observed?sslrootcert=" + filepath.Join(f.dir, "bundle.crt") +
+		"&sslmode=verify-full" +
+		"&sslcert=" + filepath.Join(f.dir, "client.crt") +
+		"&sslkey=" + filepath.Join(f.dir, "client.key")
+	cfg, err := observedConfig(&Configuration{ObservedDBConn: []string{connString}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRemadeChain(t, cfg.TLSConfig, f)
+}
+
+func TestObservedConfigHonorsServiceSSLRootCert(t *testing.T) {
+	f := newTLSFixture(t)
+	serviceDir := t.TempDir()
+	serviceFile := filepath.Join(serviceDir, "pg_service.conf")
+	if err := os.WriteFile(serviceFile, []byte("[observed]\nsslrootcert="+filepath.Join(f.dir, "bundle.crt")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := observedConfig(&Configuration{
+		ObservedDBConn: []string{"host=db1.example dbname=x sslmode=verify-full service=observed" +
+			" servicefile=" + serviceFile +
+			" sslcert=" + filepath.Join(f.dir, "client.crt") +
+			" sslkey=" + filepath.Join(f.dir, "client.key")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRemadeChain(t, cfg.TLSConfig, f)
+}
+
+func TestObservedConfigURLFormsPGCompatible(t *testing.T) {
+	f := newTLSFixture(t)
+	plusDir := filepath.Join(t.TempDir(), "cert+dir")
+	if err := os.MkdirAll(plusDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bundle.crt", "client.crt", "client.key"} {
+		data, err := os.ReadFile(filepath.Join(f.dir, name))
+		if err != nil {
+			t.Fatal(err)
 		}
-		return s
+		if err := os.WriteFile(filepath.Join(plusDir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	missing := filepath.Join(f.dir, "nope")
-	garbage := filepath.Join(f.dir, "garbage.crt")
-	cases := []struct{ name, key, value string }{
-		{"missing root", "sslrootcert", missing},
-		{"missing cert", "sslcert", missing},
-		{"missing key", "sslkey", missing},
-		{"unparseable root", "sslrootcert", garbage},
-		{"unparseable key", "sslkey", garbage},
-		{"key does not match", "sslkey", filepath.Join(f.dir, "other.key")},
+	connString := "postgres://[2001:db8::1]:5432,db2/observed?sslmode=verify-full" +
+		"&application_name=a;b" +
+		"&sslrootcert=" + filepath.Join(plusDir, "bundle.crt") +
+		"&sslcert=" + filepath.Join(plusDir, "client.crt") +
+		"&sslkey=" + filepath.Join(plusDir, "client.key")
+	cfg, err := observedConfig(&Configuration{ObservedDBConn: []string{connString}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			cfg, err := remakeSSLCertConfig(build(c.key, c.value), "")
-			if err == nil {
-				t.Fatalf("want error, got config %v", cfg)
-			}
-			if cfg != nil {
-				t.Errorf("want nil config on error")
-			}
-		})
+	assertRemadeChain(t, cfg.TLSConfig, f)
+	if got, want := cfg.TLSConfig.ServerName, "2001:db8::1"; got != want {
+		t.Errorf("primary ServerName = %q, want %q", got, want)
 	}
+	if len(cfg.Fallbacks) != 1 {
+		t.Fatalf("fallback count = %d, want 1", len(cfg.Fallbacks))
+	}
+	assertRemadeChain(t, cfg.Fallbacks[0].TLSConfig, f)
+	if got, want := cfg.Fallbacks[0].TLSConfig.ServerName, "db2"; got != want {
+		t.Errorf("fallback ServerName = %q, want %q", got, want)
+	}
+}
+
+func TestObservedConfigQuotedPathsWithSpaces(t *testing.T) {
+	f := newTLSFixture(t)
+	dir := filepath.Join(t.TempDir(), "cert dir=with spaces")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bundle.crt", "client.crt", "client.key"} {
+		data, err := os.ReadFile(filepath.Join(f.dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	connString := "host=db1.example dbname=observed sslmode=verify-full" +
+		" sslrootcert='" + filepath.Join(dir, "bundle.crt") + "'" +
+		" sslcert='" + filepath.Join(dir, "client.crt") + "'" +
+		" sslkey='" + filepath.Join(dir, "client.key") + "'"
+	cfg, err := observedConfig(&Configuration{ObservedDBConn: []string{connString}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRemadeChain(t, cfg.TLSConfig, f)
 }
