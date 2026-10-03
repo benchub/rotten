@@ -733,3 +733,39 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Already deterministic:** the test already used an injected fake clock, and `touch()` is synchronous.
   - **Likely cause:** a failed `Touch`, which is logged only as a warning, would leave `last_used_at` nil.
   - **Added:** stricter touch assertions, a log dump on failure, and `TestLastUsedTouchFailureLogged`, which shows that a failed Touch produces exactly that symptom.
+
+### 20261001-135352-2: Decide whether `<> ALL(subquery)` should group with `NOT IN (subquery)`.
+- **Do:** They mean the same thing, but Postgres parses `NOT IN (subquery)` as `NOT (x = ANY (subquery))`, so its queryid differs from `<> ALL (subquery)`. Task -134632-1 leaves them apart to match Postgres. Check whether pg_stat_statements on 16 and 18 ever merges them. Group them only if it does.
+- **Red test:** A cross-version case for each form.
+- **Done when:** Passes.
+- **Needs:** 20261001-134632-1.
+- **Completed:** 2026-10-03, 2a290e6.
+  - Postgres keeps the two subquery forms apart on 14 through 18, so the fingerprint is unchanged.
+  - Added a cross-version queryid lock for both forms, workload coverage for the list forms (PG 18 squashes both), and a unit assertion.
+
+### 20261001-103222-41: Build release artifacts.
+- **Do:** Add `make build`, which builds `rotten-worker` (cgo) and `rotten-server` (static) with version info, for Linux amd64 and arm64 plus native macOS. Add production Dockerfiles:
+  - `docker/worker.Dockerfile` on Debian slim.
+  - `docker/server.Dockerfile` on distroless.
+
+  Both run as non-root, read config from a file plus env, and log to stdout. There are no platform manifests, since the deploy repo owns those.
+- **Red test:** A smoke test builds both binaries and both images, then runs `--version` and `--help` in each. The server image runs `migrate` against a test DB.
+- **Done when:** Passes with `make test`.
+- **Needs:** -39.
+- **Completed:** 2026-10-03, 964e273.
+  - **`make build`:** native macOS binaries, static linux amd64 and arm64 servers, and cgo linux amd64 and arm64 workers. The workers are built with `docker build --platform`, so the other-arch `golang:1.27` image must be pulled first (see the README). Both worker arches were verified to build.
+  - **`make test-release`:** the smoke test. It's native-only and opt-in, and not part of `make test`. It runs `--version` and `--help`, runs `migrate` in the server image against a real DB, and checks that the state directory is writable by the non-root worker.
+  - **`make release-images`:** cross-platform images.
+  - **Images:** an allow-list `.dockerignore`. The worker image provides `/etc/rotten-worker` and `/var/lib/rotten-worker`, owned by uid 65532.
+  - **Logging:** both binaries now log to stdout.
+
+### 20261001-143630-2: Don't lose a window when the text fetch fails.
+- **Do:** If `TextCache.Fill` fails, the worker skips the top entries without cached text, but still saves the snapshot, so their activity for that window is lost. Decide whether to retry the fetch, or to send what it can and carry the skipped entries into the next window.
+- **Red test:** A failed text fetch, then a good one, sends every call exactly once.
+- **Done when:** Passes.
+- **Needs:** 20261001-103222-25.
+- **Completed:** 2026-10-03, 7eb508c.
+  - **Retry:** the fetch is retried 3 times with a short backoff that stops on context cancellation or shutdown.
+  - **Carry:** if the fetch still fails, picked rows that are still missing text keep their previous snapshot baseline. New or reset rows get a zero baseline. Their deltas go out in the next window.
+  - **Min/max:** carried baselines persist a far-future `MinmaxStatsSince` sentinel, so the next window flags min/max as lifetime.
+  - **Successful fetch:** if the fetch succeeds but the text is empty, the snapshot still advances, as before.

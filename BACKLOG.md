@@ -38,16 +38,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-41: Build release artifacts.
-- **Parked (2026-10-03, user):** Blocked by the sandbox. The Docker credential helper can't reach the keychain (error -50) to pull `gcr.io/distroless/static-debian12:nonroot` and `debian:stable-slim`. Partial work is uncommitted in the worktree `.claude/worktrees/task-20261001-103222-41`. Resume once the images are reachable.
-- **Do:** Add `make build`, which builds `rotten-worker` (cgo) and `rotten-server` (static) with version info, for Linux amd64 and arm64 plus native macOS. Add production Dockerfiles:
-  - `docker/worker.Dockerfile` on Debian slim.
-  - `docker/server.Dockerfile` on distroless.
-
-  Both run as non-root, read config from a file plus env, and log to stdout. There are no platform manifests, since the deploy repo owns those.
-- **Red test:** A smoke test builds both binaries and both images, then runs `--version` and `--help` in each. The server image runs `migrate` against a test DB.
-- **Done when:** Passes with `make test`.
-- **Needs:** -39.
 ## Phase E: Reports and UI (item 5).
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
@@ -177,23 +167,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes, and someone who isn't the author can follow the setup.
 - **Needs:** -41, -50.
 
-### 20261001-135352-2: Decide whether `<> ALL(subquery)` should group with `NOT IN (subquery)`.
-- **Do:** They mean the same thing, but Postgres parses `NOT IN (subquery)` as `NOT (x = ANY (subquery))`, so its queryid differs from `<> ALL (subquery)`. Task -134632-1 leaves them apart to match Postgres. Check whether pg_stat_statements on 16 and 18 ever merges them. Group them only if it does.
-- **Red test:** A cross-version case for each form.
-- **Done when:** Passes.
-- **Needs:** 20261001-134632-1.
-
 ### 20261001-140616-1: Decide whether nested element casts should collapse in IN lists.
 - **Do:** The fingerprint ignores a single cast on an IN-list element, so `id IN (1::bigint)` groups with `id IN (1)`, though Postgres gives them different queryids. A nested cast doesn't collapse: `id IN (1::bigint::int)` and `id = ANY(ARRAY[1::bigint]::int[])` get their own fingerprint. Decide whether that split is worth fixing, and whether the single-cast merge across types is wanted.
 - **Red test:** Golden cases for the nested-cast forms, with the grouping you pick.
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** 20261001-135352-1.
-
-### 20261001-143630-2: Don't lose a window when the text fetch fails.
-- **Do:** If `TextCache.Fill` fails, the worker skips the top entries without cached text, but still saves the snapshot, so their activity for that window is lost. Decide whether to retry the fetch, or to send what it can and carry the skipped entries into the next window.
-- **Red test:** A failed text fetch, then a good one, sends every call exactly once.
-- **Done when:** Passes.
-- **Needs:** 20261001-103222-25.
 
 ### 20261003-110000-1: Audit the remaining object-list shapes for schema collapse.
 - **Do:** -131002-1 collapses schemas in object lists by type, using an allow-list. Rarer forms are left alone: OPERATOR, CAST, TRANSFORM, DOMCONSTRAINT, and collations and conversions in ALTER forms. Audit them and add the ones whose list shapes are clear, with golden cases.
