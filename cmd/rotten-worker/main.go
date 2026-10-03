@@ -42,6 +42,7 @@ var noIdleHandsFlag = flag.Bool("noIdleHands", false, "when set to true, enable 
 var debugFlag = flag.Bool("debug", false, "when set to true, turn on debugging")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var memprofile = flag.String("memprofile", "", "write mem profile to file")
+var versionFlag = flag.Bool("version", false, "print version and exit")
 
 type Configuration struct {
 	ObservedDBConn      []string
@@ -865,6 +866,10 @@ func main() {
 	var cfg worker.Config
 
 	flag.Parse()
+	if *versionFlag {
+		fmt.Fprintln(os.Stdout, versionText("rotten-worker"))
+		return
+	}
 	rootCtx := context.Background()
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
@@ -879,7 +884,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigs)

@@ -1,0 +1,15 @@
+*
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!gen/
+!gen/**
+!internal/
+!internal/**
+!migrations/
+!migrations/**
+!reports/
+!reports/**
+!schema/
+!schema/**

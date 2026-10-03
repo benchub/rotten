@@ -52,6 +52,50 @@ How to use it
    That writes a `rotten-worker` binary in the current directory.
    Native builds work on macOS and Linux. `make test-unit` runs natively, and `make test`
    runs the full suite in Docker.
+
+   For release artifacts, run:
+  ```bash
+  make build
+  ```
+   This writes native binaries to `dist/native`, Linux amd64 and arm64 binaries to
+   `dist/linux/<arch>`, and local production images tagged `rotten-worker:local` and
+   `rotten-server:local`. The server is built with `CGO_ENABLED=0`. The worker uses
+   cgo for `pg_query_go`; cross-compiling it from macOS without a Linux cross C
+   toolchain does not work, so the Linux worker binaries are built through Docker.
+   Version metadata comes from git and is available with `rotten-worker --version` and
+   `rotten-server --version`.
+
+   `make build` uses native-platform Docker builds for the images, and
+   `docker build --platform` for the Linux worker binaries. Before running it, make
+   sure these base image variants are pulled locally:
+   - `golang:1.27` for `linux/amd64` and `linux/arm64`.
+   - `debian:stable-slim` for the host Docker platform.
+   - `gcr.io/distroless/static-debian12:nonroot` for the host Docker platform.
+
+   To build both Linux worker architectures and per-architecture production images, run:
+  ```bash
+  make release-images
+  ```
+   That target uses `docker build --platform` and needs the corresponding base image
+   variants available locally before it runs. In addition to `golang:1.27` for both
+   architectures, pull `debian:stable-slim` and
+   `gcr.io/distroless/static-debian12:nonroot` for both `linux/amd64` and
+   `linux/arm64`. For example, on an arm64 host, pull the amd64 variants with:
+  ```bash
+  docker pull --platform linux/amd64 golang:1.27
+  docker pull --platform linux/amd64 debian:stable-slim
+  docker pull --platform linux/amd64 gcr.io/distroless/static-debian12:nonroot
+  ```
+
+   The production images are:
+   - `docker/worker.Dockerfile`, based on Debian slim, running as a numeric non-root user.
+   - `docker/server.Dockerfile`, based on distroless static, running as non-root.
+
+   Both images log to the container's stdout stream and default to config-file
+   startup (`/etc/rotten-worker/worker.json` and `/etc/rotten/server.json`). The server image
+   also honors the `ROTTEN_SERVER_*` environment overrides described below. Build and
+   push multi-platform manifests in the deploy repository; this repository only builds
+   per-platform images and binaries.
 3. Install pg_partman in the rotten db. See https://github.com/pgpartman/pg_partman. tldr:
  - download pg_partman and `make install`
  - add `pg_partman_bgw` to `shared_preload_libraries` in postgresql.conf

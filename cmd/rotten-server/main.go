@@ -15,6 +15,7 @@ import (
 const usage = `usage: rotten-server migrate [-dsn DSN] [-retention DAYS]
        rotten-server keys create|list|revoke ...
        rotten-server serve [-config FILE] [-listen ADDRESS] [-dsn DSN] -tls-cert FILE -tls-key FILE
+       rotten-server --version
 
 migrate applies every pending schema migration to the rotten database. Run it
 as rotten_owner. The DSN comes from -dsn, or else ROTTEN_OWNER_DSN.
@@ -30,6 +31,14 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "-version" || args[0] == "--version") {
+		fmt.Fprintln(stdout, versionText("rotten-server"))
+		return 0
+	}
+	if len(args) > 0 && (args[0] == "-help" || args[0] == "--help" || args[0] == "help") {
+		fmt.Fprint(stdout, usage)
+		return 0
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		return runServe(args[1:], stdout, stderr)
 	}

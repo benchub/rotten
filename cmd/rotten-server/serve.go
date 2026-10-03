@@ -89,7 +89,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	logger := slog.New(slog.NewJSONHandler(stdout, nil))
 	pool, err := pgxpool.New(ctx, cfg.DSN)
 	if err != nil {
 		fmt.Fprintf(stderr, "rotten-server serve: database configuration: %v\n", err)

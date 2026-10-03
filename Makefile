@@ -20,6 +20,19 @@
 IMAGE      ?= rotten-test
 DOCKER_SOCK_PATH ?= /var/run/docker.sock
 DOCKERFILE := docker/test.Dockerfile
+DIST_DIR ?= dist
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+COMMIT ?= $(shell git rev-parse HEAD)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(BUILD_DATE)
+NATIVE_GOOS := $(shell go env GOOS)
+NATIVE_GOARCH := $(shell go env GOARCH)
+WORKER_IMAGE ?= rotten-worker:local
+SERVER_IMAGE ?= rotten-server:local
+WORKER_AMD64_IMAGE ?= rotten-worker:local-amd64
+WORKER_ARM64_IMAGE ?= rotten-worker:local-arm64
+SERVER_AMD64_IMAGE ?= rotten-server:local-amd64
+SERVER_ARM64_IMAGE ?= rotten-server:local-arm64
 
 DOCKER_RUN := docker run --rm -t \
 	-v "$(CURDIR)":/src -w /src \
@@ -34,7 +47,7 @@ DOCKER_SOCK := \
 
 GO_TEST_ARGS ?=
 
-.PHONY: test test-unit golden shell image proto tools
+.PHONY: test test-unit test-release golden shell image proto tools build build-native build-linux build-linux-smoke build-smoke build-images release-images
 
 # buf is pinned at BUF_VERSION and stays out of go.mod (its dependency tree
 # is large). `make tools` installs it into ./bin with GOBIN, and `make proto`
@@ -75,6 +88,55 @@ proto:
 image:
 	docker build -q -f $(DOCKERFILE) -t $(IMAGE) . >/dev/null
 	docker build -q -f docker/rotten-db.Dockerfile -t rotten-db-test:18 docker >/dev/null
+
+## build: native binaries, Linux amd64/arm64 binaries, and local production images.
+build: build-native build-linux build-images
+
+## build-smoke: release smoke build using only the native Docker platform.
+build-smoke: build-native build-linux-smoke build-images
+
+## build-native: build binaries for this host into dist/native.
+build-native:
+	mkdir -p "$(DIST_DIR)/native"
+	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o "$(DIST_DIR)/native/rotten-worker" ./cmd/rotten-worker
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o "$(DIST_DIR)/native/rotten-server" ./cmd/rotten-server
+	printf '%s\n' "$(NATIVE_GOOS)/$(NATIVE_GOARCH)" > "$(DIST_DIR)/native/platform.txt"
+
+## build-linux: build Linux amd64 and arm64 binaries. The cgo worker is built in Docker per platform.
+build-linux:
+	rm -rf "$(DIST_DIR)/linux"
+	mkdir -p "$(DIST_DIR)/linux/amd64" "$(DIST_DIR)/linux/arm64"
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o "$(DIST_DIR)/linux/amd64/rotten-server" ./cmd/rotten-server
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o "$(DIST_DIR)/linux/arm64/rotten-server" ./cmd/rotten-server
+	docker build --pull=false --platform linux/amd64 --target worker-bin --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" --output type=local,dest="$(DIST_DIR)/linux/amd64" -f docker/worker.Dockerfile .
+	docker build --pull=false --platform linux/arm64 --target worker-bin --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" --output type=local,dest="$(DIST_DIR)/linux/arm64" -f docker/worker.Dockerfile .
+
+## build-linux-smoke: build Linux server binaries and the cgo worker for the native Docker platform.
+build-linux-smoke:
+	rm -rf "$(DIST_DIR)/linux"
+	mkdir -p "$(DIST_DIR)/linux/amd64" "$(DIST_DIR)/linux/arm64"
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o "$(DIST_DIR)/linux/amd64/rotten-server" ./cmd/rotten-server
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o "$(DIST_DIR)/linux/arm64/rotten-server" ./cmd/rotten-server
+	docker build --pull=false --target worker-bin --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" --output type=local,dest="$(DIST_DIR)/linux/$(NATIVE_GOARCH)" -f docker/worker.Dockerfile .
+
+## build-images: build local production images for the host Docker platform.
+build-images:
+	docker build --pull=false -q -f docker/worker.Dockerfile --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" -t "$(WORKER_IMAGE)" . >/dev/null
+	docker build --pull=false -q -f docker/server.Dockerfile --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" -t "$(SERVER_IMAGE)" . >/dev/null
+
+## release-images: build per-platform production images and cgo worker binaries for Linux amd64 and arm64.
+release-images:
+	mkdir -p "$(DIST_DIR)/linux/amd64" "$(DIST_DIR)/linux/arm64"
+	docker build --pull=false --platform linux/amd64 --target worker-bin --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" --output type=local,dest="$(DIST_DIR)/linux/amd64" -f docker/worker.Dockerfile .
+	docker build --pull=false --platform linux/arm64 --target worker-bin --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" --output type=local,dest="$(DIST_DIR)/linux/arm64" -f docker/worker.Dockerfile .
+	docker build --pull=false --platform linux/amd64 -f docker/worker.Dockerfile --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" -t "$(WORKER_AMD64_IMAGE)" .
+	docker build --pull=false --platform linux/arm64 -f docker/worker.Dockerfile --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" -t "$(WORKER_ARM64_IMAGE)" .
+	docker build --pull=false --platform linux/amd64 -f docker/server.Dockerfile --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" -t "$(SERVER_AMD64_IMAGE)" .
+	docker build --pull=false --platform linux/arm64 -f docker/server.Dockerfile --build-arg VERSION="$(VERSION)" --build-arg COMMIT="$(COMMIT)" --build-arg DATE="$(BUILD_DATE)" -t "$(SERVER_ARM64_IMAGE)" .
+
+## test-release: build release artifacts and smoke-test their CLIs and migrations.
+test-release:
+	ROTTEN_RELEASE_SMOKE=1 go test $(GO_TEST_ARGS) -run '^TestReleaseArtifactsSmoke$$' ./internal/release
 
 ## test: all Go tests, race detector on, Docker socket mounted for testcontainers.
 test: image
