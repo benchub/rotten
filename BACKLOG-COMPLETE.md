@@ -854,3 +854,31 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Boot guard:** an `eager_load!` spec catches Zeitwerk naming errors. A first version crashed in production on `RottenUI` vs `RottenUi`.
   - **Environments:** `ROTTEN_UI_AUTH` is set in compose, the Makefile and the Dockerfile precompile step.
   - **Follow-up:** notes for -105250-2 and -105250-3 on `normalizes` gaps and `RecordNotUnique`.
+
+### 20261001-105250-2: Add OIDC login.
+- **Do:** Use `omniauth_openid_connect` with `omniauth-rails_csrf_protection`.
+  - Every org-specific value comes from env, with no defaults: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_GROUPS_CLAIM` (default `groups`), `ROTTEN_UI_VIEWER_GROUP`, and `ROTTEN_UI_ADMIN_GROUP`.
+  - Provision users at login: match on `sub`, then on email, then create a new user. Resync name, email, and groups on every login, and derive the role from groups, failing closed.
+  - Add an `OMNIAUTH_FAKE=1` offline login with a viewer persona and an admin persona, for development only.
+- **Red test:** In OmniAuth test mode:
+  - A callback creates a user and a session.
+  - A second login with changed groups updates the role, including dropping admin.
+  - With `ROTTEN_UI_VIEWER_GROUP` set, a user in neither group gets 403.
+  - A missing groups claim gives a viewer at most, never an admin.
+  - `OMNIAUTH_FAKE` does nothing outside development.
+  - Booting in `oidc` mode with a missing `OIDC_*` value fails.
+- **Done when:** Passes. Okta itself is a placeholder here: document the env vars an Okta app needs, and leave the real setup to the repo that deploys this one.
+- **Note (from -49):**
+  - `users.email` is `text` with a unique index on `lower(email)`. The model `normalizes :email`, but that doesn't cover `upsert_all`, `insert_all`, `update_all` or raw SQL, so lowercase the email yourself there.
+  - `User` has no uniqueness validation. Handle `RecordNotUnique` when provisioning, so a race doesn't become a 500.
+- **Needs:** -49.
+- **Completed:** 2026-10-03, 61fca1f.
+  - **Login:** omniauth_openid_connect with PKCE and discovery; the login request is POST-only.
+  - **Matching:** `provider` is stored as `openid_connect:<issuer>`, and users are matched on (provider, sub).
+  - **Verified email required:** creating a user, linking by email, and changing the email on resync all need `email_verified` to be `true` or `"true"`.
+  - **Refused logins:** they never write to a row found by email. Only a row matched on (issuer, sub) gets resynced.
+  - **New env var:** `OIDC_SCOPES` defaults to `openid email profile`. Okta adds `groups`.
+  - **Also added:** an optional `OIDC_REDIRECT_URI`, and `OMNIAUTH_FAKE`, which works in development only. Boot specs show it does nothing in test and production.
+  - **Dev compose:** runs in oidc mode with the fake login.
+  - **Reviews:** two review rounds plus a final fix. The reviews found the email-link takeover, the hard-coded `groups` scope, the issuer-less `sub` match, and unverified create and resync.
+  - **Gate:** the first `make test-all` run hit a testcontainers flake (20261003-130000-1).

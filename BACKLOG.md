@@ -42,24 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-105250-2: Add OIDC login.
-- **Do:** Use `omniauth_openid_connect` with `omniauth-rails_csrf_protection`.
-  - Every org-specific value comes from env, with no defaults: `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_GROUPS_CLAIM` (default `groups`), `ROTTEN_UI_VIEWER_GROUP`, and `ROTTEN_UI_ADMIN_GROUP`.
-  - Provision users at login: match on `sub`, then on email, then create a new user. Resync name, email, and groups on every login, and derive the role from groups, failing closed.
-  - Add an `OMNIAUTH_FAKE=1` offline login with a viewer persona and an admin persona, for development only.
-- **Red test:** In OmniAuth test mode:
-  - A callback creates a user and a session.
-  - A second login with changed groups updates the role, including dropping admin.
-  - With `ROTTEN_UI_VIEWER_GROUP` set, a user in neither group gets 403.
-  - A missing groups claim gives a viewer at most, never an admin.
-  - `OMNIAUTH_FAKE` does nothing outside development.
-  - Booting in `oidc` mode with a missing `OIDC_*` value fails.
-- **Done when:** Passes. Okta itself is a placeholder here: document the env vars an Okta app needs, and leave the real setup to the repo that deploys this one.
-- **Note (from -49):**
-  - `users.email` is `text` with a unique index on `lower(email)`. The model `normalizes :email`, but that doesn't cover `upsert_all`, `insert_all`, `update_all` or raw SQL, so lowercase the email yourself there.
-  - `User` has no uniqueness validation. Handle `RecordNotUnique` when provisioning, so a race doesn't become a 500.
-- **Needs:** -49.
-
 ### 20261001-105250-3: Add password login.
 - **Do:** Use `has_secure_password` on `users`, with a `/login` form and `rate_limit` on attempts. There's no sign-up and no password reset by email. Add `bin/rails users:create[email,role]` (prints a one-time password), `users:disable[email]`, and `users:reset_password[email]`.
 - **Red test:**
@@ -152,3 +134,24 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A smoke check that `make test-ui` passes with the image built for the native platform. Or, if the pin stays, a comment in the Makefile and compose file explaining it.
 - **Done when:** `make test-all` passes on this arm64 host without emulation, or the pin is justified.
 - **Needs:** none.
+
+### 20261003-130000-1: Test flake where testcontainers times out inspecting the mapped port.
+- **Do:** In the -105250-2 gate run, `TestWorkerDiffingOutbox/pg18` failed in `testdb` startup with `wait until ready: mapped port: retries: 30, port: "invalid port", last err: inspect ... context deadline exceeded`. Docker was too slow to answer `inspect` while the whole test suite was running in parallel. It passed when re-run. -132234-1 added `ForListeningPort` and a DSN retry, but this failure is earlier, in testcontainers' own wait strategy. Consider:
+  - a longer startup timeout in `internal/testdb`;
+  - retrying the whole container start once when the error is a Docker API timeout;
+  - capping parallel container starts across packages with a semaphore or `-p`.
+- **Red test:** It's hard to reproduce. A unit test that simulates a start error on the first try and checks that `testdb` retries once, plus a log line.
+- **Done when:** Passes, and three back-to-back `make test` runs pass.
+- **Needs:** none.
+
+### 20261003-130000-2: Add a unique index on `users(provider, provider_uid)`.
+- **Do:** OIDC matches users on (provider, provider_uid), but nothing in the DB enforces that pair is unique. Add a goose migration with a partial unique index where `provider_uid IS NOT NULL`. Handle `RecordNotUnique` in OidcLogin's create path, which is already retried.
+- **Red test:** A Go migrate test that a duplicate (provider, provider_uid) is rejected, plus a Rails spec that a concurrent duplicate create is retried and doesn't become a 500.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261003-130000-3: Revoke sessions when OIDC group membership is lost.
+- **Do:** A demotion or removal from the groups only takes effect at the user's next login. Decide whether to cap the session's lifetime (for example, re-authenticating after N hours) or re-check periodically. This needs a decision from the user; ask before building.
+- **Red test:** Depends on the decision.
+- **Done when:** Passes.
+- **Needs:** -105250-4.
