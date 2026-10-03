@@ -266,10 +266,31 @@ func TestFingerprintTimeseriesPrunesEventPartitions(t *testing.T) {
 	fixture := testdb.SeedReports(t, db)
 	conn := db.Connect(t)
 
-	recentPartition := eventPartition(t, conn, fixture.Anchor.Add(-30*time.Minute))
-	oldPartition := eventPartition(t, conn, fixture.Anchor.Add(-26*time.Hour))
-	if recentPartition == oldPartition {
-		t.Skipf("recent and old fixture rows share partition %s", recentPartition)
+	start := fixture.Anchor.Add(-100 * time.Minute)
+	end := fixture.Anchor.Add(-20 * time.Minute)
+	expectedPartitions := partitionsOverlappingRange(t, conn, "rotten.events", start, end)
+
+	plan := explainReport(t, conn, "fingerprint_timeseries.sql",
+		"canvas",
+		testdb.ReportEnvironment,
+		"13",
+		fixture.FingerprintID["users"],
+		start,
+		end,
+		10*time.Minute,
+	)
+	assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.events", expectedPartitions)
+}
+
+func TestFingerprintTimeseriesPrunesFixedMidnightCrossingRange(t *testing.T) {
+	db := testdb.StartRotten(t)
+	fixture := testdb.SeedReports(t, db)
+	conn := db.Connect(t)
+
+	start, end := fixedMidnightCrossingRange()
+	expectedPartitions := partitionsOverlappingRange(t, conn, "rotten.events", start, end)
+	if len(expectedPartitions) != 2 {
+		t.Fatalf("fixed range touches %d partitions, want 2", len(expectedPartitions))
 	}
 
 	plan := explainReport(t, conn, "fingerprint_timeseries.sql",
@@ -277,16 +298,11 @@ func TestFingerprintTimeseriesPrunesEventPartitions(t *testing.T) {
 		testdb.ReportEnvironment,
 		"13",
 		fixture.FingerprintID["users"],
-		fixture.Anchor.Add(-100*time.Minute),
-		fixture.Anchor.Add(-20*time.Minute),
+		start,
+		end,
 		10*time.Minute,
 	)
-	if !strings.Contains(plan, recentPartition) {
-		t.Fatalf("plan does not touch in-range events partition %s:\n%s", recentPartition, plan)
-	}
-	if strings.Contains(plan, oldPartition) {
-		t.Fatalf("plan touches out-of-range events partition %s:\n%s", oldPartition, plan)
-	}
+	assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.events", expectedPartitions)
 }
 
 func insertTimeseriesEvent(t *testing.T, conn *pgx.Conn, fixture *testdb.Reports, sourceKey string, fingerprintID int64, start time.Time, calls float64, totalMS float64) {
@@ -309,15 +325,4 @@ func runTimeseriesExpectingError(t *testing.T, conn *pgx.Conn, query string, arg
 	for rows.Next() {
 	}
 	return rows.Err()
-}
-
-func eventPartition(t *testing.T, conn *pgx.Conn, at time.Time) string {
-	t.Helper()
-	var partition string
-	if err := conn.QueryRow(context.Background(), "select (partition_schema||'.'||partition_table)::regclass::text from public.show_partition_name($1, $2)",
-		"rotten.events", at.Format(time.RFC3339Nano)).Scan(&partition); err != nil {
-		t.Fatal(err)
-	}
-	parts := strings.Split(partition, ".")
-	return parts[len(parts)-1]
 }

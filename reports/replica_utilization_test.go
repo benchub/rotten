@@ -211,10 +211,38 @@ func TestReplicaUtilizationPrunesEventContextPartitions(t *testing.T) {
 	fixture := testdb.SeedReports(t, db)
 	conn := db.Connect(t)
 
-	recentPartition := eventContextPartition(t, conn, fixture.Anchor.Add(-30*time.Minute))
-	oldPartition := eventContextPartition(t, conn, fixture.Anchor.Add(-26*time.Hour))
-	if recentPartition == oldPartition {
-		t.Skipf("recent and old fixture rows share partition %s", recentPartition)
+	start := fixture.Anchor.Add(-testdb.RecentRange)
+	end := fixture.Anchor
+	expectedPartitions := partitionsOverlappingRange(t, conn, "rotten.event_context", start, end)
+
+	for _, report := range []string{
+		"replica_utilization_by_job.sql",
+		"replica_utilization_by_controller_action.sql",
+	} {
+		t.Run(report, func(t *testing.T) {
+			plan := explainReport(t, conn, report,
+				"canvas",
+				testdb.ReportEnvironment,
+				"13",
+				start,
+				end,
+				testdb.ReportPrimaryRole,
+				testdb.ReportReplicaRole,
+			)
+			assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.event_context", expectedPartitions)
+		})
+	}
+}
+
+func TestReplicaUtilizationPrunesFixedMidnightCrossingRange(t *testing.T) {
+	db := testdb.StartRotten(t)
+	testdb.SeedReports(t, db)
+	conn := db.Connect(t)
+
+	start, end := fixedMidnightCrossingRange()
+	expectedPartitions := partitionsOverlappingRange(t, conn, "rotten.event_context", start, end)
+	if len(expectedPartitions) != 2 {
+		t.Fatalf("fixed range touches %d partitions, want 2", len(expectedPartitions))
 	}
 
 	for _, report := range []string{
@@ -226,17 +254,12 @@ func TestReplicaUtilizationPrunesEventContextPartitions(t *testing.T) {
 				"canvas",
 				testdb.ReportEnvironment,
 				"13",
-				fixture.Anchor.Add(-testdb.RecentRange),
-				fixture.Anchor,
+				start,
+				end,
 				testdb.ReportPrimaryRole,
 				testdb.ReportReplicaRole,
 			)
-			if !strings.Contains(plan, recentPartition) {
-				t.Fatalf("plan does not touch in-range event_context partition %s:\n%s", recentPartition, plan)
-			}
-			if strings.Contains(plan, oldPartition) {
-				t.Fatalf("plan touches out-of-range event_context partition %s:\n%s", oldPartition, plan)
-			}
+			assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.event_context", expectedPartitions)
 		})
 	}
 }
@@ -353,15 +376,4 @@ func explainReport(t *testing.T, conn *pgx.Conn, path string, args ...any) strin
 		t.Fatal(err)
 	}
 	return strings.Join(lines, "\n")
-}
-
-func eventContextPartition(t *testing.T, conn *pgx.Conn, at time.Time) string {
-	t.Helper()
-	var partition string
-	if err := conn.QueryRow(context.Background(), "select (partition_schema||'.'||partition_table)::regclass::text from public.show_partition_name($1, $2)",
-		"rotten.event_context", at.Format(time.RFC3339Nano)).Scan(&partition); err != nil {
-		t.Fatal(err)
-	}
-	parts := strings.Split(partition, ".")
-	return parts[len(parts)-1]
 }
