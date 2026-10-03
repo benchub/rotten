@@ -167,11 +167,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes, and someone who isn't the author can follow the setup.
 - **Needs:** -41, -50.
 
-### 20261001-140616-1: Decide whether nested element casts should collapse in IN lists.
-- **Do:** The fingerprint ignores a single cast on an IN-list element, so `id IN (1::bigint)` groups with `id IN (1)`, though Postgres gives them different queryids. A nested cast doesn't collapse: `id IN (1::bigint::int)` and `id = ANY(ARRAY[1::bigint]::int[])` get their own fingerprint. Decide whether that split is worth fixing, and whether the single-cast merge across types is wanted.
-- **Red test:** Golden cases for the nested-cast forms, with the grouping you pick.
+### 20261003-095500-1: Stop splitting no-op casts on string literals and params in IN lists.
+- **Do:** -140616-1 keeps single IN-list element casts so they fingerprint apart, and exempts only `::int`, `::int4` and `::integer`. In Postgres, a cast on a string literal or an untyped `$n` parameter never becomes a cast node; the value just takes the type. So `u IN ($1::uuid)` and `u IN ($1)` share a queryid, and so do `s IN ('a'::text)` and `s IN ('a')` (checked on PG18). Rotten now splits them. ORMs often emit `$1::uuid` and `$1::text`. Leave casts on string literals and `$n` parameters alone in the IN-list path, and keep only casts on numeric constants or typed expressions. Check this against the real queryids on 14 through 18.
+- **Red test:** Cross-version queryid locks, plus golden pairs for `IN ($1::uuid)` vs `IN ($1)` and `IN ('a'::text)` vs `IN ('a')`.
 - **Done when:** Passes, and `make golden` shows only the intended changes.
-- **Needs:** 20261001-135352-1.
+- **Needs:** none.
 
 ### 20261003-110000-1: Audit the remaining object-list shapes for schema collapse.
 - **Do:** -131002-1 collapses schemas in object lists by type, using an allow-list. Rarer forms are left alone: OPERATOR, CAST, TRANSFORM, DOMCONSTRAINT, and collations and conversions in ALTER forms. Audit them and add the ones whose list shapes are clear, with golden cases.

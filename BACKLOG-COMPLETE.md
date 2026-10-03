@@ -769,3 +769,18 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Carry:** if the fetch still fails, picked rows that are still missing text keep their previous snapshot baseline. New or reset rows get a zero baseline. Their deltas go out in the next window.
   - **Min/max:** carried baselines persist a far-future `MinmaxStatsSince` sentinel, so the next window flags min/max as lifetime.
   - **Successful fetch:** if the fetch succeeds but the text is empty, the snapshot still advances, as before.
+
+### 20261001-140616-1: Decide whether nested element casts should collapse in IN lists.
+- **Do:** The fingerprint ignores a single cast on an IN-list element, so `id IN (1::bigint)` groups with `id IN (1)`, though Postgres gives them different queryids. A nested cast doesn't collapse: `id IN (1::bigint::int)` and `id = ANY(ARRAY[1::bigint]::int[])` get their own fingerprint. Decide whether that split is worth fixing, and whether the single-cast merge across types is wanted.
+- **Red test:** Golden cases for the nested-cast forms, with the grouping you pick.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** 20261001-135352-1.
+- **Completed:** 2026-10-03, 3248888. The user decided to un-merge.
+  - **Single casts are kept:** a single element cast on an IN or ANY element now stays in the fingerprint, so `IN (1::bigint)` splits from `IN (1)`.
+  - **Int exemption:** the no-op `::int`, `::int4` and `::integer` casts are exempt, which matches Postgres and the `::int[]` rule.
+  - **Accepted divergence:** on PG18, squashed `IN ($1 /*, ... */)` text drops element casts, so multi-element `::bigint` lists merge with plain lists there, while on 14 through 17 they split. This is documented in fingerprint.go.
+  - **Tests:** cross-version queryid locks for PG 14–18.
+  - **Golden changes:**
+    - Added `in_list_cast_bigint`, `_many`, `_mixed`, `in_list_nested_cast` and `any_array_nested_element_cast`.
+    - Changed `any_array_cast`, `in_list_any_cast_b` and `in_list_any_cast_domain`.
+  - **Follow-up:** 20261003-095500-1, no-op uuid and text casts.
