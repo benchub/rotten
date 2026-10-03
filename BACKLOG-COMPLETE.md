@@ -957,3 +957,19 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Review:** one Opus round, approved; the two low-severity findings were fixed.
   - **Git identity:** this commit used `-c user.name/user.email` matching the earlier commits, because the global git identity was unreadable this session.
   - **Follow-ups:** 20261003-170000-1 and 20261003-170000-2.
+
+### 20261003-080454-1: Add hover tooltips and zoom to the SVG charts.
+- **Do:** Add a small Stimulus controller, with no chart library, to the server-rendered SVG time series from -51. Hover shows a guide and tooltip. Drag-select zooms by navigating to the narrower range, and a reset link returns. Points are keyboard-focusable. Everything stays CSP-strict.
+- **Red test:** A JS system spec for hover, drag-zoom and reset, plus a security spec that the page has no inline scripts.
+- **Done when:** Passes.
+- **Needs:** -51, -105250-4.
+- **Completed:** 2026-10-03, 735a500.
+  - **Controller:** `chart_controller.js` fills the tooltip with `textContent` and positions it through the CSSOM.
+  - **Zoom:** the URL is built by the server. Drags snap to points, and drags under 4px are ignored.
+  - **Reset:** the starting range is carried in the `reset_*` params, which go through full validation.
+  - **Keyboard:** a roving tabindex makes each chart one Tab stop. ArrowLeft/ArrowRight and Home/End move between points.
+  - **Accessibility:** the SVG is now `role=group`.
+  - **Inline-script spec:** checks that only importmap's nonce'd scripts are inline.
+  - **Tests:** 820 UI examples.
+  - **Review:** one Opus round. Its Medium finding (one Tab stop per point) was fixed.
+  - **Known limitation:** an edge bucket can show less after zooming, because the report only counts events whose window fits inside the range. This is documented in the README.

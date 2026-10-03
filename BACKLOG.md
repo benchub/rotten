@@ -42,21 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261003-080454-1: Add hover tooltips and zoom to the SVG charts.
-- **Do:** Add a small Stimulus controller, with no chart library, to the server-rendered SVG time series from -51.
-  - **Hover:** a vertical guide and a tooltip with the timestamp and value for the nearest point. The values come from `data-` attributes on the points, so there's no extra request.
-  - **Zoom:** drag-select a time range. This navigates to the same page with the narrower range in the query string, so the server re-renders, and the URL is shareable and works with the back button. Add a "reset zoom" link.
-  - **Keyboard:** the points can be focused, and focusing one shows the tooltip.
-  - **CSP:** works under a strict CSP: no inline script or style attributes. Use classes or the CSSOM.
-- **Red test:** A JS system spec:
-  - hovering a point shows the expected tooltip text;
-  - a drag-select updates the URL range and re-renders with fewer points;
-  - reset restores the range.
-
-  Also a security spec that the page has no inline scripts.
-- **Done when:** Passes.
-- **Needs:** -51, -105250-4.
-
 ### 20261001-103222-52: Build the pass key admin pages.
 - **Do:** Admins can create keys (the secret shows once), list them, and revoke them, using `rotten_ui`'s narrow `api_keys` grants. Fill in `created_by` and `revoked_by`, and write each action to `ui_audit_log`, which needs a migration and grant.
 - **Grants:** `rotten_ui` can't read `secret_hash`, and can only insert `name, secret_hash, fqdn, created_by`. Add a test that `INSERT ... RETURNING id` works.
