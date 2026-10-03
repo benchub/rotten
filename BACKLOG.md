@@ -32,6 +32,12 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
+### 20261003-021800-1: Fix the time-of-day flake in the report partition-pruning tests.
+- **Do:** `TestReplicaUtilizationPrunesEventContextPartitions` (`reports/replica_utilization_test.go`) and the fingerprint_timeseries pruning test check that the plan never touches the "old" fixture's daily partition, which holds the row at Anchor-26h. When Anchor is between 02:00 and 03:00 UTC, the report range's start (Anchor-3h) falls on the same UTC day as that row, so the in-range plan legitimately touches the old partition and the test fails. The existing skip only compares the recent partition, Anchor-30m. Make the tests independent of the time of day: compare against the partitions the range [Anchor-RecentRange, Anchor] actually covers, or pick an "old" partition that can never overlap the range. Don't weaken the pruning assertion. Check the other report pruning tests for the same pattern.
+- **Red test:** Make the anchor or clock controllable, or compute partitions deterministically, so the 02:00–03:00 UTC case reproduces at any time of day.
+- **Done when:** `make test` passes at any time of day.
+- **Needs:** none. Found while landing -105250-1, at 02:17 UTC.
+
 ### 20261002-171500-1: Fix the worker's fingerprint_stats first-insert race.
 - **Do:** The worker's direct `reportSamples` (`internal/worker/process.go`) uses `select … for update` and inserts the rows when none come back. That locks nothing when the rows don't exist yet, so two concurrent flushes, or a worker flush racing a server `SubmitHarvest`, can both insert and one fails with 23505. Use the server's pattern from -34: pre-insert zero-count rows with `on conflict do nothing` in sorted order, then lock and merge. This matters only until -39 removes the worker's direct path; skip it if -39 lands first.
 - **Red test:** Pre-create a fingerprint with no stats rows, then run concurrent worker flushes (and a concurrent `SubmitHarvest`) for it. No errors, correct counts.
