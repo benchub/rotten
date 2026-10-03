@@ -152,6 +152,48 @@ func TestRoundTrip(t *testing.T) {
 	assertSameSnapshot(t, want, got.Snapshot)
 }
 
+func TestOpenMigratesV2StoreToV3(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(schemaV1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(schemaV2Outbox); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s := open(t, dir, time.Now())
+	reg := SourceRegistration{
+		ServerURL:        "https://server",
+		Project:          "p",
+		Environment:      "e",
+		Cluster:          "c",
+		Role:             "r",
+		FQDN:             "db",
+		LogicalSourceID:  7,
+		PhysicalSourceID: 42,
+	}
+	if err := s.SaveSourceRegistration(context.Background(), reg); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.LoadSourceRegistration(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got != reg {
+		t.Fatalf("registration = %+v ok %v, want %+v true", got, ok, reg)
+	}
+}
+
 func TestEmptyStoreIsBaseline(t *testing.T) {
 	s := open(t, t.TempDir(), time.Now())
 	got, err := s.Load(context.Background())

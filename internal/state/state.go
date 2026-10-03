@@ -18,10 +18,8 @@
 // Save, Tx) there. They'd wait for the connection fn already holds and
 // deadlock.
 //
-// Schema changes. Open creates the v1 schema on an empty file and rejects a
-// newer one. Task -38 must add a real v1-to-v2 migration step (create the
-// outbox table and set user_version = 2 in one transaction) so existing
-// stores upgrade in place instead of being treated as unknown.
+// Schema changes. Open creates the current schema on an empty file, upgrades
+// older supported schemas in place, and rejects newer schemas.
 package state
 
 import (
@@ -51,7 +49,7 @@ const FileName = "state.db"
 const DefaultOutboxCap = 288
 
 // schemaVersion is PRAGMA user_version.
-const schemaVersion = 2
+const schemaVersion = 3
 
 const schemaV1 = `
 CREATE TABLE snapshot_meta (
@@ -116,6 +114,20 @@ CREATE TABLE outbox_stats (
 	dropped_rejected INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 INSERT INTO outbox_stats (id, dropped_cap, dropped_rejected) VALUES (1, 0, 0);
+`
+
+const schemaV3SourceRegistration = `
+CREATE TABLE source_registration (
+	id                 INTEGER PRIMARY KEY CHECK (id = 1),
+	server_url         TEXT NOT NULL,
+	project            TEXT NOT NULL,
+	environment        TEXT NOT NULL,
+	cluster            TEXT NOT NULL,
+	role               TEXT NOT NULL,
+	fqdn               TEXT NOT NULL,
+	logical_source_id  INTEGER NOT NULL,
+	physical_source_id INTEGER NOT NULL
+) STRICT;
 `
 
 // Options configures Open.
@@ -406,8 +418,18 @@ func initDB(db *sql.DB) error {
 		if _, err := tx.Exec(schemaV2Outbox); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(schemaV3SourceRegistration); err != nil {
+			return err
+		}
 	case 1:
 		if _, err := tx.Exec(schemaV2Outbox); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(schemaV3SourceRegistration); err != nil {
+			return err
+		}
+	case 2:
+		if _, err := tx.Exec(schemaV3SourceRegistration); err != nil {
 			return err
 		}
 	default:
@@ -417,6 +439,62 @@ func initDB(db *sql.DB) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// SourceRegistration is the server-assigned source IDs cached by the worker.
+type SourceRegistration struct {
+	ServerURL        string
+	Project          string
+	Environment      string
+	Cluster          string
+	Role             string
+	FQDN             string
+	LogicalSourceID  uint32
+	PhysicalSourceID uint32
+}
+
+// LoadSourceRegistration returns the cached source IDs, if any.
+func (s *Store) LoadSourceRegistration(ctx context.Context) (SourceRegistration, bool, error) {
+	var reg SourceRegistration
+	err := s.Tx(ctx, func(tx Tx) error {
+		row := tx.QueryRowContext(ctx, `SELECT server_url, project, environment, cluster, role, fqdn, logical_source_id, physical_source_id FROM source_registration WHERE id = 1`)
+		if err := row.Scan(&reg.ServerURL, &reg.Project, &reg.Environment, &reg.Cluster, &reg.Role, &reg.FQDN, &reg.LogicalSourceID, &reg.PhysicalSourceID); errors.Is(err, sql.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return SourceRegistration{}, false, err
+	}
+	return reg, reg.LogicalSourceID != 0 && reg.PhysicalSourceID != 0, nil
+}
+
+// SaveSourceRegistration caches the server-assigned source IDs.
+func (s *Store) SaveSourceRegistration(ctx context.Context, reg SourceRegistration) error {
+	if reg.LogicalSourceID == 0 || reg.PhysicalSourceID == 0 {
+		return errors.New("source registration IDs are required")
+	}
+	if reg.ServerURL == "" || reg.Project == "" || reg.Environment == "" || reg.Cluster == "" || reg.Role == "" || reg.FQDN == "" {
+		return errors.New("source registration identity is required")
+	}
+	return s.Tx(ctx, func(tx Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO source_registration
+			(id, server_url, project, environment, cluster, role, fqdn, logical_source_id, physical_source_id)
+			VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				server_url = excluded.server_url,
+				project = excluded.project,
+				environment = excluded.environment,
+				cluster = excluded.cluster,
+				role = excluded.role,
+				fqdn = excluded.fqdn,
+				logical_source_id = excluded.logical_source_id,
+				physical_source_id = excluded.physical_source_id`,
+			reg.ServerURL, reg.Project, reg.Environment, reg.Cluster, reg.Role, reg.FQDN, reg.LogicalSourceID, reg.PhysicalSourceID)
+		return err
+	})
 }
 
 func (s *Store) moveAside() (string, error) {

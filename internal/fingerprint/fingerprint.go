@@ -1,15 +1,12 @@
 package fingerprint
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
 	"reflect"
 	"regexp"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	reflectwalk "github.com/mitchellh/reflectwalk"
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
@@ -386,37 +383,4 @@ func deparseFallback(query string, pats *patterns, deparseErr error) (string, er
 		return "", errors.New("failed to deparse and fingerprint fallback")
 	}
 	return fingerprint, nil
-}
-
-// ID finds the sequence id of this fingerprint in the rotten db, inserting
-// it with query normalized if it is new.
-func ID(rottenDB *pgxpool.Pool, fingerprint string, query string) (db_id uint64, err error) {
-	var fingerprint_id uint64
-
-	normalized, err := pg_query.Normalize(query)
-	if err != nil {
-		log.Println("couldn't normalize query", query, err)
-		return 0, errors.New("failed to normalize")
-	}
-
-	if err := rottenDB.QueryRow(context.Background(), `select id from fingerprints where fingerprint=$1`, fingerprint).Scan(&fingerprint_id); err == nil {
-		// yay, we have our ID
-	} else if err == pgx.ErrNoRows {
-		if err := rottenDB.QueryRow(context.Background(), `insert into fingerprints(fingerprint,normalized) values ($1,$2) returning id`, fingerprint, normalized).Scan(&fingerprint_id); err == nil {
-			// yay, we have our ID
-		} else {
-			// we couldn't insert, probably because another session got here first. See what id it got
-			if err := rottenDB.QueryRow(context.Background(), `select id from fingerprints where fingerprint=$1`, fingerprint).Scan(&fingerprint_id); err == nil {
-				// yay, we have our ID
-			} else {
-				log.Fatalln("couldn't select newly inserted fingerprint", err)
-				// will now exit because Fatal
-			}
-		}
-	} else {
-		log.Fatalln("couldn't select fingerprint", fingerprint, err)
-		// will now exit because Fatal
-	}
-
-	return fingerprint_id, nil
 }

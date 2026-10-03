@@ -130,7 +130,7 @@ func TestParseFailuresCountedAndSampled(t *testing.T) {
 	var sendLog bytes.Buffer
 	old := log.Writer()
 	log.SetOutput(&sendLog)
-	w.send(ctx, texts, deltas, time.Unix(1, 0), time.Unix(2, 0))
+	w.buildHarvestBatch(ctx, texts, deltas, time.Unix(1, 0), time.Unix(2, 0))
 	log.SetOutput(old)
 	if !strings.Contains(sendLog.String(), "window fingerprint failures: 7; fingerprint failure samples (up to 5):") {
 		t.Errorf("window summary missing; a later harvest could hide failures: %s", sendLog.String())

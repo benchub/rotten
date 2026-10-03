@@ -1,0 +1,25 @@
+{
+  "ObservedDBConn": [
+    "postgres://rotten_observer:rotten_observer@observed-db:5432/observed?sslmode=disable"
+  ],
+  "ServerURL": "https://rotten-server:8443",
+  "PassKeyFile": "/worker-secrets/pass.key",
+  "ServerCAFile": "/certs/ca.pem",
+  "StateDir": "/state",
+  "MaxSnapshotAge": 30,
+  "SanityCheck": "select true",
+  "StatusInterval": 10,
+  "ObservationInterval": 10,
+  "FQDN": "observed-postgres",
+  "Project": "dev",
+  "Environment": "local",
+  "Cluster": "compose",
+  "Role": "primary",
+  "ContextController": "/\\*.*controller(_with_namespace)?:([^,]+).*\\*/",
+  "ContextAction": "/\\*.*action:([^,]+).*\\*/",
+  "ContextJob": "/\\*.*job(_tag)?:([^,]+).*\\*/",
+  "KeepSchemas": false,
+  "CursorPattern": "([^\\s]+)[_\\-]cursor_[0-9a-z]+([^\\s]*)",
+  "TempTablePattern": "([^\\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\\s]*)",
+  "MinmaxResetSchema": "rotten"
+}

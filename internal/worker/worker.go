@@ -14,14 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	runningstat "github.com/benchub/runningstat"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
-	"github.com/benchub/rotten/internal/identity"
 	"github.com/benchub/rotten/internal/pgss"
 	"github.com/benchub/rotten/internal/state"
 )
@@ -45,8 +42,8 @@ type QueryEvent struct {
 	total_time  float64
 
 	// stddev_absent is true when stddev_time can't be trusted for this window
-	// (pgss.WindowStats said so). stddev_time is 0 then, and processEvent
-	// leaves it out of fingerprint_stats.
+	// (pgss.WindowStats said so). stddev_time is 0 then, and the outbox
+	// payload leaves it out of fingerprint_stats.
 	stddev_absent bool
 
 	// the fastest time this query ran in this window
@@ -84,7 +81,6 @@ type QueryEvent struct {
 // Config is what Run needs: the connections main opened and the settings
 // main read from the config file.
 type Config struct {
-	RottenDB            *pgxpool.Pool
 	ObservedDB          *pgx.Conn
 	ObservationInterval uint32
 	SanityCheck         string
@@ -145,9 +141,6 @@ type Worker struct {
 	cfg Config
 	clk Clock
 
-	// The controller, action, and job tag ID caches.
-	identities *identity.Caches
-
 	// Progress stats. Run writes them and ReportProgress reads them from
 	// another goroutine, so they're atomics. lastWindowEnd holds the last
 	// harvest's time in Unix seconds.
@@ -167,33 +160,16 @@ type Worker struct {
 	// is behind what was sent. Only Run's goroutine touches it.
 	staleState bool
 
-	// The fingerprints we've seen since startup and are currently processing.
-	fingerprintsMu sync.RWMutex
-	fingerprints   map[uint64]*Fingerprint
-
-	// How many processEvent calls are running.
-	processingMu sync.RWMutex
-	processing   uint32
-
-	// statsWait blocks between reportSamples passes. Returning false makes
-	// reportSamples return. Production always sleeps and returns true, so
-	// the loop runs forever. Tests set their own before starting anything
-	// that runs reportSamples, to drive and stop it. Each Worker has its
-	// own, so goroutines from one test never see another test's.
-	statsWait func(time.Duration) bool
+	// How many event-processing goroutines are running. The server-outbox
+	// worker path never starts any; this remains for progress log continuity.
+	processing atomic.Uint32
 }
 
 // New returns a Worker for cfg that tells time with clk.
 func New(cfg Config, clk Clock) *Worker {
 	return &Worker{
-		cfg:          cfg,
-		clk:          clk,
-		identities:   identity.NewCaches(),
-		fingerprints: make(map[uint64]*Fingerprint),
-		statsWait: func(d time.Duration) bool {
-			time.Sleep(d)
-			return true
-		},
+		cfg: cfg,
+		clk: clk,
 	}
 }
 
@@ -246,12 +222,9 @@ func emptyBaseline() state.Loaded {
 
 // harvest reads pg_stat_statements, diffs it against the saved snapshot, and
 // sends the top entries' activity for the window from the snapshot's taken_at
-// to now. Then it saves the new snapshot, taken at now. In the legacy direct
-// DB path, processEvent still runs asynchronously before the snapshot save: a
-// crash after the save can lose a window, and a crash between direct writes
-// and the save can count it twice. The ServerOutbox path closes that gap by
-// saving the serialized SubmitHarvest batch and next snapshot together, then
-// deleting the batch only after the server acks it.
+// to now. Non-baseline harvests save the serialized SubmitHarvest batch and
+// next snapshot together, then the sender loop deletes the batch only after the
+// server acks it.
 //
 // A baseline harvest (no usable snapshot, a state store error on Load, or a
 // failed Save last time) saves the snapshot and sends nothing, because Diff
@@ -308,7 +281,9 @@ func (w *Worker) harvest(reader *pgss.Reader, texts *pgss.TextCache, now time.Ti
 		w.staleState = false
 		return
 	} else {
-		w.send(ctx, texts, deltas, loaded.TakenAt, now)
+		log.Println("no server outbox configured; dropping harvest and treating next harvest as a baseline")
+		w.staleState = true
+		return
 	}
 
 	if err := cfg.State.Save(ctx, next, now); err != nil {
@@ -319,10 +294,7 @@ func (w *Worker) harvest(reader *pgss.Reader, texts *pgss.TextCache, now time.Ti
 	w.staleState = false
 }
 
-// send picks the top deltas, fetches their text, fingerprints them, merges
-// them by fingerprint, and hands each merged event to processEvent.
-func (w *Worker) send(ctx context.Context, texts *pgss.TextCache, deltas []pgss.Delta, start, end time.Time) {
-	cfg := w.cfg
+func (w *Worker) buildHarvestBatch(ctx context.Context, texts *pgss.TextCache, deltas []pgss.Delta, start, end time.Time) *rottenv1.SubmitHarvestRequest {
 	picked := topNDeltas(deltas, topDeltasPerMetric)
 	rows := make([]pgss.Stat, len(picked))
 	for i := range picked {
@@ -331,12 +303,13 @@ func (w *Worker) send(ctx context.Context, texts *pgss.TextCache, deltas []pgss.
 	if err := texts.Fill(ctx, rows); err != nil {
 		log.Println("couldn't fetch query text, so entries without cached text are skipped this window:", err)
 	}
-	windowStart := PoorMansTime{sec: start.Unix()}
-	windowEnd := PoorMansTime{sec: end.Unix()}
+	return w.buildHarvestBatchFromRows(picked, rows, start, end)
+}
 
-	eventHash := make(map[string]QueryEvent)
+func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat, start, end time.Time) *rottenv1.SubmitHarvestRequest {
+	cfg := w.cfg
+	events := make(map[string]QueryEvent)
 	hidden, noText := 0, 0
-	log.Println("walking stats results")
 	for i, d := range picked {
 		if d.Calls <= 0 {
 			continue
@@ -350,88 +323,11 @@ func (w *Worker) send(ctx context.Context, texts *pgss.TextCache, deltas []pgss.
 			noText++
 			continue
 		}
-		newEvent := eventFromDelta(d)
-		newEvent.observationTimeStart = windowStart
-		newEvent.observationTimeEnd = windowEnd
-		w.eventCount.Add(1)
-
-		fingerprint, err := fingerprinting.Normalized(newEvent.query, cfg.Fingerprint)
-		if err != nil {
-			w.recordParseFailure(newEvent.query)
-			continue
-		}
-
-		// If we have a context for this query, build out a hash for it
-		controller_id := w.identities.Controllers.Find(cfg.RottenDB, newEvent.query, cfg.ReController)
-		action_id := w.identities.Actions.Find(cfg.RottenDB, newEvent.query, cfg.ReAction)
-		job_tag_id := w.identities.JobTags.Find(cfg.RottenDB, newEvent.query, cfg.ReJobTag)
-
-		context_hash := ""
-		if controller_id > 0 {
-			context_hash = fmt.Sprintf("%scontroller:%d", context_hash, controller_id)
-		}
-		if action_id > 0 {
-			context_hash = fmt.Sprintf("%saction:%d", context_hash, action_id)
-		}
-		if job_tag_id > 0 {
-			context_hash = fmt.Sprintf("%sjob_tag:%d", context_hash, job_tag_id)
-		}
-
-		// If we've already seen this fingerprint in this observation window,
-		// then merge this event with what we've seen so far.
-		// If it's new, make a new entry in our event hash.
-		newEvent.context = map[string]uint32{context_hash: uint32(newEvent.calls)}
-		if existing, present := eventHash[fingerprint]; present {
-			eventHash[fingerprint] = mergeEvent(existing, newEvent)
-		} else {
-			eventHash[fingerprint] = newEvent
-			w.eventsPending.Add(1)
-		}
-	}
-	if hidden > 0 {
-		log.Println(hidden, "top entries are hidden from the observer (no queryid), so they're skipped")
-	}
-	if noText > 0 {
-		log.Println(noText, "top entries have no query text, so they're skipped")
-	}
-	failures, samples := w.parseFailureSnapshot()
-	if failures > 0 {
-		log.Printf("window fingerprint failures: %d; fingerprint failure samples (up to %d): %q", failures, parseFailureSampleLimit, samples)
-	}
-
-	log.Printf("processing %d unique events", w.eventsPending.Load())
-
-	// now that we've hashed all the events by fingerprint, process each one in a goroutine
-	for fingerprint, event := range eventHash {
-		var eventToBeGCedLater = event
-		go w.processEvent(cfg.RottenDB, cfg.LogicalID, cfg.PhysicalID, cfg.ObservationInterval, fingerprint, &eventToBeGCedLater)
-		w.eventsPending.Add(^uint32(0)) // decrement
-	}
-}
-
-func (w *Worker) buildHarvestBatch(ctx context.Context, texts *pgss.TextCache, deltas []pgss.Delta, start, end time.Time) *rottenv1.SubmitHarvestRequest {
-	cfg := w.cfg
-	picked := topNDeltas(deltas, topDeltasPerMetric)
-	rows := make([]pgss.Stat, len(picked))
-	for i := range picked {
-		rows[i] = picked[i].Stat
-	}
-	if err := texts.Fill(ctx, rows); err != nil {
-		log.Println("couldn't fetch query text, so entries without cached text are skipped this window:", err)
-	}
-	events := make(map[string]QueryEvent)
-	for i, d := range picked {
-		if d.Calls <= 0 || d.QueryID == 0 {
-			continue
-		}
-		d.Query = rows[i].Query
-		if d.Query == "" {
-			continue
-		}
 		event := eventFromDelta(d)
 		event.query = d.Query
 		event.observationTimeStart = PoorMansTime{sec: start.Unix()}
 		event.observationTimeEnd = PoorMansTime{sec: end.Unix()}
+		w.eventCount.Add(1)
 		fingerprint, err := fingerprinting.Normalized(event.query, cfg.Fingerprint)
 		if err != nil {
 			w.recordParseFailure(event.query)
@@ -448,7 +344,18 @@ func (w *Worker) buildHarvestBatch(ctx context.Context, texts *pgss.TextCache, d
 			events[fingerprint] = mergeEvent(existing, event)
 		} else {
 			events[fingerprint] = event
+			w.eventsPending.Add(1)
 		}
+	}
+	if hidden > 0 {
+		log.Println(hidden, "top entries are hidden from the observer (no queryid), so they're skipped")
+	}
+	if noText > 0 {
+		log.Println(noText, "top entries have no query text, so they're skipped")
+	}
+	failures, samples := w.parseFailureSnapshot()
+	if failures > 0 {
+		log.Printf("window fingerprint failures: %d; fingerprint failure samples (up to %d): %q", failures, parseFailureSampleLimit, samples)
 	}
 	aggregates := make([]*rottenv1.FingerprintAggregate, 0, len(events))
 	for fingerprint, event := range events {
@@ -459,6 +366,7 @@ func (w *Worker) buildHarvestBatch(ctx context.Context, texts *pgss.TextCache, d
 		}
 		aggregates = append(aggregates, eventAggregate(fingerprint, normalized, event))
 	}
+	w.eventsPending.Store(0)
 	sort.Slice(aggregates, func(i, j int) bool {
 		return aggregates[i].GetFingerprint() < aggregates[j].GetFingerprint()
 	})
@@ -542,64 +450,6 @@ func serverContextKey(controller, action, jobTag string) string {
 	return controller + "\x00" + action + "\x00" + jobTag
 }
 
-// mergeEvent folds b into a, for two events with the same fingerprint in the
-// same observation window, and returns the result. Counters and times are
-// summed, min and max are kept, mean and stddev are combined with
-// runningstat, and b's context histogram counts are added into a's. The
-// merged stddev is absent (stddev_absent) if either side's is, and min and
-// max are lifetime if either side's are. The returned event shares a's
-// context map, which is updated in place. Everything else (query, window)
-// comes from a.
-func mergeEvent(a, b QueryEvent) QueryEvent {
-	a.calls += b.calls
-	a.total_time += b.total_time
-	if a.min_time > b.min_time {
-		a.min_time = b.min_time
-	}
-	if a.max_time < b.max_time {
-		a.max_time = b.max_time
-	}
-	a.minmax_lifetime = a.minmax_lifetime || b.minmax_lifetime
-
-	rs1 := runningstat.RunningStat{}
-	rs2 := runningstat.RunningStat{}
-
-	// Note: a.calls already includes b.calls here. That's how it's always
-	// worked, so this characterization keeps it.
-	rs1.Init(int64(a.calls), a.mean_time, a.stddev_time)
-	rs2.Init(int64(b.calls), b.mean_time, b.stddev_time)
-	rs1.Merge(rs2)
-
-	a.mean_time = rs1.RunningStatMean()
-	a.stddev_time = rs1.RunningStatDeviation()
-	// The merged stddev is built from both sides' stddevs, so it's only as
-	// good as the worse one. The mean doesn't use them.
-	a.stddev_absent = a.stddev_absent || b.stddev_absent
-	if a.stddev_absent {
-		a.stddev_time = 0
-	}
-
-	a.rows += b.rows
-	a.shared_blks_hit += b.shared_blks_hit
-	a.shared_blks_read += b.shared_blks_read
-	a.shared_blks_written += b.shared_blks_written
-	a.shared_blks_dirtied += b.shared_blks_dirtied
-	a.local_blks_written += b.local_blks_written
-	a.local_blks_dirtied += b.local_blks_dirtied
-	a.local_blks_read += b.local_blks_read
-	a.local_blks_hit += b.local_blks_hit
-	a.temp_blks_read += b.temp_blks_read
-	a.temp_blks_written += b.temp_blks_written
-	a.blk_read_time += b.blk_read_time
-	a.blk_write_time += b.blk_write_time
-
-	for hash, count := range b.context {
-		a.context[hash] += count
-	}
-
-	return a
-}
-
 // ReportProgress logs the progress counters every interval seconds. It
 // returns when ctx ends. main passes context.Background(), so in production
 // it never does. With noIdleHands set, two intervals in a row with no new
@@ -615,7 +465,7 @@ func (w *Worker) ReportProgress(ctx context.Context, noIdleHands bool, interval 
 		processed := w.eventCount.Load()
 		failures, samples := w.parseFailureSnapshot()
 
-		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", w.eventsPending.Load(), "unique events queued,", failures, "fingerprints failed,", w.stillProcessing(), "still being recorded. Overall,", processed, "processed,", w.fingerprintCount(), "fingerprints seen")
+		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", w.eventsPending.Load(), "unique events queued,", failures, "fingerprints failed. Overall,", processed, "processed")
 		if failures > 0 {
 			log.Printf("fingerprint failure samples (up to %d): %q", parseFailureSampleLimit, samples)
 		}

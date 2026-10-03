@@ -135,21 +135,56 @@ services:
         aliases:
           - rotten-server
 
-  worker:
+  worker-key:
     image: rotten-dev-go:1.27
     working_dir: /src
     command:
-      - sleep
-      - infinity
+      - bash
+      - -e
+      - -o
+      - pipefail
+      - -c
+      - |
+        if [ -s /worker-secrets/pass.key ]; then exit 0; fi
+        go run ./cmd/rotten-server keys create -dsn "$$ROTTEN_ADMIN_DSN" --fqdn observed-postgres dev-worker | tail -n 1 > /worker-secrets/pass.key.new
+        test -s /worker-secrets/pass.key.new
+        mv /worker-secrets/pass.key.new /worker-secrets/pass.key
+    environment:
+      ROTTEN_ADMIN_DSN: postgres://rotten_owner:rotten_owner@rotten-db:5432/rotten?sslmode=disable
     volumes:
       - ..:/src:ro
       - go-mod:/go/pkg/mod
       - go-build:/root/.cache/go-build
+      - worker-secrets:/worker-secrets
+    depends_on:
+      server-migrate:
+        condition: service_completed_successfully
+    networks:
+      - core
+
+  worker:
+    image: rotten-dev-go:1.27
+    working_dir: /src
+    command:
+      - go
+      - run
+      - ./cmd/rotten-worker
+      - -config
+      - /src/dev/worker.json
+    volumes:
+      - ..:/src:ro
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+      - test-certs:/certs:ro
+      - worker-secrets:/worker-secrets:ro
+      - worker-state:/state
     depends_on:
       observed-postgres:
         condition: service_healthy
       server:
         condition: service_healthy
+      worker-key:
+        condition: service_completed_successfully
     networks:
       observed:
         aliases:
@@ -171,3 +206,5 @@ volumes:
   go-mod:
   go-build:
   test-certs:
+  worker-secrets:
+  worker-state:

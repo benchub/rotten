@@ -27,15 +27,12 @@ curl --cacert ca.pem https://localhost:8443/healthz
 ```
 
 `server-migrate` applies the rotten schema to `rotten-db` before the server
-starts. The server has an HTTPS `/healthz` healthcheck, and the worker waits for
-it to be healthy. `observed-postgres` is Postgres 18 with `pg_stat_statements`
-preloaded.
-
-The `worker` service is currently a topology placeholder on `observed` and
-`edge`. The worker still writes directly to the rotten DB until task
-`20261001-103222-39`, so running the real binary without joining `core` would
-fail by design. After that cutover, this service can run `rotten-worker`
-against `rotten-server` without changing the network layout.
+starts. `worker-key` creates a runtime-only pass key in the `worker-secrets`
+volume, pinned to the dev worker FQDN. The server has an HTTPS `/healthz`
+healthcheck, and the real `worker` service waits for the server and key before
+running `rotten-worker -config /src/dev/worker.json`. `observed-postgres` is
+Postgres 18 with `pg_stat_statements` preloaded. The worker is on `observed`
+and `edge` only; it reaches the rotten DB only through `rotten-server`.
 
 The topology tests assert isolation by probing container IPs on the Docker
 networks. They do not cover host-published ports: anything reachable through
@@ -47,8 +44,8 @@ Stop and remove the stack with:
 docker compose -f dev/docker-compose.yaml down
 ```
 
-Add `-v` to `down` when you also want to remove the generated certificates and
-database volumes.
+Add `-v` to `down` when you also want to remove the generated certificates,
+worker pass key, worker state, and database volumes.
 
 The dev services share named Go module and build-cache volumes. After changing
 `go.mod` or `go.sum`, run `docker compose -f dev/docker-compose.yaml down -v`

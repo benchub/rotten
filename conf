@@ -1,6 +1,10 @@
 {
-	"RottenDBConn": ["host=yourRottenServerGoesHere,FallbackServer1,FallbackServer2 dbname=rotten user=rotten_client password=letmein sslmode=verify-ca sslcert=rotten-client.crt sslkey=rotten-client.key sslrootcert=root.crt"],
-	"ObservedDBConn": ["host=yourObservedServerGoesHere dbname= user=rotten_observer password=letmein sslmode=require"],
+	"ObservedDBConn": ["host=yourObservedServerGoesHere dbname= user=rotten_observer password=yourPassword sslmode=require"],
+	"ServerURL": "https://rotten-server.example.com:8443",
+	"PassKeyFile": "/etc/rotten-worker/pass.key",
+	"ServerCAFile": "/etc/rotten-worker/server-ca.pem",
+	"StateDir": "/var/lib/rotten-worker",
+	"MaxSnapshotAge": 900,
 	"SanityCheck": "select true",
 	"StatusInterval": 60,
 	"ObservationInterval": 300,
@@ -15,8 +19,5 @@
 	"KeepSchemas": false,
 	"CursorPattern": "([^\\s]+)[_\\-]cursor_[0-9a-z]+([^\\s]*)",
 	"TempTablePattern": "([^\\s]+)_temp_table_[0-9a-z]{6}[0-9a-z]*([^\\s]*)",
-	"MinmaxResetSchema": "rotten",
-	"StateDir": "/var/lib/rotten-worker",
-	"MaxSnapshotAge": 900
+	"MinmaxResetSchema": "rotten"
 }
-

@@ -195,14 +195,26 @@ How to use it
    mixed in), while total time is still plan + exec.
 7. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
 8. Modify the conf to fit your environment.
-  1. `RottenDBConn` and `ObservedDBConn` are hopefully self-explanatory. Extra care has been
-     given in rotten to make sure that rotten will correct send a root ca with all the needed
-     intermediate certs, if you are working with such an environment.
-     Until the worker switches to the ingest server, `RottenDBConn` still talks directly to the
-     rotten database. Its role must be able to run the source-registration upserts: `SELECT`,
-     `INSERT`, sequence `USAGE`, and column `UPDATE` on `logical_sources.project` and
-     `physical_sources.fqdn`, matching the `rotten_ingest` grants in `migrations/permissions.sql`.
-  2. `SanityCheck` is a query that will be run against the Observed DB before each window.
+  1. `ObservedDBConn` is the monitored database connection. Extra care has been
+     given in rotten to make sure that rotten will correctly send a root CA with
+     the needed intermediate certs, if you are working with such an environment.
+  2. `ServerURL`, `PassKeyFile`, and `ServerCAFile` point the worker at
+     `rotten-server`. `PassKeyFile` contains the single bearer key printed by
+     `rotten-server keys create --fqdn <worker fqdn>`. `ServerCAFile` is the CA
+     that signed the server certificate. The worker no longer accepts
+     `RottenDBConn`; if that old key is present, startup fails before connecting.
+  3. `StateDir` is required. It's the directory where the worker keeps its local
+     SQLite state: the pg_stat_statements snapshot and the durable outbox of
+     harvests waiting for the server. The worker creates it if it's missing, so
+     it must be writable by the worker's user. Each worker needs its own
+     `StateDir`, since a second worker on the same directory refuses to start. If
+     the state is lost, the next harvest is a baseline that records nothing, and
+     reporting picks up one window later.
+  4. `MaxSnapshotAge` is required, in seconds. If the saved snapshot is older
+     than this, say after the worker was down for a while, the next harvest is a
+     baseline instead of one huge window. A common setting is three times
+     `ObservationInterval`.
+  5. `SanityCheck` is a query that will be run against the Observed DB before each window.
      Returning a boolean True value will tell rotten to proceed; a False will cause rotten
      to quit. The assumption is that systemd will keep restarting rotten until SanityCheck
      returns True, and also that you have a function you might call which tells you what the
@@ -214,19 +226,19 @@ How to use it
      clients would want, it's not helpful for rotten's purposes. Potentially worse, rotten
      would not know when to reconnect once maintenance is done, and so would stay connected to
      the primary until it dies or is manually restarted.
-  3. `StatusInterval` is how often to report status (in seconds) to its log.
-  4. `ObservationInterval` is how long (in seconds) to let pg_stat_statements gather info
+  6. `StatusInterval` is how often to report status (in seconds) to its log.
+  7. `ObservationInterval` is how long (in seconds) to let pg_stat_statements gather info
      for. This is the most granular you can make your reports, and the lower you set this,
      the more data you will need to store in your rotten db.
-  5. `FQDN` is some unique string (typically the FQDN of the observed db) to help find a
+  8. `FQDN` is some unique string (typically the FQDN of the observed db) to help find a
      physical log if more information is desired other than the fingerprint.
-  6. `Project`, `Environment`, `Cluster`, and `Role` are logical identifiers for where the samples
+  9. `Project`, `Environment`, `Cluster`, and `Role` are logical identifiers for where the samples
      of data are coming from.
-  7. `KeepSchemas` is optional and defaults to `false`. By default, rotten ignores schema
+  10. `KeepSchemas` is optional and defaults to `false`. By default, rotten ignores schema
      names when it fingerprints queries, so `users`, `public.users`, and `shard_1.users`
      all group together. Set it to `true` if your schemas mean different things and you
      want their queries kept apart.
-  8. `CursorPattern` and `TempTablePattern` are optional. They're regexes that match the
+  11. `CursorPattern` and `TempTablePattern` are optional. They're regexes that match the
      cursor and temp-table names your app or ORM generates, so a fresh random name doesn't
      make a fresh fingerprint. Leave them out to use the defaults shown in `conf`:
      cursors look like `users_cursor_ab12`, and temp tables look like
@@ -242,19 +254,10 @@ How to use it
      Changing a pattern changes fingerprints for the names it matches, so
      history from before and after the change won't line up for those queries. An invalid
      regex stops the worker at startup with an error that names the setting.
-  9. `MinmaxResetSchema` is optional and defaults to `rotten`. On Postgres 17 and later, it's
+  12. `MinmaxResetSchema` is optional and defaults to `rotten`. On Postgres 17 and later, it's
      the schema where `schema/observer.sql` created `pg_stat_statements_minmax_reset()`. Set
      it to match the `observer_schema` you passed to that script. Postgres 14 through 16
      ignore it.
-  10. `StateDir` is optional and defaults to `/var/lib/rotten-worker`. It's the directory
-     where the worker keeps its local state file, the snapshot of pg_stat_statements from
-     its last harvest. The worker creates it if it's missing, so it must be writable by the
-     worker's user. Each worker needs its own `StateDir`, since a second worker on the same
-     directory refuses to start. If the state is lost, the next harvest is a baseline that
-     records nothing, and reporting picks up one window later.
-  11. `MaxSnapshotAge` is optional, in seconds, and defaults to three times
-     `ObservationInterval`. If the saved snapshot is older than this, say after the worker
-     was down for a while, the next harvest is a baseline instead of one huge window.
 
 Known Issues
 ============
