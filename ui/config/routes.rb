@@ -1,8 +1,13 @@
 Rails.application.routes.draw do
-  # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
+  root "home#show"
 
   get "up" => "health#show", as: :rails_health_check
+  get "login" => "sessions#new"
+  delete "logout" => "sessions#destroy"
+  get "admin" => "admin#show"
 
-  # Defines the root path route ("/")
-  # root "posts#index"
+  constraints ->(_) { Rails.env.test? } do
+    get "__test/sign_in" => "test_sessions#create"
+    post "__test/sign_in" => "test_sessions#create"
+  end
 end

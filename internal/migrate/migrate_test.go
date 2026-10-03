@@ -110,6 +110,101 @@ func TestFingerprintColumnCommentsDescribeStoredValues(t *testing.T) {
 	}
 }
 
+func TestUsersTableSchema(t *testing.T) {
+	db := testdb.StartRotten(t)
+	conn := db.Connect(t)
+	ctx := context.Background()
+
+	if _, err := conn.Exec(ctx, `insert into rotten.users (email, name, role, active)
+		values ('viewer@example.com', 'Viewer', 'viewer', true)`); err != nil {
+		t.Fatalf("insert minimal user: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `insert into rotten.users (email, role)
+		values ('VIEWER@example.com', 'viewer')`); err == nil {
+		t.Fatal("case-insensitive duplicate email insert succeeded")
+	}
+	// The UI connects with search_path rotten only, so uniqueness must not
+	// depend on anything installed in public.
+	if _, err := conn.Exec(ctx, `set search_path to rotten`); err != nil {
+		t.Fatalf("set search_path: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `insert into users (email, role)
+		values ('Viewer@Example.com', 'viewer')`); err == nil {
+		t.Fatal("case-insensitive duplicate email insert succeeded with search_path rotten")
+	}
+	if _, err := conn.Exec(ctx, `reset search_path`); err != nil {
+		t.Fatalf("reset search_path: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `insert into rotten.users (email, role)
+		values ('admin@example.com', 'admin')`); err != nil {
+		t.Fatalf("insert admin user: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `insert into rotten.users (email, role)
+		values ('bad@example.com', 'owner')`); err == nil {
+		t.Fatal("insert with invalid role succeeded")
+	}
+
+	wantTypes := map[string]string{
+		"id":              "bigint",
+		"email":           "text",
+		"name":            "text",
+		"provider":        "text",
+		"provider_uid":    "text",
+		"password_digest": "text",
+		"role":            "text",
+		"groups":          "text[]",
+		"active":          "boolean",
+		"last_login_at":   "timestamp with time zone",
+	}
+	for column, want := range wantTypes {
+		var got string
+		if err := conn.QueryRow(ctx, `
+			select format_type(a.atttypid, a.atttypmod)
+			from pg_attribute a
+			where a.attrelid = 'rotten.users'::regclass
+			  and a.attname = $1
+			  and not a.attisdropped`, column).Scan(&got); err != nil {
+			t.Fatalf("%s type: %v", column, err)
+		}
+		if got != want {
+			t.Errorf("%s type = %s, want %s", column, got, want)
+		}
+	}
+}
+
+func TestUsersColumnCommentsDescribeValues(t *testing.T) {
+	db := testdb.StartRotten(t)
+	conn := db.Connect(t)
+	ctx := context.Background()
+
+	want := map[string]string{
+		"id":              "Primary key for UI users.",
+		"email":           "Email address used to identify the user; the UI stores it lowercased, and uniqueness is case-insensitive.",
+		"name":            "Display name from the identity provider or password admin.",
+		"provider":        "Authentication provider name for externally authenticated users.",
+		"provider_uid":    "Provider-specific stable user identifier.",
+		"password_digest": "bcrypt password digest for password auth; null for OIDC users.",
+		"role":            "Authorization role: viewer or admin.",
+		"groups":          "External identity provider groups observed at last login.",
+		"active":          "Local kill switch; inactive users are logged out on their next request.",
+		"last_login_at":   "Time this user last completed authentication.",
+	}
+	for column, comment := range want {
+		var got string
+		if err := conn.QueryRow(ctx, `
+			select col_description('rotten.users'::regclass, a.attnum)
+			from pg_attribute a
+			where a.attrelid = 'rotten.users'::regclass
+			  and a.attname = $1
+			  and not a.attisdropped`, column).Scan(&got); err != nil {
+			t.Fatalf("%s comment: %v", column, err)
+		}
+		if got != comment {
+			t.Errorf("%s comment = %q, want %q", column, got, comment)
+		}
+	}
+}
+
 func TestEventContextCountIsBigintEverywhere(t *testing.T) {
 	db := testdb.StartRotten(t)
 	conn := db.Connect(t)

@@ -147,6 +147,12 @@ func TestUIRolePermissions(t *testing.T) {
 	wantDenied(t, c, "update rotten.api_keys set secret_hash = 'x' where id = 1")
 	wantDenied(t, c, "delete from rotten.api_keys")
 	wantDenied(t, c, "select * from rotten.ingested_batches")
+	wantAllowed(t, c, `insert into rotten.users (email, name, role, active)
+		values ('ui@example.com', 'UI User', 'viewer', true)`)
+	wantAllowed(t, c, `select id, email, name, provider, provider_uid, password_digest, role, groups,
+		active, last_login_at from rotten.users`)
+	wantAllowed(t, c, "update rotten.users set active = false where email = 'ui@example.com'")
+	wantAllowed(t, c, "delete from rotten.users where email = 'ui@example.com'")
 }
 
 func TestReadonlyRoleCantWrite(t *testing.T) {

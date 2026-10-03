@@ -208,6 +208,7 @@ services:
     environment:
       DATABASE_URL: postgres://rotten_ui:rotten_ui@rotten-db:5432/rotten?sslmode=disable
       SECRET_KEY_BASE: development-secret-key-base
+      ROTTEN_UI_AUTH: password
     ports:
       - "3000:3000"
     volumes:

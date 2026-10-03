@@ -73,3 +73,7 @@ grant usage on rotten.api_keys_id_seq to rotten_ui;
 -- through prune_ingested_batches(), never with a direct DELETE.
 grant select, insert on rotten.ingested_batches to rotten_ingest;
 grant execute on function rotten.prune_ingested_batches() to rotten_ingest;
+
+-- users. The Rails UI owns authentication and authorization state.
+grant select, insert, update, delete on rotten.users to rotten_ui;
+grant usage on rotten.users_id_seq to rotten_ui;
