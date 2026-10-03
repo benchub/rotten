@@ -156,18 +156,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes, and someone who isn't the author can follow the setup.
 - **Needs:** -41, -50.
 
-### 20261001-114433-1: Remake the TLS config for observed DB fallbacks.
-- **Do:** `main()` remakes the chain for rotten DB fallbacks but not for observed DB fallbacks. Those keep the pgx default config, which has no intermediates. Decide whether that's intended, and fix it if not.
-- **Red test:** A config with several observed hosts gets the remade chain on every fallback.
-- **Done when:** Tests pass.
-- **Needs:** -11.
-
-### 20261001-114433-2: Parse connection strings properly in `remakeSSLCertConfig`.
-- **Do:** It splits on spaces and on every "=". Quoted values, values with spaces or "=", and URL-form strings (`postgres://...?sslrootcert=...`) silently produce empty paths. Use pgx parsing instead.
-- **Red test:** A URL-form connection string with `sslrootcert` builds the chain.
-- **Done when:** Tests pass.
-- **Needs:** -11.
-
 ### 20261001-132234-1: Fix the flaky "port 5432/tcp not found" in StartObserved.
 - **Do:** `TestObserverSQL` failed once in a full `make test` run with `testdb: connection string: port "5432/tcp" not found`, then passed on rerun. Find out why `ConnectionString` runs before the port is mapped, and make `start` wait for it.
 - **Red test:** Hard to force. Loop `TestObserverSQL` under `-count` until it fails, then show the fix holds for the same loop.
@@ -185,13 +173,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** Golden cases for the nested-cast forms, with the grouping you pick.
 - **Done when:** Passes, and `make golden` shows only the intended changes.
 - **Needs:** 20261001-135352-1.
-
-### 20261001-142401-1: Fix the stale fingerprints column comments.
-- **Do:** Add a new migration that only replaces the comments. Don't edit 0001. In `0001_baseline.sql`, `fingerprints.fingerprint` is described as the query text, but it now holds the hex string from `fingerprint.Normalized`, the same value as `FingerprintAggregate.fingerprint` in `proto/rotten/v1/ingest.proto`. `fingerprints.normalized` should say it's `pg_query.Normalize` output of one representative text, stored on first insert only. I held this back from -29 because task -112142-5 is adding migrations, and a second new migration would risk a number collision.
-- **Also:** The fingerprint example in `proto/rotten/v1/ingest.proto` and in the `fingerprint.Normalized` doc comment is the old 42-character v1 format. Replace it with a real 16-hex-digit v6 value.
-- **Red test:** A migrate test reads both comments back with `col_description` and checks them.
-- **Done when:** Passes.
-- **Needs:** 20261001-103222-29, 20261001-112142-5.
 
 ### 20261001-143630-1: Keep lifetime min and max out of fingerprint_stats.
 - **Do:** On 14 through 16 (and 17+ when the min/max reset fails), `pgss.WindowMinMax` returns lifetime values. The worker flags them on the event (`minmax_lifetime`) but still pushes them into the `min_time` and `max_time` samples, so one old outlier shows up in every window. Leave them out the way an absent stddev is left out, or carry the flag to the server (see -29 and -34).

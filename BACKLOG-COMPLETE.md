@@ -674,3 +674,32 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
     - Migration 0004 rewrites the table under an ACCESS EXCLUSIVE lock, so schedule it for a quiet window on a large database.
   - **Ingest cap:** both Calls and context counts are capped at MaxContextCount = 2^53. Ingest also rejects duplicate contexts and context sums greater than calls.
   - **Report types:** report sums are `numeric` and replica-utilization totals are double precision. Clients that decode them as float64 lose precision above 2^53.
+
+### 20261001-114433-1: Remake the TLS config for observed DB fallbacks.
+- **Do:** `main()` remakes the chain for rotten DB fallbacks but not for observed DB fallbacks. Those keep the pgx default config, which has no intermediates. Decide whether that's intended, and fix it if not.
+- **Red test:** A config with several observed hosts gets the remade chain on every fallback.
+- **Done when:** Tests pass.
+- **Needs:** -11.
+- **Completed:** 2026-10-03, f9d4959. It was landed together with -114433-2.
+  - `observedConfig` remakes the TLS config pgx built for the primary host and for every fallback, including `sslmode=allow` and `sslmode=prefer` slots. Each remade config is a clone, so `ServerName`, `VerifyPeerCertificate` and the decrypted key are kept.
+  - Remake errors are swallowed and the pgx config is kept, so startup never fails where master would connect.
+  - The remake is skipped for `sslrootcert=system`, a missing client cert, a missing root file, or a root file with no parseable certificates.
+
+### 20261001-114433-2: Parse connection strings properly in `remakeSSLCertConfig`.
+- **Do:** It splits on spaces and on every "=". Quoted values, values with spaces or "=", and URL-form strings (`postgres://...?sslrootcert=...`) silently produce empty paths. Use pgx parsing instead.
+- **Red test:** A URL-form connection string with `sslrootcert` builds the chain.
+- **Done when:** Tests pass.
+- **Needs:** -11.
+- **Completed:** 2026-10-03, f9d4959.
+  - `remakeSSLCertConfig` was removed. A pgconn-compatible parser for keyword/value and URL strings replaces it. The URL parser strips the userinfo the same way pgconn does, so a `?` in a password can't hide `sslrootcert`.
+  - `sslrootcert` is resolved with pgconn's precedence: defaults, then environment, then the service file, then the connection string.
+
+### 20261001-142401-1: Fix the stale fingerprints column comments.
+- **Do:** Add a new migration that only replaces the comments. Don't edit 0001. In `0001_baseline.sql`, `fingerprints.fingerprint` is described as the query text, but it now holds the hex string from `fingerprint.Normalized`, the same value as `FingerprintAggregate.fingerprint` in `proto/rotten/v1/ingest.proto`. `fingerprints.normalized` should say it's `pg_query.Normalize` output of one representative text, stored on first insert only.
+- **Also:** The fingerprint example in `proto/rotten/v1/ingest.proto` and in the `fingerprint.Normalized` doc comment is the old 42-character v1 format. Replace it with a real 16-hex-digit v6 value.
+- **Red test:** A migrate test reads both comments back with `col_description` and checks them.
+- **Done when:** Passes.
+- **Needs:** 20261001-103222-29, 20261001-112142-5.
+- **Completed:** 2026-10-03, 8fc4094.
+  - Migration 0005 replaces only the two comments; its Down restores the 0001 text.
+  - The example in the proto and doc comment is now `SELECT 1` → `50fde20626009aba`, which matches pg_query_go's own test data.
