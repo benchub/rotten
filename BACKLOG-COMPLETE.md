@@ -784,3 +784,15 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
     - Added `in_list_cast_bigint`, `_many`, `_mixed`, `in_list_nested_cast` and `any_array_nested_element_cast`.
     - Changed `any_array_cast`, `in_list_any_cast_b` and `in_list_any_cast_domain`.
   - **Follow-up:** 20261003-095500-1, no-op uuid and text casts.
+
+### 20261003-095500-1: Stop splitting no-op casts on string literals and params in IN lists.
+- **Do:** -140616-1 keeps single IN-list element casts so they fingerprint apart, and exempts only `::int`, `::int4` and `::integer`. In Postgres, a cast on a string literal or an untyped `$n` parameter never becomes a cast node; the value just takes the type. So `u IN ($1::uuid)` and `u IN ($1)` share a queryid, and so do `s IN ('a'::text)` and `s IN ('a')` (checked on PG18). Rotten now splits them. ORMs often emit `$1::uuid` and `$1::text`. Leave casts on string literals and `$n` parameters alone in the IN-list path, and keep only casts on numeric constants or typed expressions. Check this against the real queryids on 14 through 18.
+- **Red test:** Cross-version queryid locks, plus golden pairs for `IN ($1::uuid)` vs `IN ($1)` and `IN ('a'::text)` vs `IN ('a')`.
+- **Done when:** Passes, and `make golden` shows only the intended changes.
+- **Needs:** none.
+- **Completed:** 2026-10-03, db61668.
+  - **Rule:** Only unqualified or `pg_catalog`-qualified `text` and `uuid` casts are exempt. A cast with a typmod or array bounds is never exempt. `varchar`, `varchar(n)`, `char`, `name` and numeric casts like `$1::bigint` stay split, as Postgres splits them.
+  - **Accepted divergences:** Rotten can't see column types, so these merge although Postgres splits them. All are locked by live tests on PG 14–18:
+    - `123::text`, which normalizes to `$1::text`.
+    - `::text` against `name` or `char(n)` columns.
+  - **Golden changes:** five additions only.
