@@ -3,3 +3,17 @@
   <p><%= notice %></p>
 <% end %>
 <p>Authentication mode: <%= Rails.configuration.x.auth_mode %></p>
+<% if alert.present? %>
+  <p role="alert"><%= alert %></p>
+<% end %>
+<% if Rails.configuration.x.auth_mode == "oidc" %>
+  <% if Rails.configuration.x.oidc_strategy %>
+    <%# OmniAuth only starts a login from a POST with a CSRF token, and Turbo can't follow the cross-origin redirect. %>
+    <%= button_to "Sign in", "/auth/openid_connect", form: { data: { turbo: false } } %>
+  <% end %>
+  <% if Rails.configuration.x.fake_login %>
+    <p>Development fake login (OMNIAUTH_FAKE=1):</p>
+    <%= button_to "Sign in as fake viewer", fake_login_path(persona: "viewer") %>
+    <%= button_to "Sign in as fake admin", fake_login_path(persona: "admin") %>
+  <% end %>
+<% end %>

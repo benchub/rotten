@@ -47,6 +47,10 @@ docker compose -f dev/docker-compose.yaml down
 Add `-v` to `down` when you also want to remove the generated certificates,
 worker pass key, worker state, and database volumes.
 
+The UI runs at `http://localhost:3000` in `ROTTEN_UI_AUTH=oidc` mode with
+`OMNIAUTH_FAKE=1`, so `/login` offers offline "fake viewer" and "fake admin"
+sign-ins with no identity provider. See `ui/README.md`.
+
 The dev services share named Go module and build-cache volumes. After changing
 `go.mod` or `go.sum`, run `docker compose -f dev/docker-compose.yaml down -v`
 before the next `up` so the dev image and volumes agree on the module cache.

@@ -208,7 +208,11 @@ services:
     environment:
       DATABASE_URL: postgres://rotten_ui:rotten_ui@rotten-db:5432/rotten?sslmode=disable
       SECRET_KEY_BASE: development-secret-key-base
-      ROTTEN_UI_AUTH: password
+      # Offline OIDC: /login offers fake viewer and admin personas. Development only.
+      ROTTEN_UI_AUTH: oidc
+      OMNIAUTH_FAKE: "1"
+      ROTTEN_UI_VIEWER_GROUP: rotten-dev-viewers
+      ROTTEN_UI_ADMIN_GROUP: rotten-dev-admins
     ports:
       - "3000:3000"
     volumes:

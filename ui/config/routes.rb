@@ -6,6 +6,15 @@ Rails.application.routes.draw do
   delete "logout" => "sessions#destroy"
   get "admin" => "admin#show"
 
+  # OmniAuth's middleware handles POST /auth/openid_connect and hands the
+  # callback to this route.
+  get "auth/openid_connect/callback" => "oidc_callbacks#create", as: :oidc_callback
+  get "auth/failure" => "oidc_callbacks#failure", as: :auth_failure
+
+  if Rails.configuration.x.fake_login
+    post "auth/fake/:persona" => "fake_sessions#create", as: :fake_login, constraints: { persona: /viewer|admin/ }
+  end
+
   constraints ->(_) { Rails.env.test? } do
     get "__test/sign_in" => "test_sessions#create"
     post "__test/sign_in" => "test_sessions#create"

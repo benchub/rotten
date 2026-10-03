@@ -10,6 +10,8 @@ require "capybara/rspec"
 require "factory_bot_rails"
 require "shoulda/matchers"
 
+Rails.root.glob("spec/support/**/*.rb").sort.each { |file| require file }
+
 Shoulda::Matchers.configure do |config|
   config.integrate do |with|
     with.test_framework :rspec
