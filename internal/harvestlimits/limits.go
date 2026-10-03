@@ -27,6 +27,11 @@ const (
 	MaxSourceStringBytes  = 255
 	MaxWorkerVersionBytes = 128
 	MaxFloatMetricValue   = 1e15
+	// MaxContextCount caps values that are stored in event_context.c and may be
+	// summed by reports. 2^53 is exactly representable in float64, matches the
+	// events.calls precision, and leaves over 1000 rows of summing headroom before
+	// PostgreSQL bigint overflow.
+	MaxContextCount = uint64(1 << 53)
 
 	MaxHarvestWindowDuration = 24 * time.Hour
 	MaxHarvestFutureSkew     = 5 * time.Minute
@@ -101,9 +106,11 @@ func ValidateHarvest(msg *rottenv1.SubmitHarvestRequest, now time.Time, futureSk
 		if err := validateMetrics(aggregate.GetMetrics()); err != nil {
 			return time.Time{}, time.Time{}, err
 		}
-		if aggregate.GetMetrics().GetCalls() > math.MaxInt32 {
+		if aggregate.GetMetrics().GetCalls() > MaxContextCount {
 			return time.Time{}, time.Time{}, errors.New("aggregate calls exceed event storage range")
 		}
+		seenContexts := map[string]struct{}{}
+		var contextCountSum uint64
 		for _, qc := range aggregate.GetContexts() {
 			contexts++
 			if contexts > MaxHarvestContexts {
@@ -121,9 +128,18 @@ func ValidateHarvest(msg *rottenv1.SubmitHarvestRequest, now time.Time, futureSk
 			if err := ValidateTextField("context job_tag", qc.GetJobTag(), MaxContextStringBytes, true); err != nil {
 				return time.Time{}, time.Time{}, err
 			}
-			if qc.GetCount() == 0 || qc.GetCount() > math.MaxInt32 {
+			if qc.GetCount() == 0 || qc.GetCount() > MaxContextCount {
 				return time.Time{}, time.Time{}, errors.New("context count is out of range")
 			}
+			key := qc.GetController() + "\x00" + qc.GetAction() + "\x00" + qc.GetJobTag()
+			if _, ok := seenContexts[key]; ok {
+				return time.Time{}, time.Time{}, errors.New("aggregate contexts must be unique")
+			}
+			seenContexts[key] = struct{}{}
+			contextCountSum += qc.GetCount()
+		}
+		if contextCountSum > aggregate.GetMetrics().GetCalls() {
+			return time.Time{}, time.Time{}, errors.New("context counts exceed aggregate calls")
 		}
 	}
 	return start, end, nil

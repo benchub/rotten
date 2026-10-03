@@ -10,7 +10,8 @@
 --   $7 replica role name
 --
 -- Utilization:
---   This report returns both call utilization and time utilization. Calls are
+--   This report returns both call utilization and time utilization. Call
+--   totals are returned as double precision because sums can exceed int64. Calls are
 --   attributed by event_context.c, matching the top-query reports. Time is
 --   split across all of an event's context rows as event time * c / ctx_total;
 --   ctx_total is computed before filtering to job-tagged contexts.
@@ -43,7 +44,7 @@ with sources as (
     s.cluster,
     s.role,
     ec.job_tag_id,
-    sum(ec.c)::bigint as calls,
+    sum(ec.c) as calls,
     sum(e.time * ec.c::double precision / ec.ctx_total)::double precision as total_ms
   from rotten.events e
   join sources s on s.id = e.logical_source_id
@@ -70,8 +71,8 @@ with sources as (
   select
     coalesce(p.cluster, r.cluster) as cluster,
     coalesce(p.job_tag_id, r.job_tag_id) as job_tag_id,
-    coalesce(p.calls, 0)::bigint as primary_calls,
-    coalesce(r.calls, 0)::bigint as replica_calls,
+    coalesce(p.calls, 0)::numeric as primary_calls,
+    coalesce(r.calls, 0)::numeric as replica_calls,
     coalesce(p.total_ms, 0)::double precision as primary_total_ms,
     coalesce(r.total_ms, 0)::double precision as replica_total_ms
   from primary_events p
@@ -80,7 +81,7 @@ with sources as (
 ), totals as (
   select
     c.*,
-    (c.primary_calls + c.replica_calls)::bigint as total_calls,
+    (c.primary_calls + c.replica_calls)::numeric as total_calls,
     (c.primary_total_ms + c.replica_total_ms)::double precision as total_ms,
     case
       when c.primary_calls + c.replica_calls > 0 then round((100.0 * c.primary_calls / (c.primary_calls + c.replica_calls))::numeric, 2)
@@ -95,9 +96,9 @@ with sources as (
 select
   jt.job_tag,
   t.cluster,
-  t.primary_calls,
-  t.replica_calls,
-  t.total_calls,
+  t.primary_calls::double precision as primary_calls,
+  t.replica_calls::double precision as replica_calls,
+  t.total_calls::double precision as total_calls,
   t.primary_call_percent::double precision as primary_call_percent,
   case when t.total_calls > 0 then (100::numeric - t.primary_call_percent)::double precision else 0::double precision end as replica_call_percent,
   t.primary_total_ms,

@@ -78,7 +78,7 @@ type QueryEvent struct {
 	blk_write_time      float64
 
 	// A histogram of the marginalia contexts observed for this query in this window
-	context map[string]uint32
+	context map[string]uint64
 
 	// pg_stat_statment's observation window boundaries this event was seen in
 	observationTimeStart PoorMansTime
@@ -585,12 +585,12 @@ func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat
 			w.recordParseFailure(event.query)
 			continue
 		}
-		event.context = map[string]uint32{
+		event.context = map[string]uint64{
 			serverContextKey(
 				extractContextValue(event.query, cfg.ReController),
 				extractContextValue(event.query, cfg.ReAction),
 				extractContextValue(event.query, cfg.ReJobTag),
-			): uint32(event.calls),
+			): wholeCount(event.calls),
 		}
 		if existing, ok := events[fingerprint]; ok {
 			events[fingerprint] = mergeEvent(existing, event)
@@ -634,22 +634,22 @@ func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat
 
 func eventAggregate(fingerprint, normalized string, event QueryEvent) *rottenv1.FingerprintAggregate {
 	metrics := &rottenv1.Metrics{
-		Calls:             uint64(event.calls),
+		Calls:             wholeCount(event.calls),
 		TotalTime:         event.total_time,
 		MinTime:           event.min_time,
 		MaxTime:           event.max_time,
 		MeanTime:          event.mean_time,
-		Rows:              uint64(event.rows),
-		SharedBlksHit:     uint64(event.shared_blks_hit),
-		SharedBlksRead:    uint64(event.shared_blks_read),
-		SharedBlksDirtied: uint64(event.shared_blks_dirtied),
-		SharedBlksWritten: uint64(event.shared_blks_written),
-		LocalBlksHit:      uint64(event.local_blks_hit),
-		LocalBlksRead:     uint64(event.local_blks_read),
-		LocalBlksDirtied:  uint64(event.local_blks_dirtied),
-		LocalBlksWritten:  uint64(event.local_blks_written),
-		TempBlksRead:      uint64(event.temp_blks_read),
-		TempBlksWritten:   uint64(event.temp_blks_written),
+		Rows:              wholeCount(event.rows),
+		SharedBlksHit:     wholeCount(event.shared_blks_hit),
+		SharedBlksRead:    wholeCount(event.shared_blks_read),
+		SharedBlksDirtied: wholeCount(event.shared_blks_dirtied),
+		SharedBlksWritten: wholeCount(event.shared_blks_written),
+		LocalBlksHit:      wholeCount(event.local_blks_hit),
+		LocalBlksRead:     wholeCount(event.local_blks_read),
+		LocalBlksDirtied:  wholeCount(event.local_blks_dirtied),
+		LocalBlksWritten:  wholeCount(event.local_blks_written),
+		TempBlksRead:      wholeCount(event.temp_blks_read),
+		TempBlksWritten:   wholeCount(event.temp_blks_written),
 		BlkReadTime:       event.blk_read_time,
 		BlkWriteTime:      event.blk_write_time,
 	}
@@ -666,7 +666,7 @@ func eventAggregate(fingerprint, normalized string, event QueryEvent) *rottenv1.
 			Controller: parts[0],
 			Action:     parts[1],
 			JobTag:     parts[2],
-			Count:      uint64(count),
+			Count:      count,
 		})
 	}
 	sort.Slice(contexts, func(i, j int) bool {

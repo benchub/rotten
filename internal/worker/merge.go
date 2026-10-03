@@ -1,6 +1,10 @@
 package worker
 
-import "math"
+import (
+	"math"
+
+	"github.com/benchub/rotten/internal/harvestlimits"
+)
 
 func (w *Worker) fingerprintCount() int {
 	return 0
@@ -70,4 +74,18 @@ func mergePopulationStats(aCalls, aMean, aStddev, bCalls, bMean, bStddev float64
 	delta := bMean - aMean
 	m2 := aM2 + bM2 + delta*delta*aCalls*bCalls/calls
 	return mean, math.Sqrt(m2 / calls)
+}
+
+// wholeCount converts pg_stat_statements counters to protobuf counters.
+// Those counters are integral in Postgres; fractional test-only values are
+// rounded instead of silently truncated.
+func wholeCount(v float64) uint64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 0
+	}
+	rounded := math.Round(v)
+	if rounded >= float64(harvestlimits.MaxContextCount) {
+		return harvestlimits.MaxContextCount
+	}
+	return uint64(rounded)
 }

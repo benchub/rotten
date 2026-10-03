@@ -426,8 +426,12 @@ func (x *FingerprintAggregate) GetMinmaxLifetime() bool {
 // QueryContext is one controller/action/job tag combination and how many
 // calls carried it. The server resolves the controller, action, and job_tag
 // strings to lookup IDs. An empty string means the tag wasn't present and
-// is stored as NULL. count must be between 1 and 2^31-1. The server rejects
-// anything else with InvalidArgument.
+// is stored as NULL. count is uint64 on the wire; field 4 stays varint, so
+// widening from uint32 to uint64 is wire-compatible. PostgreSQL stores it in
+// bigint, top-query reports sum it as numeric for exact jsonb `times`, and
+// replica-utilization reports return totals as double precision. Clients
+// decoding report totals as float64 lose integer precision above 2^53, so the
+// server accepts 1 through 2^53 and rejects anything else with InvalidArgument.
 type QueryContext struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Controller    string                 `protobuf:"bytes,1,opt,name=controller,proto3" json:"controller,omitempty"`

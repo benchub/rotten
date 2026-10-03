@@ -22,6 +22,7 @@ const (
 	MaxSourceStringBytes  = harvestlimits.MaxSourceStringBytes
 	MaxWorkerVersionBytes = harvestlimits.MaxWorkerVersionBytes
 	MaxFloatMetricValue   = harvestlimits.MaxFloatMetricValue
+	MaxContextCount       = harvestlimits.MaxContextCount
 
 	MaxHarvestWindowDuration time.Duration = harvestlimits.MaxHarvestWindowDuration
 	MaxHarvestFutureSkew     time.Duration = harvestlimits.MaxHarvestFutureSkew

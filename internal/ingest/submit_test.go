@@ -3,9 +3,11 @@ package ingest_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -185,7 +187,7 @@ type storedContext struct {
 	JobTag            *string
 	WindowStartMicros int64
 	WindowEndMicros   int64
-	Count             int
+	Count             int64
 }
 
 type storedEvent struct {
@@ -198,6 +200,13 @@ type storedEvent struct {
 	Calls             float64
 	Time              float64
 	Contexts          []storedContext
+}
+
+type submitReportContext struct {
+	Times      int64   `json:"times"`
+	Controller *string `json:"controller"`
+	Action     *string `json:"action"`
+	JobTag     *string `json:"job_tag"`
 }
 
 func storedEvents(t *testing.T, pool *pgxpool.Pool) []storedEvent {
@@ -308,6 +317,71 @@ func TestSubmitHarvestWritesExpectedRowsAndDedupes(t *testing.T) {
 	}
 	if batches != 1 {
 		t.Fatalf("ingested_batches rows = %d, want 1", batches)
+	}
+}
+
+func TestSubmitHarvestStoresUint64ContextCountForReports(t *testing.T) {
+	f := setupSubmit(t)
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	const bigCount = uint64(1)<<32 + 5
+	req := harvestRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start, "big-context", "fp-big-context")
+	req.Msg.Aggregates[0].Contexts = []*rottenv1.QueryContext{
+		{Controller: "overflow", Action: "big", Count: bigCount},
+	}
+	req.Msg.Aggregates[0].Metrics.Calls = bigCount
+	req.Msg.Aggregates[0].Metrics.TotalTime = float64(bigCount) * 2
+	req.Msg.Aggregates[0].Metrics.Rows = bigCount
+
+	if _, err := f.handler.SubmitHarvest(f.ctx, req); err != nil {
+		t.Fatalf("SubmitHarvest: %v", err)
+	}
+
+	query, err := os.ReadFile("../../reports/top_by_calls.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := f.owner.Query(context.Background(), string(query),
+		"submit",
+		"test",
+		"cluster",
+		start.Add(-time.Second),
+		start.Add(time.Minute),
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("got no report rows")
+	}
+	var (
+		fingerprintID int64
+		calls         float64
+		totalMS       float64
+		avgMSPerCall  float64
+		example       string
+		contextJSON   []byte
+	)
+	if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+		t.Fatal(err)
+	}
+	if calls != float64(bigCount) {
+		t.Fatalf("report calls = %.0f, want %d", calls, bigCount)
+	}
+	var contexts []submitReportContext
+	if err := json.Unmarshal(contextJSON, &contexts); err != nil {
+		t.Fatalf("contexts json %s: %v", contextJSON, err)
+	}
+	if len(contexts) != 1 {
+		t.Fatalf("contexts = %+v, want one context", contexts)
+	}
+	got := contexts[0]
+	if stringValue(got.Controller) != "overflow" || stringValue(got.Action) != "big" || uint64(got.Times) != bigCount {
+		t.Fatalf("context = %+v, want overflow big %d", got, bigCount)
 	}
 }
 
@@ -887,6 +961,13 @@ func TestSubmitHarvestBackendTerminatedMidTransactionReturnsUnavailable(t *testi
 }
 
 func strPtr(s string) *string { return &s }
+
+func stringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
 
 func registerExtraSource(t *testing.T, f *submitFixture, name, fqdn, project, environment, cluster, role string) *submitFixture {
 	t.Helper()

@@ -115,6 +115,7 @@ Semantic validation runs before any database transaction:
 | Fingerprint string | 128 bytes |
 | Normalized query string | 8 KiB |
 | Context strings | 512 bytes |
+| Context counts | 1 through 2^53 |
 | Floating metric values | 1e15 ms |
 | Harvest window duration | 24 hours |
 | Harvest window future skew | 5 minutes |
@@ -128,6 +129,15 @@ worker RPC sending must truncate normalized query strings to 8 KiB at a UTF-8
 boundary before sending. Harvest windows must be ordered and no more than five
 minutes in the future; there is no "too far in the past" check because outbox
 replay must work. Floating metric counters must be finite and non-negative.
+`pg_stat_statements` call counts are integral; if a fractional test value
+reaches the worker's protobuf conversion, it is rounded to the nearest whole
+count rather than truncated, and capped to the context-count limit. Context
+counts travel as protobuf `uint64` (wire-compatible with the previous varint
+field) and are stored as PostgreSQL `bigint`. The server caps calls and
+context counts at 2^53: exact in `float8` for `events.calls`, exact in the
+top-query reports' numeric `jsonb` context `times`, and the precision boundary
+for clients that decode report totals as `float64`. Replica-utilization call
+totals are returned as `double precision`.
 Stored text must be valid UTF-8 and NUL-free, matching PostgreSQL `text`.
 
 ### Fault tolerance.

@@ -213,10 +213,20 @@ func TestSubmitHarvestPreflightRejectsPredictableInvalidBatches(t *testing.T) {
 		{"too large metric", func(b *rottenv1.SubmitHarvestRequest) {
 			b.GetAggregates()[0].GetMetrics().TotalTime = harvestlimits.MaxFloatMetricValue + 1
 		}},
-		{"too many calls", func(b *rottenv1.SubmitHarvestRequest) { b.GetAggregates()[0].GetMetrics().Calls = math.MaxInt32 + 1 }},
+		{"too many calls", func(b *rottenv1.SubmitHarvestRequest) {
+			b.GetAggregates()[0].GetMetrics().Calls = harvestlimits.MaxContextCount + 1
+		}},
 		{"zero context count", func(b *rottenv1.SubmitHarvestRequest) { b.GetAggregates()[0].GetContexts()[0].Count = 0 }},
 		{"too large context count", func(b *rottenv1.SubmitHarvestRequest) {
-			b.GetAggregates()[0].GetContexts()[0].Count = math.MaxInt32 + 1
+			b.GetAggregates()[0].GetContexts()[0].Count = harvestlimits.MaxContextCount + 1
+		}},
+		{"duplicate contexts", func(b *rottenv1.SubmitHarvestRequest) {
+			dup := proto.Clone(b.GetAggregates()[0].GetContexts()[0]).(*rottenv1.QueryContext)
+			b.GetAggregates()[0].Contexts = append(b.GetAggregates()[0].GetContexts(), dup)
+		}},
+		{"context counts exceed calls", func(b *rottenv1.SubmitHarvestRequest) {
+			b.GetAggregates()[0].GetMetrics().Calls = 1
+			b.GetAggregates()[0].GetContexts()[0].Count = 2
 		}},
 	}
 	for _, tc := range cases {

@@ -90,7 +90,7 @@ func worstCaseHarvestBatch(t *testing.T) *rottenv1.SubmitHarvestRequest {
 			Normalized:  strings.Repeat("n", MaxNormalizedBytes),
 			Contexts:    make([]*rottenv1.QueryContext, 0, contexts),
 			Metrics: &rottenv1.Metrics{
-				Calls:             math.MaxInt32,
+				Calls:             MaxContextCount,
 				TotalTime:         MaxFloatMetricValue,
 				MinTime:           MaxFloatMetricValue,
 				MaxTime:           MaxFloatMetricValue,
@@ -117,7 +117,7 @@ func worstCaseHarvestBatch(t *testing.T) *rottenv1.SubmitHarvestRequest {
 				Controller: fmt.Sprintf("%0*d", MaxContextStringBytes, i),
 				Action:     fmt.Sprintf("%0*d", MaxContextStringBytes, j),
 				JobTag:     strings.Repeat("j", MaxContextStringBytes),
-				Count:      math.MaxInt32,
+				Count:      MaxContextCount,
 			})
 		}
 		msg.Aggregates = append(msg.Aggregates, aggregate)

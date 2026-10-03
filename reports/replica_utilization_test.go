@@ -16,9 +16,9 @@ import (
 type replicaUtilizationRow struct {
 	Name               string
 	Cluster            string
-	PrimaryCalls       int64
-	ReplicaCalls       int64
-	TotalCalls         int64
+	PrimaryCalls       float64
+	ReplicaCalls       float64
+	TotalCalls         float64
 	PrimaryCallPercent float64
 	ReplicaCallPercent float64
 	PrimaryTotalMS     float64
@@ -138,14 +138,14 @@ func TestReplicaUtilizationByControllerActionSplitsEventTimeByContextCounts(t *t
 
 	usersShow := byName["users#show"]
 	if usersShow.PrimaryCalls != 600 || usersShow.ReplicaCalls != 0 || usersShow.TotalCalls != 600 {
-		t.Fatalf("users#show calls = %d/%d/%d, want 600/0/600; all rows %+v", usersShow.PrimaryCalls, usersShow.ReplicaCalls, usersShow.TotalCalls, got)
+		t.Fatalf("users#show calls = %.0f/%.0f/%.0f, want 600/0/600; all rows %+v", usersShow.PrimaryCalls, usersShow.ReplicaCalls, usersShow.TotalCalls, got)
 	}
 	assertFloat(t, usersShow.PrimaryTotalMS, 250.0*200.0/491.0+50.0+150.0, "users#show primary time")
 	assertFloat(t, usersShow.PrimaryTimePercent, 100, "users#show primary time percent")
 
 	loginNew := byName["login#new"]
 	if loginNew.PrimaryCalls != 1 || loginNew.ReplicaCalls != 0 || loginNew.TotalCalls != 1 {
-		t.Fatalf("login#new calls = %d/%d/%d, want 1/0/1; all rows %+v", loginNew.PrimaryCalls, loginNew.ReplicaCalls, loginNew.TotalCalls, got)
+		t.Fatalf("login#new calls = %.0f/%.0f/%.0f, want 1/0/1; all rows %+v", loginNew.PrimaryCalls, loginNew.ReplicaCalls, loginNew.TotalCalls, got)
 	}
 	assertFloat(t, loginNew.PrimaryTotalMS, 250.0/491.0, "login#new primary time")
 }
@@ -171,7 +171,7 @@ func TestReplicaUtilizationByJobDoesNotDoubleCountRepeatedJobContexts(t *testing
 	)
 	row := findUtilizationRow(t, got, "Fanout")
 	if row.PrimaryCalls != 50 || row.ReplicaCalls != 0 || row.TotalCalls != 50 {
-		t.Fatalf("Fanout calls = %d/%d/%d, want 50/0/50; all rows %+v", row.PrimaryCalls, row.ReplicaCalls, row.TotalCalls, got)
+		t.Fatalf("Fanout calls = %.0f/%.0f/%.0f, want 50/0/50; all rows %+v", row.PrimaryCalls, row.ReplicaCalls, row.TotalCalls, got)
 	}
 	assertFloat(t, row.PrimaryTotalMS, 1000, "Fanout primary time")
 }

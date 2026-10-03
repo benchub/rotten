@@ -84,3 +84,37 @@ func TestFingerprintStatsLastHoldsBigint(t *testing.T) {
 		t.Errorf("last = %d, want %d", got, big)
 	}
 }
+
+func TestEventContextCountIsBigintEverywhere(t *testing.T) {
+	db := testdb.StartRotten(t)
+	conn := db.Connect(t)
+	ctx := context.Background()
+
+	relations := []string{"rotten.event_context", "rotten.event_context_partition_template"}
+	var partition string
+	if err := conn.QueryRow(ctx, `
+		select (c.oid::regclass)::text
+		from pg_inherits i
+		join pg_class c on c.oid = i.inhrelid
+		where i.inhparent = 'rotten.event_context'::regclass
+		order by c.relname
+		limit 1`).Scan(&partition); err != nil {
+		t.Fatal(err)
+	}
+	relations = append(relations, partition)
+
+	for _, relation := range relations {
+		var dataType string
+		if err := conn.QueryRow(ctx, `
+			select format_type(a.atttypid, a.atttypmod)
+			from pg_attribute a
+			where a.attrelid = $1::regclass
+			  and a.attname = 'c'
+			  and not a.attisdropped`, relation).Scan(&dataType); err != nil {
+			t.Fatalf("%s c type: %v", relation, err)
+		}
+		if dataType != "bigint" {
+			t.Errorf("%s.c type = %s, want bigint", relation, dataType)
+		}
+	}
+}
