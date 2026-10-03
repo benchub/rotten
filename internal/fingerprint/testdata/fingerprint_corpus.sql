@@ -115,6 +115,62 @@ DROP FUNCTION f(int)
 DROP FUNCTION public.f(int)
 -- case: drop_function_name_c
 DROP FUNCTION shard_27.f(int)
+-- case: drop_operator_name_a
+DROP OPERATOR a.+(int, int)
+-- case: drop_operator_name_b
+DROP OPERATOR b.+(int, int)
+-- case: comment_operator_name_a
+COMMENT ON OPERATOR a.+(int, int) IS 'x'
+-- case: comment_operator_name_b
+COMMENT ON OPERATOR b.+(int, int) IS 'x'
+-- case: alter_operator_name_a
+ALTER OPERATOR a.+(int,int) SET (RESTRICT = eqsel)
+-- case: alter_operator_name_b
+ALTER OPERATOR b.+(int,int) SET (RESTRICT = eqsel)
+-- case: drop_cast_name_a
+DROP CAST (a.t AS b.t)
+-- case: drop_cast_name_b
+DROP CAST (c.t AS d.t)
+-- case: comment_cast_name_a
+COMMENT ON CAST (a.t AS b.t) IS 'x'
+-- case: comment_cast_name_b
+COMMENT ON CAST (c.t AS d.t) IS 'x'
+-- case: drop_transform_name_a
+DROP TRANSFORM FOR a.t LANGUAGE plpgsql
+-- case: drop_transform_name_b
+DROP TRANSFORM FOR b.t LANGUAGE plpgsql
+-- case: comment_transform_name_a
+COMMENT ON TRANSFORM FOR a.t LANGUAGE plpgsql IS 'x'
+-- case: comment_transform_name_b
+COMMENT ON TRANSFORM FOR b.t LANGUAGE plpgsql IS 'x'
+-- case: alter_domain_constraint_name_a
+ALTER DOMAIN a.d RENAME CONSTRAINT d_check TO d_check_new
+-- case: alter_domain_constraint_name_b
+ALTER DOMAIN b.d RENAME CONSTRAINT d_check TO d_check_new
+-- case: comment_domain_constraint_name_a
+COMMENT ON CONSTRAINT d_check ON DOMAIN a.d IS 'x'
+-- case: comment_domain_constraint_name_b
+COMMENT ON CONSTRAINT d_check ON DOMAIN b.d IS 'x'
+-- case: alter_collation_refresh_a
+ALTER COLLATION a.c REFRESH VERSION
+-- case: alter_collation_refresh_b
+ALTER COLLATION b.c REFRESH VERSION
+-- case: alter_conversion_rename_a
+ALTER CONVERSION a.c RENAME TO c2
+-- case: alter_conversion_rename_b
+ALTER CONVERSION b.c RENAME TO c2
+-- case: alter_conversion_owner_a
+ALTER CONVERSION a.c OWNER TO alice
+-- case: alter_conversion_owner_b
+ALTER CONVERSION b.c OWNER TO alice
+-- case: alter_conversion_set_schema_a
+ALTER CONVERSION a.c SET SCHEMA x
+-- case: alter_conversion_set_schema_b
+ALTER CONVERSION b.c SET SCHEMA y
+-- case: expression_operator_schema_a
+SELECT 1 OPERATOR(a.+) 2
+-- case: expression_operator_schema_b
+SELECT 1 OPERATOR(b.+) 2
 -- case: qualified_type_name_a
 SELECT id::mytype FROM users
 -- case: qualified_type_name_b

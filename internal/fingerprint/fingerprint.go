@@ -185,6 +185,14 @@ func (s *walker) Struct(v reflect.Value) error {
 			if !s.opts.KeepSchemas {
 				collapseObjectNode(n.ObjectType, n.Object)
 			}
+		case *pg_query.AlterOperatorStmt:
+			if !s.opts.KeepSchemas && n.Opername != nil {
+				n.Opername.Objname = collapseObjectNameItems(pg_query.ObjectType_OBJECT_OPERATOR, n.Opername.Objname)
+			}
+		case *pg_query.AlterCollationStmt:
+			if !s.opts.KeepSchemas {
+				n.Collname = collapseQualifiedObjectName(n.Collname)
+			}
 		case *pg_query.SubLink:
 			// x = ANY (subquery) and x IN (subquery) are the same
 			// ANY_SUBLINK; IN just leaves the operator name out.
@@ -495,6 +503,14 @@ func collapseObjectNameItems(objtype pg_query.ObjectType, items []*pg_query.Node
 		out := make([]*pg_query.Node, 0, len(name)+1)
 		out = append(out, items[0])
 		return append(out, name...)
+	case objectNameDomainConstraint:
+		if len(items) == 0 || items[0].GetTypeName() != nil {
+			// COMMENT ON CONSTRAINT ... ON DOMAIN stores the domain as a
+			// TypeName. Leave that to the TypeName walker; this branch is
+			// only for ALTER DOMAIN's plain String name list.
+			return items
+		}
+		return collapseQualifiedObjectName(items)
 	default:
 		return items
 	}
@@ -507,6 +523,7 @@ const (
 	objectNameAny
 	objectNameTableMember
 	objectNameAccessMethodMember
+	objectNameDomainConstraint
 )
 
 func objectNameShape(objtype pg_query.ObjectType) objectNameKind {
@@ -531,6 +548,8 @@ func objectNameShape(objtype pg_query.ObjectType) objectNameKind {
 		pg_query.ObjectType_OBJECT_TYPE,
 		pg_query.ObjectType_OBJECT_VIEW:
 		return objectNameAny
+	case pg_query.ObjectType_OBJECT_OPERATOR:
+		return objectNameAny
 	case pg_query.ObjectType_OBJECT_COLUMN,
 		pg_query.ObjectType_OBJECT_POLICY,
 		pg_query.ObjectType_OBJECT_RULE,
@@ -540,7 +559,13 @@ func objectNameShape(objtype pg_query.ObjectType) objectNameKind {
 	case pg_query.ObjectType_OBJECT_OPCLASS,
 		pg_query.ObjectType_OBJECT_OPFAMILY:
 		return objectNameAccessMethodMember
+	case pg_query.ObjectType_OBJECT_DOMCONSTRAINT:
+		return objectNameDomainConstraint
 	default:
+		// Omitted object types either are not schema-qualified (roles,
+		// languages, schemas, databases, etc.) or have statement-specific
+		// shapes that have not been audited. Do not strip arbitrary String
+		// nodes here; an unclear shape could merge distinct objects.
 		return objectNameNone
 	}
 }

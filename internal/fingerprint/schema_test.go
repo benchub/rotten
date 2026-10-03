@@ -254,17 +254,105 @@ func TestObjectListSchemaCollapsingByShape(t *testing.T) {
 			},
 		},
 		{
-			name: "operator is not allow-listed",
-			different: []string{
+			name: "drop operator name",
+			same: []string{
 				"DROP OPERATOR a.+(int, int)",
 				"DROP OPERATOR b.+(int, int)",
 			},
 		},
 		{
-			name: "domain constraint rename is not allow-listed",
-			different: []string{
+			name: "comment operator name",
+			same: []string{
+				"COMMENT ON OPERATOR a.+(int, int) IS 'x'",
+				"COMMENT ON OPERATOR b.+(int, int) IS 'x'",
+			},
+		},
+		{
+			name: "alter operator name",
+			same: []string{
+				"ALTER OPERATOR a.+(int,int) SET (RESTRICT = eqsel)",
+				"ALTER OPERATOR b.+(int,int) SET (RESTRICT = eqsel)",
+			},
+		},
+		// CAST and TRANSFORM object lists contain TypeName nodes, and
+		// COMMENT ON CONSTRAINT ... ON DOMAIN stores the domain as a TypeName.
+		// The TypeName walker collapses those schemas; these cases lock that
+		// in without object-list-specific branches.
+		{
+			name: "drop cast type names",
+			same: []string{
+				"DROP CAST (a.t AS b.t)",
+				"DROP CAST (c.t AS d.t)",
+			},
+		},
+		{
+			name: "comment cast type names",
+			same: []string{
+				"COMMENT ON CAST (a.t AS b.t) IS 'x'",
+				"COMMENT ON CAST (c.t AS d.t) IS 'x'",
+			},
+		},
+		{
+			name: "drop transform type name",
+			same: []string{
+				"DROP TRANSFORM FOR a.t LANGUAGE plpgsql",
+				"DROP TRANSFORM FOR b.t LANGUAGE plpgsql",
+			},
+		},
+		{
+			name: "comment transform type name",
+			same: []string{
+				"COMMENT ON TRANSFORM FOR a.t LANGUAGE plpgsql IS 'x'",
+				"COMMENT ON TRANSFORM FOR b.t LANGUAGE plpgsql IS 'x'",
+			},
+		},
+		{
+			name: "domain constraint rename domain name",
+			same: []string{
 				"ALTER DOMAIN a.d RENAME CONSTRAINT d_check TO d_check_new",
 				"ALTER DOMAIN b.d RENAME CONSTRAINT d_check TO d_check_new",
+			},
+		},
+		{
+			name: "comment domain constraint domain name",
+			same: []string{
+				"COMMENT ON CONSTRAINT d_check ON DOMAIN a.d IS 'x'",
+				"COMMENT ON CONSTRAINT d_check ON DOMAIN b.d IS 'x'",
+			},
+		},
+		{
+			name: "alter collation refresh name",
+			same: []string{
+				"ALTER COLLATION a.c REFRESH VERSION",
+				"ALTER COLLATION b.c REFRESH VERSION",
+			},
+		},
+		{
+			name: "alter conversion rename name",
+			same: []string{
+				"ALTER CONVERSION a.c RENAME TO c2",
+				"ALTER CONVERSION b.c RENAME TO c2",
+			},
+		},
+		{
+			name: "alter conversion owner name",
+			same: []string{
+				"ALTER CONVERSION a.c OWNER TO alice",
+				"ALTER CONVERSION b.c OWNER TO alice",
+			},
+		},
+		{
+			name: "alter conversion set schema old and new schema",
+			same: []string{
+				"ALTER CONVERSION a.c SET SCHEMA x",
+				"ALTER CONVERSION b.c SET SCHEMA y",
+			},
+		},
+		{
+			name: "expression operator syntax is not an object list",
+			different: []string{
+				"SELECT 1 OPERATOR(a.+) 2",
+				"SELECT 1 OPERATOR(b.+) 2",
 			},
 		},
 	} {
