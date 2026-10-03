@@ -925,3 +925,20 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **OIDC claims:** binary, control, bidi and invisible format characters are refused. ZWNJ and ZWJ are allowed in emails.
   - **Review:** two Opus rounds.
   - **Follow-ups:** 20261003-150000-1 (the 2 pending specs: stolen cookies and session expiry) and 20261003-150000-2.
+
+### 20261001-103222-50: Build the report pages.
+- **Do:** Add a source picker (project, environment, cluster, role) and a time range. Run the `reports/*.sql` files with bound parameters, and render sortable tables. Set a statement timeout on report queries.
+- **Red test:** A system test on the fixture: pick a source and range, and see the expected rows for each report. A slow query shows a friendly timeout message. Add a `spec/security/` spec that feeds SQL-injection payloads into every report parameter.
+- **Done when:** Passes.
+- **Needs:** -43 through -46, -49.
+- **Completed:** 2026-10-03, b39a4bc.
+  - **Pages:** `/reports` and `/reports/:id`.
+  - **Query safety:**
+    - Each report runs in a read-only transaction, with `statement_timeout` set by a bound `set_config`. It comes from `ROTTEN_UI_REPORT_TIMEOUT`, 15s by default. A timeout returns a friendly 503; invalid input returns a 422.
+    - Sorting is whitelisted and done in Ruby.
+    - Spans are capped at 31 days.
+  - **Role filter:** the report SQL gained an optional role parameter (`$7`, `$8` or `$10`), where NULL means all roles. Go callers pass nil.
+  - **Production build:** now needs `--build-context reports=<repo>/reports`. `make test-ui` mounts `/reports` and uses `ROTTEN_UI_TEST_SEED_DATABASE_URL` for fixture inserts.
+  - **Tests:** 765 UI examples.
+  - **Review:** one Opus round, approved. The one finding, a duplicated predicate, was fixed.
+  - **Follow-up:** 20261003-160000-1.

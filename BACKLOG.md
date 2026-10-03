@@ -42,12 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-50: Build the report pages.
-- **Do:** Add a source picker (project, environment, cluster, role) and a time range. Run the `reports/*.sql` files with bound parameters, and render sortable tables. Set a statement timeout on report queries.
-- **Red test:** A system test on the fixture: pick a source and range, and see the expected rows for each report. A slow query shows a friendly timeout message. Add a `spec/security/` spec that feeds SQL-injection payloads into every report parameter (moved from -105250-4).
-- **Done when:** Passes.
-- **Needs:** -43 through -46, -49.
-
 ### 20261001-103222-51: Build the fingerprint detail page.
 - **Do:** Show the normalized SQL, a time series chart, the top contexts, and stats for each source.
 - **Red test:** A system test on the fixture fingerprint.
@@ -163,5 +157,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 ### 20261003-150000-2: Cover the dev-only fake OIDC login route in the CSRF spec.
 - **Do:** `ui/spec/security/csrf_spec.rb` enumerates routes from the test environment, so the `OMNIAUTH_FAKE=1` dev route isn't covered. Add a spec that boots with the fake enabled, or assert that the route can't exist in production.
 - **Red test:** A fake route that skips CSRF fails the spec.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261003-160000-1: Narrow the report source picker as the user chooses.
+- **Do:** Project, environment, cluster and role are independent dropdowns, so the user can pick a combination that doesn't exist. They only find out when they run the report. Add a small Stimulus controller, or a server-rendered cascade, that narrows each dropdown to existing combinations. Keep it CSP-compliant.
+- **Red test:** A system spec where picking a project limits the environment options to that project's environments.
 - **Done when:** Passes.
 - **Needs:** none.
