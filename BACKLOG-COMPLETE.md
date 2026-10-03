@@ -903,3 +903,25 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Shared code:** a `SignIn` concern, used by both the OIDC and password logins.
   - **Dev stack fix:** `migration_error = false` in development. Before that, every dev page returned 500, because Rails' pending-migration check tried to create `schema_migrations` as `rotten_ui`.
   - **Follow-ups:** 20261003-140000-1 and 20261003-140000-2.
+
+### 20261001-105250-4: Write the UI security specs.
+- **Do:** Add `ui/spec/security/`. Cover:
+  - CSRF on every state-changing route.
+  - Session fixation: reset on login.
+  - Cookie flags.
+  - Security headers and CSP.
+  - Host header handling.
+  - Fuzzing user provisioning with nasty claim values.
+  - Brakeman and bundler-audit, run as specs.
+
+  SQL injection through report parameters moved to -50.
+- **Red test:** Each spec is written to fail against a deliberately weakened config first, such as CSRF turned off.
+- **Done when:** Passes.
+- **Needs:** -105250-2, -105250-3.
+- **Completed:** 2026-10-03, d394aaa.
+  - **Security specs:** CSRF (with automatic route enumeration), session fixation, cookies, headers, a Chromium CSP spec, a production boot spec, an OIDC claim fuzz, and Brakeman plus bundler-audit run as specs. 639 UI examples, with 2 pending.
+  - **CSP:** a strict nonce policy, with X-Frame-Options DENY and a Permissions-Policy. `form-action` allows `'self'`, the issuer origin, and the new optional `ROTTEN_UI_CSP_FORM_ACTION_ORIGINS` for federated or discovered authorize endpoints.
+  - **Host authorization:** production now requires `ROTTEN_UI_HOSTS`. `/up` is exempt.
+  - **OIDC claims:** binary, control, bidi and invisible format characters are refused. ZWNJ and ZWJ are allowed in emails.
+  - **Review:** two Opus rounds.
+  - **Follow-ups:** 20261003-150000-1 (the 2 pending specs: stolen cookies and session expiry) and 20261003-150000-2.

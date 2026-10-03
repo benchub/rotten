@@ -42,20 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-105250-4: Write the UI security specs.
-- **Do:** Add `ui/spec/security/`. Cover:
-  - CSRF on every state-changing route.
-  - Session fixation: reset on login.
-  - Cookie flags.
-  - Security headers and CSP.
-  - Host header handling.
-  - Fuzzing user provisioning with nasty claim values.
-  - Brakeman and bundler-audit, run as specs.
-
-  SQL injection through report parameters moved to -50, since the report pages don't exist yet.
-- **Red test:** Each spec is written to fail against a deliberately weakened config first, such as CSRF turned off.
-- **Done when:** Passes.
-- **Needs:** -105250-2, -105250-3.
 ### 20261001-103222-50: Build the report pages.
 - **Do:** Add a source picker (project, environment, cluster, role) and a time range. Run the `reports/*.sql` files with bound parameters, and render sortable tables. Set a statement timeout on report queries.
 - **Red test:** A system test on the fixture: pick a source and range, and see the expected rows for each report. A slow query shows a friendly timeout message. Add a `spec/security/` spec that feeds SQL-injection payloads into every report parameter (moved from -105250-4).
@@ -160,5 +146,22 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 ### 20261003-140000-2: Share login rate-limit counters across UI processes.
 - **Do:** The rate limits use a memory store in each process, so N Puma workers or replicas allow N times the limit. Pick a shared store (Solid Cache in the rotten DB would need a goose migration and grants), or document a single-process deployment. Ask the user.
 - **Red test:** Depends on the decision.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261003-150000-1: Make logout and expiry revoke stolen session cookies.
+- **Do:** With the cookie session store, a copy of the cookie taken before logout still works afterwards. Sessions also have no expiry. Two `pending` specs in `ui/spec/security/session_fixation_spec.rb` lock in this gap. Options:
+  - A server-side session store, which would need a goose migration and grants.
+  - A per-user session generation counter in `users`, bumped on logout.
+  - An absolute expiry stamped in the session.
+
+  Decide together with 20261003-130000-3, since both are about session lifetime. Ask the user.
+- **Red test:** Un-pend the two specs, and add an expiry spec.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261003-150000-2: Cover the dev-only fake OIDC login route in the CSRF spec.
+- **Do:** `ui/spec/security/csrf_spec.rb` enumerates routes from the test environment, so the `OMNIAUTH_FAKE=1` dev route isn't covered. Add a spec that boots with the fake enabled, or assert that the route can't exist in production.
+- **Red test:** A fake route that skips CSRF fails the spec.
 - **Done when:** Passes.
 - **Needs:** none.
