@@ -268,6 +268,9 @@ func registerSourceWithCache(ctx context.Context, client sourceRegistrar, store 
 	if cached, ok, err := store.LoadSourceRegistration(ctx); err != nil {
 		return state.SourceRegistration{}, fmt.Errorf("load cached source registration: %w", err)
 	} else if ok && sourceRegistrationMatches(cached, serverURL, req) {
+		if err := store.SaveSourceRegistration(ctx, cached); err != nil {
+			return state.SourceRegistration{}, fmt.Errorf("reconcile cached source registration: %w", err)
+		}
 		go retryRegisterAndCache(ctx, client, store, serverURL, req, logger, cached, exitProcess)
 		return cached, nil
 	}
@@ -341,7 +344,7 @@ func runOutboxSender(ctx context.Context, sender outboxDrainer, counts outboxCou
 		if countErr != nil {
 			logger.Error("worker outbox counts failed", "err", countErr)
 		} else {
-			logger.Info("worker outbox status", "queued", c.Queued, "dropped_cap", c.DroppedCap, "dropped_rejected", c.DroppedRejected, "sent", sent)
+			logger.Info("worker outbox status", "queued", c.Queued, "dropped_cap", c.DroppedCap, "dropped_rejected", c.DroppedRejected, "dropped_stale_source", c.DroppedStaleSource, "sent", sent)
 		}
 		if err == nil {
 			consecutiveErrors = 0

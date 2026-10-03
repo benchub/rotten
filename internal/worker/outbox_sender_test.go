@@ -127,6 +127,197 @@ func TestOutboxSenderDropsClientOversizeOnly(t *testing.T) {
 	}
 }
 
+func TestOutboxSenderDrainsAfterIDsOnlySourceReassignment(t *testing.T) {
+	ctx := context.Background()
+	store := openSenderStore(t)
+	oldReg := senderRegistration("project", 7, 42)
+	newReg := senderRegistration("project", 8, 43)
+	if err := store.SaveSourceRegistration(ctx, oldReg); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		msg := senderBatch(i)
+		msg.LogicalSourceId = oldReg.LogicalSourceID
+		msg.PhysicalSourceId = oldReg.PhysicalSourceID
+		msg.BatchId = senderBatchID(msg)
+		if _, err := store.EnqueueHarvest(ctx, msg, msg.GetWindowStart().AsTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveSourceRegistration(ctx, newReg); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := store.OutboxCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Queued != 2 || counts.DroppedStaleSource != 0 {
+		t.Fatalf("counts after re-stamp = %+v, want queued=2 dropped_stale_source=0", counts)
+	}
+	client := &rejectingOldSourceSubmitter{oldPhysicalID: oldReg.PhysicalSourceID}
+	sender := NewOutboxSender(store, client, slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	if sent, err := sender.Drain(ctx); err != nil || sent != 2 {
+		t.Fatalf("Drain sent=%d err=%v, want re-stamped stale batches to send", sent, err)
+	}
+	if got := client.batchIDs; fmt.Sprint(got) != "[43:1:2 43:2:3]" {
+		t.Fatalf("sent batch IDs = %v, want re-stamped physical source IDs", got)
+	}
+}
+
+func TestOutboxSenderDropsStaleBatchesAfterIdentityChange(t *testing.T) {
+	ctx := context.Background()
+	store := openSenderStore(t)
+	oldReg := senderRegistration("old-project", 7, 42)
+	newReg := senderRegistration("new-project", 8, 43)
+	if err := store.SaveSourceRegistration(ctx, oldReg); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		msg := senderBatch(i)
+		msg.LogicalSourceId = oldReg.LogicalSourceID
+		msg.PhysicalSourceId = oldReg.PhysicalSourceID
+		msg.BatchId = senderBatchID(msg)
+		if _, err := store.EnqueueHarvest(ctx, msg, msg.GetWindowStart().AsTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveSourceRegistration(ctx, newReg); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := store.OutboxCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Queued != 0 || counts.DroppedStaleSource != 2 {
+		t.Fatalf("counts after identity change = %+v, want queued=0 dropped_stale_source=2", counts)
+	}
+	msg := senderBatch(2)
+	msg.LogicalSourceId = newReg.LogicalSourceID
+	msg.PhysicalSourceId = newReg.PhysicalSourceID
+	msg.BatchId = senderBatchID(msg)
+	if _, err := store.EnqueueHarvest(ctx, msg, msg.GetWindowStart().AsTime()); err != nil {
+		t.Fatal(err)
+	}
+	client := &rejectingOldSourceSubmitter{oldPhysicalID: oldReg.PhysicalSourceID}
+	sender := NewOutboxSender(store, client, slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	if sent, err := sender.Drain(ctx); err != nil || sent != 1 {
+		t.Fatalf("Drain sent=%d err=%v, want stale identity dropped before drain", sent, err)
+	}
+	if got := client.batchIDs; fmt.Sprint(got) != "[43:3:4]" {
+		t.Fatalf("sent batch IDs = %v, want only current identity batch", got)
+	}
+}
+
+func TestOutboxSenderRestampsStragglerFromOldIDsOnNextStartup(t *testing.T) {
+	ctx := context.Background()
+	store := openSenderStore(t)
+	oldReg := senderRegistration("project", 7, 42)
+	newReg := senderRegistration("project", 8, 43)
+	if err := store.SaveSourceRegistration(ctx, oldReg); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSourceRegistration(ctx, newReg); err != nil {
+		t.Fatal(err)
+	}
+	msg := senderBatch(0)
+	msg.LogicalSourceId = oldReg.LogicalSourceID
+	msg.PhysicalSourceId = oldReg.PhysicalSourceID
+	msg.BatchId = senderBatchID(msg)
+	if _, err := store.EnqueueHarvest(ctx, msg, msg.GetWindowStart().AsTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSourceRegistration(ctx, newReg); err != nil {
+		t.Fatal(err)
+	}
+	client := &rejectingOldSourceSubmitter{oldPhysicalID: oldReg.PhysicalSourceID}
+	sender := NewOutboxSender(store, client, slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	if sent, err := sender.Drain(ctx); err != nil || sent != 1 {
+		t.Fatalf("Drain sent=%d err=%v, want straggler re-stamped on next startup", sent, err)
+	}
+	if got := client.batchIDs; fmt.Sprint(got) != "[43:1:2]" {
+		t.Fatalf("sent batch IDs = %v, want re-stamped straggler", got)
+	}
+}
+
+func TestOutboxSenderKeepsCurrentIDRowsAfterServerURLChange(t *testing.T) {
+	ctx := context.Background()
+	store := openSenderStore(t)
+	oldReg := senderRegistration("project", 7, 42)
+	newReg := oldReg
+	newReg.ServerURL = "https://new-server.example"
+	if err := store.SaveSourceRegistration(ctx, oldReg); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		msg := senderBatch(i)
+		msg.LogicalSourceId = oldReg.LogicalSourceID
+		msg.PhysicalSourceId = oldReg.PhysicalSourceID
+		msg.BatchId = senderBatchID(msg)
+		if _, err := store.EnqueueHarvest(ctx, msg, msg.GetWindowStart().AsTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveSourceRegistration(ctx, newReg); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := store.OutboxCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Queued != 2 || counts.DroppedStaleSource != 0 {
+		t.Fatalf("counts after ServerURL change = %+v, want queued=2 dropped_stale_source=0", counts)
+	}
+	client := &fakeSubmitter{}
+	sender := NewOutboxSender(store, client, slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	if sent, err := sender.Drain(ctx); err != nil || sent != 2 {
+		t.Fatalf("Drain sent=%d err=%v, want current-ID batches kept", sent, err)
+	}
+	if got := client.batchIDs; fmt.Sprint(got) != "[42:1:2 42:2:3]" {
+		t.Fatalf("sent batch IDs = %v, want original current IDs", got)
+	}
+}
+
+func TestOutboxSenderResendsRestampedProtoIdentically(t *testing.T) {
+	ctx := context.Background()
+	store := openSenderStore(t)
+	oldReg := senderRegistration("project", 7, 42)
+	newReg := senderRegistration("project", 8, 43)
+	if err := store.SaveSourceRegistration(ctx, oldReg); err != nil {
+		t.Fatal(err)
+	}
+	msg := senderBatch(0)
+	msg.LogicalSourceId = oldReg.LogicalSourceID
+	msg.PhysicalSourceId = oldReg.PhysicalSourceID
+	msg.BatchId = senderBatchID(msg)
+	if _, err := store.EnqueueHarvest(ctx, msg, msg.GetWindowStart().AsTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSourceRegistration(ctx, newReg); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.NextOutboxBatch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte(nil), first.Payload...)
+	client := &fakeSubmitter{errs: []error{connect.NewError(connect.CodeDeadlineExceeded, errors.New("ack lost"))}, recordOnError: true}
+	sender := NewOutboxSender(store, client, slog.New(slog.NewTextHandler(testDiscard{}, nil)))
+	if sent, err := sender.Drain(ctx); err == nil || sent != 0 {
+		t.Fatalf("first Drain sent=%d err=%v, want retryable error after server saw bytes", sent, err)
+	}
+	if sent, err := sender.Drain(ctx); err != nil || sent != 1 {
+		t.Fatalf("second Drain sent=%d err=%v", sent, err)
+	}
+	if len(client.payloads) != 2 {
+		t.Fatalf("payload count = %d, want 2", len(client.payloads))
+	}
+	for i, payload := range client.payloads {
+		if string(payload) != string(want) {
+			t.Fatalf("payload %d was not byte-identical to the re-stamped deterministic proto", i)
+		}
+	}
+}
+
 func TestOutboxSenderResendsStoredProtoIdentically(t *testing.T) {
 	ctx := context.Background()
 	store := openSenderStore(t)
@@ -242,6 +433,23 @@ func senderBatch(i int) *rottenv1.SubmitHarvestRequest {
 	}
 }
 
+func senderBatchID(msg *rottenv1.SubmitHarvestRequest) string {
+	return fmt.Sprintf("%d:%d:%d", msg.GetPhysicalSourceId(), msg.GetWindowStart().AsTime().UnixMicro(), msg.GetWindowEnd().AsTime().UnixMicro())
+}
+
+func senderRegistration(project string, logicalID, physicalID uint32) state.SourceRegistration {
+	return state.SourceRegistration{
+		ServerURL:        "https://server.example",
+		Project:          project,
+		Environment:      "prod",
+		Cluster:          "main",
+		Role:             "primary",
+		FQDN:             "db.example",
+		LogicalSourceID:  logicalID,
+		PhysicalSourceID: physicalID,
+	}
+}
+
 func pgssSnapshotForSender() pgss.Snapshot {
 	return pgss.Snapshot{Entries: map[pgss.Key]pgss.Stat{}}
 }
@@ -260,6 +468,19 @@ type fakeSubmitter struct {
 	recordOnError bool
 	batchIDs      []string
 	payloads      [][]byte
+}
+
+type rejectingOldSourceSubmitter struct {
+	oldPhysicalID uint32
+	batchIDs      []string
+}
+
+func (r *rejectingOldSourceSubmitter) SubmitHarvest(_ context.Context, msg *rottenv1.SubmitHarvestRequest) (*rottenv1.SubmitHarvestResponse, serverclient.ClipCounts, error) {
+	if msg.GetPhysicalSourceId() == r.oldPhysicalID {
+		return nil, serverclient.ClipCounts{}, connect.NewError(connect.CodePermissionDenied, errors.New("stale source"))
+	}
+	r.batchIDs = append(r.batchIDs, msg.GetBatchId())
+	return &rottenv1.SubmitHarvestResponse{BatchId: msg.GetBatchId(), Status: rottenv1.SubmitHarvestResponse_STATUS_ACCEPTED}, serverclient.ClipCounts{}, nil
 }
 
 func (f *fakeSubmitter) SubmitHarvest(_ context.Context, msg *rottenv1.SubmitHarvestRequest) (*rottenv1.SubmitHarvestResponse, serverclient.ClipCounts, error) {

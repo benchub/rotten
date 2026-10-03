@@ -49,7 +49,7 @@ const FileName = "state.db"
 const DefaultOutboxCap = 288
 
 // schemaVersion is PRAGMA user_version.
-const schemaVersion = 3
+const schemaVersion = 4
 
 const schemaV1 = `
 CREATE TABLE snapshot_meta (
@@ -130,6 +130,10 @@ CREATE TABLE source_registration (
 ) STRICT;
 `
 
+const schemaV4StaleSourceDrops = `
+ALTER TABLE outbox_stats ADD COLUMN dropped_stale_source INTEGER NOT NULL DEFAULT 0;
+`
+
 // Options configures Open.
 type Options struct {
 	// MaxSnapshotAge: Load treats an older snapshot as a baseline. Zero
@@ -176,9 +180,10 @@ type OutboxBatch struct {
 
 // OutboxCounts reports queue length and durable drop counters.
 type OutboxCounts struct {
-	Queued          int
-	DroppedCap      uint64
-	DroppedRejected uint64
+	Queued             int
+	DroppedCap         uint64
+	DroppedRejected    uint64
+	DroppedStaleSource uint64
 }
 
 // OutboxEnqueueResult reports cap drops caused by one enqueue.
@@ -421,6 +426,9 @@ func initDB(db *sql.DB) error {
 		if _, err := tx.Exec(schemaV3SourceRegistration); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(schemaV4StaleSourceDrops); err != nil {
+			return err
+		}
 	case 1:
 		if _, err := tx.Exec(schemaV2Outbox); err != nil {
 			return err
@@ -428,8 +436,18 @@ func initDB(db *sql.DB) error {
 		if _, err := tx.Exec(schemaV3SourceRegistration); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(schemaV4StaleSourceDrops); err != nil {
+			return err
+		}
 	case 2:
 		if _, err := tx.Exec(schemaV3SourceRegistration); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(schemaV4StaleSourceDrops); err != nil {
+			return err
+		}
+	case 3:
+		if _, err := tx.Exec(schemaV4StaleSourceDrops); err != nil {
 			return err
 		}
 	default:
@@ -480,7 +498,17 @@ func (s *Store) SaveSourceRegistration(ctx context.Context, reg SourceRegistrati
 		return errors.New("source registration identity is required")
 	}
 	return s.Tx(ctx, func(tx Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO source_registration
+		old, ok, err := loadSourceRegistrationTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if ok {
+			sameIdentity := sourceRegistrationIdentityEqual(old, reg)
+			if err := reconcileOutboxSource(ctx, tx, reg, sameIdentity); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO source_registration
 			(id, server_url, project, environment, cluster, role, fqdn, logical_source_id, physical_source_id)
 			VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
@@ -495,6 +523,114 @@ func (s *Store) SaveSourceRegistration(ctx context.Context, reg SourceRegistrati
 			reg.ServerURL, reg.Project, reg.Environment, reg.Cluster, reg.Role, reg.FQDN, reg.LogicalSourceID, reg.PhysicalSourceID)
 		return err
 	})
+}
+
+func loadSourceRegistrationTx(ctx context.Context, tx Tx) (SourceRegistration, bool, error) {
+	var reg SourceRegistration
+	row := tx.QueryRowContext(ctx, `SELECT server_url, project, environment, cluster, role, fqdn, logical_source_id, physical_source_id FROM source_registration WHERE id = 1`)
+	if err := row.Scan(&reg.ServerURL, &reg.Project, &reg.Environment, &reg.Cluster, &reg.Role, &reg.FQDN, &reg.LogicalSourceID, &reg.PhysicalSourceID); errors.Is(err, sql.ErrNoRows) {
+		return SourceRegistration{}, false, nil
+	} else if err != nil {
+		return SourceRegistration{}, false, err
+	}
+	return reg, true, nil
+}
+
+func sourceRegistrationIdentityEqual(a, b SourceRegistration) bool {
+	return a.ServerURL == b.ServerURL &&
+		a.Project == b.Project &&
+		a.Environment == b.Environment &&
+		a.Cluster == b.Cluster &&
+		a.Role == b.Role &&
+		a.FQDN == b.FQDN
+}
+
+type outboxPayload struct {
+	id      int64
+	payload []byte
+}
+
+func loadOutboxPayloads(ctx context.Context, tx Tx) ([]outboxPayload, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, payload FROM outbox ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var payloads []outboxPayload
+	for rows.Next() {
+		var row outboxPayload
+		if err := rows.Scan(&row.id, &row.payload); err != nil {
+			return nil, err
+		}
+		payloads = append(payloads, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return payloads, nil
+}
+
+func reconcileOutboxSource(ctx context.Context, tx Tx, current SourceRegistration, sameIdentity bool) error {
+	rows, err := loadOutboxPayloads(ctx, tx)
+	if err != nil {
+		return err
+	}
+	var staleDropped int64
+	for _, row := range rows {
+		var msg rottenv1.SubmitHarvestRequest
+		if err := proto.Unmarshal(row.payload, &msg); err != nil {
+			continue
+		}
+		switch {
+		case msg.GetLogicalSourceId() == current.LogicalSourceID && msg.GetPhysicalSourceId() == current.PhysicalSourceID:
+			continue
+		case sameIdentity:
+			msg.LogicalSourceId = current.LogicalSourceID
+			msg.PhysicalSourceId = current.PhysicalSourceID
+			msg.BatchId = harvestBatchID(&msg)
+			payload, err := marshalHarvest(&msg)
+			if err != nil {
+				return err
+			}
+			res, err := tx.ExecContext(ctx, `UPDATE OR IGNORE outbox SET batch_id = ?, payload = ? WHERE id = ?`, msg.GetBatchId(), payload, row.id)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				if err := deleteOutboxSourceRow(ctx, tx, row.id); err != nil {
+					return err
+				}
+				staleDropped++
+			}
+		default:
+			if err := deleteOutboxSourceRow(ctx, tx, row.id); err != nil {
+				return err
+			}
+			staleDropped++
+		}
+	}
+	return incrementDroppedStaleSource(ctx, tx, staleDropped)
+}
+
+func deleteOutboxSourceRow(ctx context.Context, tx Tx, id int64) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM outbox WHERE id = ?`, id)
+	return err
+}
+
+func incrementDroppedStaleSource(ctx context.Context, tx Tx, n int64) error {
+	if n == 0 {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE outbox_stats SET dropped_stale_source = dropped_stale_source + ? WHERE id = 1`, n)
+	return err
+}
+
+func harvestBatchID(msg *rottenv1.SubmitHarvestRequest) string {
+	return fmt.Sprintf("%d:%d:%d", msg.GetPhysicalSourceId(), msg.GetWindowStart().AsTime().UnixMicro(), msg.GetWindowEnd().AsTime().UnixMicro())
 }
 
 func (s *Store) moveAside() (string, error) {
@@ -685,15 +821,16 @@ func (s *Store) DropRejectedOutboxBatch(ctx context.Context, id int64) error {
 func (s *Store) OutboxCounts(ctx context.Context) (OutboxCounts, error) {
 	var counts OutboxCounts
 	err := s.Tx(ctx, func(tx Tx) error {
-		var capDropped, rejectedDropped int64
+		var capDropped, rejectedDropped, staleSourceDropped int64
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM outbox`).Scan(&counts.Queued); err != nil {
 			return err
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT dropped_cap, dropped_rejected FROM outbox_stats WHERE id = 1`).Scan(&capDropped, &rejectedDropped); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT dropped_cap, dropped_rejected, dropped_stale_source FROM outbox_stats WHERE id = 1`).Scan(&capDropped, &rejectedDropped, &staleSourceDropped); err != nil {
 			return err
 		}
 		counts.DroppedCap = uint64(capDropped)
 		counts.DroppedRejected = uint64(rejectedDropped)
+		counts.DroppedStaleSource = uint64(staleSourceDropped)
 		return nil
 	})
 	return counts, err

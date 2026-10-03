@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	"github.com/benchub/rotten/internal/state"
@@ -166,6 +168,45 @@ func TestRegisterSourceWithCacheUsesCachedIDsWhenServerIsDown(t *testing.T) {
 	}
 }
 
+func TestRegisterSourceWithCacheReconcilesCachedOutboxBeforeStartup(t *testing.T) {
+	store := openConfigStore(t)
+	req := &rottenv1.RegisterRequest{Project: "p", Environment: "e", Cluster: "c", Role: "r", Fqdn: "db"}
+	cached := state.SourceRegistration{
+		ServerURL:        "https://server",
+		Project:          "p",
+		Environment:      "e",
+		Cluster:          "c",
+		Role:             "r",
+		FQDN:             "db",
+		LogicalSourceID:  8,
+		PhysicalSourceID: 43,
+	}
+	if err := store.SaveSourceRegistration(context.Background(), cached); err != nil {
+		t.Fatal(err)
+	}
+	msg := configBatch(7, 42, 1)
+	if _, err := store.EnqueueHarvest(context.Background(), msg, msg.GetWindowStart().AsTime()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &fakeRegistrar{err: errors.New("server down")}
+	got, err := registerSourceWithCache(ctx, client, store, "https://server", req, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != cached {
+		t.Fatalf("registration = %+v, want cached %+v", got, cached)
+	}
+	batch, err := store.NextOutboxBatch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch == nil || batch.BatchID != "43:1:2" {
+		t.Fatalf("oldest batch = %+v, want re-stamped cached startup batch_id 43:1:2", batch)
+	}
+}
+
 func TestRegisterSourceWithCacheIgnoresCacheOnIdentityMismatch(t *testing.T) {
 	store := openConfigStore(t)
 	if err := store.SaveSourceRegistration(context.Background(), state.SourceRegistration{
@@ -271,6 +312,18 @@ func openConfigStore(t *testing.T) *state.Store {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(discardWriter{}, nil))
+}
+
+func configBatch(logicalID, physicalID uint32, i int) *rottenv1.SubmitHarvestRequest {
+	start := time.UnixMicro(int64(i)).UTC()
+	end := time.UnixMicro(int64(i + 1)).UTC()
+	return &rottenv1.SubmitHarvestRequest{
+		BatchId:          fmt.Sprintf("%d:%d:%d", physicalID, start.UnixMicro(), end.UnixMicro()),
+		LogicalSourceId:  logicalID,
+		PhysicalSourceId: physicalID,
+		WindowStart:      timestamppb.New(start),
+		WindowEnd:        timestamppb.New(end),
+	}
 }
 
 type discardWriter struct{}
