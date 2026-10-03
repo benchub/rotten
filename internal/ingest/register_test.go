@@ -7,8 +7,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
@@ -19,6 +21,7 @@ import (
 
 type registerFixture struct {
 	ctx     context.Context
+	admin   *pgx.Conn
 	owner   *pgxpool.Pool
 	ingest  *pgxpool.Pool
 	handler *ingest.Handler
@@ -29,6 +32,7 @@ func setupRegister(t *testing.T, fqdn string) *registerFixture {
 	t.Helper()
 	db := testdb.StartRotten(t)
 	ctx := context.Background()
+	admin := db.Connect(t)
 	owner, err := pgxpool.New(ctx, db.DSNAs(t, testdb.OwnerRole))
 	if err != nil {
 		t.Fatal(err)
@@ -49,6 +53,7 @@ func setupRegister(t *testing.T, fqdn string) *registerFixture {
 	}
 	return &registerFixture{
 		ctx:     auth.NewContext(ctx, auth.Key{ID: id, Name: "worker", FQDN: fqdn}),
+		admin:   admin,
 		owner:   owner,
 		ingest:  ingestPool,
 		handler: ingest.NewHandler(ingestPool),
@@ -280,6 +285,77 @@ func TestRegisterUnavailableHidesDatabaseErrorAndLogsDetail(t *testing.T) {
 	logText := logs.String()
 	if !strings.Contains(logText, "register source failed") || !strings.Contains(logText, "key_id=") || !strings.Contains(logText, "closed pool") {
 		t.Fatalf("logs = %q, want key id and detailed database error", logText)
+	}
+}
+
+func TestRegisterBackendTerminatedMidTransactionReturnsUnavailable(t *testing.T) {
+	f := setupRegister(t, "db-register-terminated.example")
+	ctx := context.Background()
+	if _, err := f.owner.Exec(ctx, `
+		insert into rotten.logical_sources(project, environment, cluster, role)
+		values ('blocked-register', 'prod', 'east', 'primary')`); err != nil {
+		t.Fatal(err)
+	}
+	lockTx, err := f.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(ctx)
+	if _, err := lockTx.Exec(ctx, `
+		select id from rotten.logical_sources
+		where project = 'blocked-register' and environment = 'prod' and cluster = 'east' and role = 'primary'
+		for update`); err != nil {
+		t.Fatal(err)
+	}
+
+	callCtx, cancel := context.WithTimeout(f.ctx, 30*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := f.handler.Register(callCtx, registerRequest("blocked-register", "prod", "east", "primary", "db-register-terminated.example"))
+		errCh <- err
+	}()
+
+	pid := waitBlockedBackendPID(t, f.admin, "insert into rotten.logical_sources%")
+	if _, err := f.admin.Exec(ctx, "select pg_terminate_backend($1)", pid); err != nil {
+		t.Fatal(err)
+	}
+	err = <-errCh
+	if connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("Register err = %v, want Unavailable", err)
+	}
+	msg := err.Error()
+	for _, leaked := range []string{"SQLSTATE", "terminating connection", "admin_shutdown", "logical_sources", "pg_terminate_backend"} {
+		if strings.Contains(msg, leaked) {
+			t.Fatalf("Register error %q leaked %q", msg, leaked)
+		}
+	}
+}
+
+func waitBlockedBackendPID(t *testing.T, db *pgx.Conn, queryPattern string) int {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var pid int
+		err := db.QueryRow(ctx, `
+			select pid
+			from pg_stat_activity
+			where wait_event_type = 'Lock'
+				and query like $1
+				and pid <> pg_backend_pid()
+			order by query_start
+			limit 1`, queryPattern).Scan(&pid)
+		if err == nil {
+			return pid
+		}
+		if err != pgx.ErrNoRows {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backend never blocked on query like %q", queryPattern)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

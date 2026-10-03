@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"net"
 	"strings"
+	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
@@ -154,6 +157,9 @@ func (e registerError) Error() string { return e.op + " register source: " + e.e
 func (e registerError) Unwrap() error { return e.err }
 
 func isUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
 	var e registerError
 	if errors.As(err, &e) && (e.op == "begin" || e.op == "commit") {
 		return true
@@ -162,14 +168,40 @@ func isUnavailable(err error) bool {
 	if errors.As(err, &submit) && (submit.op == "begin" || submit.op == "commit") {
 		return true
 	}
+	// A canceled handler context may be either a client disconnect or server
+	// shutdown; the server cannot distinguish them, and Register/SubmitHarvest
+	// are safe for clients to retry.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if pgconn.SafeToRetry(err) || pgconn.Timeout(err) || isNetworkUnavailable(err) {
 		return true
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.Code == "08000" || strings.HasPrefix(pgErr.Code, "08") || pgErr.Code == "40P01" || pgErr.Code == "40001"
+		return strings.HasPrefix(pgErr.Code, "08") || strings.HasPrefix(pgErr.Code, "57P0") || pgErr.Code == "40P01" || pgErr.Code == "40001"
 	}
 	return false
+}
+
+func isNetworkUnavailable(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, pgconn.ErrConnClosed) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	for _, target := range []error{syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ECONNREFUSED, syscall.EPIPE} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "conn closed") ||
+		strings.Contains(msg, "broken pipe")
 }
 
 func validateSource(src Source) error {

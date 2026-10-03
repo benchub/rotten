@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	runningstat "github.com/benchub/runningstat"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -25,6 +26,7 @@ import (
 
 type submitFixture struct {
 	ctx     context.Context
+	admin   *pgx.Conn
 	owner   *pgxpool.Pool
 	ingest  *pgxpool.Pool
 	handler *ingest.Handler
@@ -59,6 +61,7 @@ func setupSubmit(t *testing.T) *submitFixture {
 	t.Helper()
 	db := testdb.StartRotten(t)
 	ctx := context.Background()
+	admin := db.Connect(t)
 	owner, err := pgxpool.New(ctx, db.DSNAs(t, testdb.OwnerRole))
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +91,7 @@ func setupSubmit(t *testing.T) *submitFixture {
 	}
 	return &submitFixture{
 		ctx:     auth.NewContext(ctx, key),
+		admin:   admin,
 		owner:   owner,
 		ingest:  ingestPool,
 		handler: handler,
@@ -846,6 +850,42 @@ func TestSubmitHarvestDuplicateDifferentContentWarns(t *testing.T) {
 	}
 }
 
+func TestSubmitHarvestBackendTerminatedMidTransactionReturnsUnavailable(t *testing.T) {
+	f := setupSubmit(t)
+	ctx := context.Background()
+	lockTx, err := f.owner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(ctx)
+	if _, err := lockTx.Exec(ctx, "select pg_advisory_xact_lock($1::bigint)", int64(f.reg.GetPhysicalSourceId())); err != nil {
+		t.Fatal(err)
+	}
+
+	callCtx, cancel := context.WithTimeout(f.ctx, 30*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := f.handler.SubmitHarvest(callCtx, harvestRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), time.Now().UTC().Truncate(time.Second).Add(-time.Minute), "terminated"))
+		errCh <- err
+	}()
+
+	pid := waitBlockedBackendPID(t, f.admin, "select pg_advisory_xact_lock%")
+	if _, err := f.admin.Exec(ctx, "select pg_terminate_backend($1)", pid); err != nil {
+		t.Fatal(err)
+	}
+	err = <-errCh
+	if connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("SubmitHarvest err = %v, want Unavailable", err)
+	}
+	msg := err.Error()
+	for _, leaked := range []string{"SQLSTATE", "terminating connection", "admin_shutdown", "pg_advisory_xact_lock", "pg_terminate_backend"} {
+		if strings.Contains(msg, leaked) {
+			t.Fatalf("SubmitHarvest error %q leaked %q", msg, leaked)
+		}
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func registerExtraSource(t *testing.T, f *submitFixture, name, fqdn, project, environment, cluster, role string) *submitFixture {
@@ -865,6 +905,7 @@ func registerExtraSource(t *testing.T, f *submitFixture, name, fqdn, project, en
 	}
 	return &submitFixture{
 		ctx:     auth.NewContext(context.Background(), key),
+		admin:   f.admin,
 		owner:   f.owner,
 		ingest:  f.ingest,
 		handler: f.handler,
