@@ -32,16 +32,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261001-103222-36: Add server operations basics.
-- **Do:**
-  - A health endpoint that checks the database.
-  - `slog` JSON logs.
-  - Graceful shutdown that drains in-flight calls.
-  - A config file with env var overrides.
-- **Red test:** Health reports unhealthy when the database is down. SIGTERM during a call still commits or rolls back cleanly.
-- **Done when:** Passes.
-- **Needs:** -33.
-
 ### 20261002-145000-1: Classify mid-transaction DB failures as Unavailable in Register and SubmitHarvest.
 - **Do:** In `internal/ingest/register.go` `isUnavailable` (shared by Register and SubmitHarvest), also treat `pgconn.SafeToRetry(err)`, `pgconn.Timeout(err)`, plain network errors, and SQLSTATE class `57P0x` (e.g. `57P01` admin shutdown) as `Unavailable`. Today a Postgres restart or failover after `begin` succeeds but before the writes finish returns `Internal`, which a client won't retry. Register's upserts are idempotent and SubmitHarvest dedupes by `batch_id`, so retrying is safe. Keep permission and constraint errors as `Internal`.
 - **Red test:** Against real Postgres, terminate the backend (`pg_terminate_backend`) mid-transaction for each call, and check that it returns `Unavailable` with no DB text in the message.

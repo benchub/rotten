@@ -410,3 +410,17 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -43.
 - **Completed:** 2026-10-02, 2e53c7b. Same filters and window rules as -43, ordered by total time, then calls, then fingerprint. The test works out both orderings from the fixture and checks that they differ.
+
+### 20261001-103222-36: Add server operations basics.
+- **Do:**
+  - A health endpoint that checks the database.
+  - `slog` JSON logs.
+  - Graceful shutdown that drains in-flight calls.
+  - A config file with env var overrides.
+- **Red test:** Health reports unhealthy when the database is down. SIGTERM during a call still commits or rolls back cleanly.
+- **Done when:** Passes.
+- **Needs:** -33.
+- **Completed:** 2026-10-02, de9fc66.
+  - **Config:** a JSON file in the worker's format, with keys `DSN`, `Listen`, `TLSCert`, `TLSKey`, `ShutdownTimeout` and `HealthTimeout`. Precedence is flags, then `ROTTEN_SERVER_*` env vars, then the file, then defaults.
+  - **Health:** `/healthz` is an unauthenticated readiness check that pings the DB. It times out after 1 s and doesn't leak DB errors.
+  - **Shutdown:** SIGTERM drains in-flight calls for up to `ShutdownTimeout` (10 s by default). After that, request contexts are cancelled so stuck transactions roll back. The handler wait is bounded and the process exits nonzero.
