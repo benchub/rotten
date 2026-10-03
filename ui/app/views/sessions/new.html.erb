@@ -6,6 +6,19 @@
 <% if alert.present? %>
   <p role="alert"><%= alert %></p>
 <% end %>
+<% if Rails.configuration.x.auth_mode == "password" %>
+  <%= form_with url: login_path, method: :post do |form| %>
+    <p>
+      <%= form.label :email, "Email" %>
+      <%= form.email_field :email, value: @email, required: true, autofocus: true, autocomplete: "username" %>
+    </p>
+    <p>
+      <%= form.label :password, "Password" %>
+      <%= form.password_field :password, required: true, autocomplete: "current-password" %>
+    </p>
+    <%= form.submit "Sign in" %>
+  <% end %>
+<% end %>
 <% if Rails.configuration.x.auth_mode == "oidc" %>
   <% if Rails.configuration.x.oidc_strategy %>
     <%# OmniAuth only starts a login from a POST with a CSRF token, and Turbo can't follow the cross-origin redirect. %>

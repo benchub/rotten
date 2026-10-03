@@ -121,4 +121,49 @@ The route isn't drawn, and the controller refuses it as well.
 
 ### Password mode
 
-`password` mode doesn't have a login yet.
+`ROTTEN_UI_AUTH=password` needs no other settings. `/login` shows an email and
+password form that POSTs to `/login`. There's no sign-up and no password reset
+by email: an operator manages users with rake tasks, run where the app runs,
+with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
+
+| Task | What it does |
+| --- | --- |
+| `bin/rails "users:create[alice@example.com,viewer]"` | Creates an active user with role `viewer` or `admin`, and prints a random 24-character password. |
+| `bin/rails "users:disable[alice@example.com]"` | Sets `active` to false. The user's sessions end on their next request. |
+| `bin/rails "users:reset_password[alice@example.com]"` | Sets and prints a new random password. The old one stops working, and the user's existing sessions end on their next request. A disabled user stays disabled. |
+
+- **Passwords** are printed once and stored only as a bcrypt digest. Pass them
+  on securely. There's no page yet for users to change their own password, and
+  no forced change at first login.
+- **Errors** exit non-zero with a message on stderr: a role other than
+  `viewer` or `admin`, an invalid email, an email that already exists (in any
+  case, OIDC users included), or an unknown user.
+- **Modes.** `users:create` and `users:reset_password` refuse to run unless
+  `ROTTEN_UI_AUTH=password`. `users:disable` works in both modes, so it's also
+  the kill switch for OIDC users.
+- **Which users can sign in.** Only users with `provider` set to `password`,
+  which `users:create` sets, and `active` true. OIDC users never sign in by
+  password. Emails are stored lowercased and matched without regard to case.
+- **Failures** all get the same message and status: a wrong password, an
+  unknown email, a disabled user and an OIDC user's email look the same. Each
+  costs one bcrypt hash, so response time doesn't tell them apart either. A
+  failed login ends any session the browser had.
+- **Sessions.** As in OIDC mode, the session is reset before the user ID is
+  stored, and `last_login_at` is updated. For password users the session also
+  holds an HMAC of the password digest (keyed from `secret_key_base`, never
+  the digest itself). Each request recomputes it; once the password changes it
+  no longer matches, and the session is dropped and sent to `/login`, as for a
+  disabled user. OIDC sessions carry no such check and last until the user is
+  disabled or signs out.
+- **Rate limits.** `POST /login` allows 10 attempts per IP address and 5 per
+  email address in any 3 minutes, counting successes too. Past that, it
+  answers 429 until the window ends. The counters live in `Rails.cache`, an
+  in-memory store, so each app process counts on its own and restarts reset
+  them. With several processes or hosts, the effective limit is multiplied by
+  their number; a shared cache store would be needed to enforce it globally.
+  The per-email limit means someone can lock a known email out for a few
+  minutes at a time. The IP limit uses `request.remote_ip`, so behind a proxy
+  make sure Rails sees the client's address, not the proxy's.
+
+In `oidc` mode, `POST /login` returns 404 and `/login` shows no password form.
+In `password` mode the OIDC routes return 404 and OmniAuth isn't installed.

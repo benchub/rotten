@@ -31,8 +31,9 @@ Rails.application.configure do
   # Print deprecation notices to the Rails logger.
   config.active_support.deprecation = :log
 
-  # Raise an error on page load if there are pending migrations.
-  config.active_record.migration_error = :page_load
+  # rotten-server migrate owns the schema, and the UI's role can't create
+  # Rails' schema_migrations table, so don't check for pending migrations.
+  config.active_record.migration_error = false
 
   # Highlight code that triggered database queries in logs.
   config.active_record.verbose_query_logs = true

@@ -3,6 +3,8 @@ Rails.application.routes.draw do
 
   get "up" => "health#show", as: :rails_health_check
   get "login" => "sessions#new"
+  # 404s unless ROTTEN_UI_AUTH=password.
+  post "login" => "sessions#create"
   delete "logout" => "sessions#destroy"
   get "admin" => "admin#show"
 

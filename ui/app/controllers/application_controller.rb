@@ -1,5 +1,7 @@
 class ApplicationController < ActionController::Base
-  before_action :drop_inactive_session
+  include SignIn
+
+  before_action :drop_revoked_session
   before_action :require_login
 
   # Only allow modern browsers supporting webp images, web push, badges, import maps, CSS nesting, and CSS :has.
@@ -30,10 +32,12 @@ class ApplicationController < ActionController::Base
     head :forbidden unless current_user.admin?
   end
 
-  def drop_inactive_session
-    return unless current_user && !current_user.active?
+  # A disabled user, or a password user whose password changed since the
+  # session started, loses the session on the next request.
+  def drop_revoked_session
+    return unless current_user
+    return if current_user.active? && session_credential_current?(current_user)
 
-    reset_session
-    @current_user = nil
+    end_session
   end
 end

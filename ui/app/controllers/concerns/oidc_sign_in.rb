@@ -1,5 +1,6 @@
 module OidcSignIn
   extend ActiveSupport::Concern
+  include SignIn
 
   DENIALS = {
     invalid: "Sign-in didn't work. Try again, or ask your administrator for help.",
@@ -18,15 +19,11 @@ module OidcSignIn
   def sign_in_with_oidc(auth, provider:)
     result = OidcLogin.new(config: Rails.configuration.x.oidc, provider: provider).call(auth)
 
-    # A new session either way: fixation protection on success, and a denied
-    # login ends whatever session was there before.
-    reset_session
-    @current_user = nil
-
     if result.user
-      session[:user_id] = result.user.id
+      start_session(result.user)
       redirect_to root_path, notice: "Signed in"
     else
+      end_session
       Rails.logger.info("OIDC sign-in refused: #{result.error}")
       render "sessions/denied", status: :forbidden, locals: { message: DENIALS.fetch(result.error) }
     end
