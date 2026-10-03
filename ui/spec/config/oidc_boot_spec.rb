@@ -50,6 +50,7 @@ RSpec.describe "OIDC boot configuration" do
       "RAILS_ENV" => rails_env,
       "DATABASE_URL" => "postgresql://boot.invalid/none",
       "SECRET_KEY_BASE_DUMMY" => "1",
+      "ROTTEN_UI_HOSTS" => "rotten.example.test",
       "OIDC_ISSUER" => nil,
       "OIDC_CLIENT_ID" => nil,
       "OIDC_CLIENT_SECRET" => nil,

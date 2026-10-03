@@ -61,12 +61,13 @@ Rails.application.configure do
   # Only use :id for inspections in production.
   config.active_record.attributes_for_inspect = [ :id ]
 
-  # Enable DNS rebinding protection and other `Host` header attacks.
-  # config.hosts = [
-  #   "example.com",     # Allow requests from example.com
-  #   /.*\.example\.com/ # Allow requests from subdomains like `www.example.com`
-  # ]
-  #
-  # Skip DNS rebinding protection for the default health check endpoint.
-  # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
+  # Only the hosts in ROTTEN_UI_HOSTS may appear in Host or X-Forwarded-Host.
+  # That blocks DNS rebinding and keeps forged hosts out of URLs the app
+  # builds, such as the OIDC redirect URI. /up is exempt so health checks can
+  # use an IP address.
+  hosts = ENV.fetch("ROTTEN_UI_HOSTS", "").split(",").map(&:strip).reject(&:empty?)
+  raise "RAILS_ENV=production requires ROTTEN_UI_HOSTS, a comma-separated list of host names" if hosts.empty?
+
+  config.hosts = hosts
+  config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
 end

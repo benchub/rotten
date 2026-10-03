@@ -107,6 +107,26 @@ RSpec.describe RottenUi::OidcConfig do
     end
   end
 
+  describe "#origin" do
+    {
+      "https://idp.example.test" => "https://idp.example.test",
+      "https://idp.example.test/oauth2/default" => "https://idp.example.test",
+      "https://IdP.example.test:443/x" => "https://idp.example.test",
+      "http://idp.example.test:8080/realms/rotten" => "http://idp.example.test:8080",
+      "idp.example.test" => nil,
+      "javascript:alert(1)" => nil,
+      "https://bad host" => nil
+    }.each do |issuer, origin|
+      it "is #{origin.inspect} for the issuer #{issuer.inspect}" do
+        expect(described_class.fetch!(complete_env.merge("OIDC_ISSUER" => issuer)).origin).to eq(origin)
+      end
+    end
+
+    it "is nil without an issuer" do
+      expect(described_class.from_env({}).origin).to be_nil
+    end
+  end
+
   describe "#strategy_options" do
     it "passes the configured scopes and client settings to the strategy" do
       config = described_class.fetch!(complete_env.merge("OIDC_SCOPES" => "openid groups"))

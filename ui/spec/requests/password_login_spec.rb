@@ -74,11 +74,16 @@ RSpec.describe "Password login", type: :request do
 
     it "gives an unknown email exactly the same response as a wrong password" do
       create_password_user(email: "known@example.test", password: password)
+      # The CSP nonce is fresh on every response, so it's masked too.
+      same_except = lambda do |email|
+        nonce = response.headers["content-security-policy"][/'nonce-([^']+)'/, 1]
+        response.body.gsub(email, "EMAIL").gsub(nonce, "NONCE")
+      end
 
       password_sign_in(email: "known@example.test", password: "wrong-password")
-      wrong_password = [response.status, alert_text, response.body.gsub("known@example.test", "EMAIL")]
+      wrong_password = [response.status, alert_text, same_except.("known@example.test")]
       password_sign_in(email: "unknown@example.test", password: "wrong-password")
-      unknown_email = [response.status, alert_text, response.body.gsub("unknown@example.test", "EMAIL")]
+      unknown_email = [response.status, alert_text, same_except.("unknown@example.test")]
 
       expect(unknown_email).to eq(wrong_password)
       expect(unknown_email.first(2)).to eq([422, generic_failure])

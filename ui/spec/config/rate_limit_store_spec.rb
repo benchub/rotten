@@ -10,6 +10,7 @@ RSpec.describe "Login rate-limit store" do
         "RAILS_ENV" => rails_env,
         "DATABASE_URL" => "postgresql://boot.invalid/none",
         "SECRET_KEY_BASE_DUMMY" => "1",
+        "ROTTEN_UI_HOSTS" => "rotten.example.test",
         "ROTTEN_UI_AUTH" => "password"
       }
       script = 'puts "STORE #{SessionsController.cache_store.class.name}"'

@@ -37,6 +37,12 @@ module Ui
 
     config.active_record.schema_format = :sql
 
+    # frame-ancestors 'none' in the CSP does the same for current browsers.
+    config.action_dispatch.default_headers["X-Frame-Options"] = "DENY"
+    # Rails' permissions_policy DSL still sends the old Feature-Policy header.
+    config.action_dispatch.default_headers["Permissions-Policy"] =
+      %w[accelerometer camera geolocation gyroscope magnetometer microphone payment usb].map { "#{_1}=()" }.join(", ")
+
     # Don't generate system test files.
     config.generators.system_tests = nil
   end

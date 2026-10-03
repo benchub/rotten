@@ -13,4 +13,8 @@ ENV BUNDLE_PATH="/usr/local/bundle" \
 COPY Gemfile Gemfile.lock ./
 RUN bundle install
 
+# The bundler-audit spec runs offline, so the advisory database is fetched
+# here. Rebuild the image (docker build --no-cache) to pick up new advisories.
+RUN bundle exec bundle-audit update
+
 COPY . .

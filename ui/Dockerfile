@@ -46,7 +46,7 @@ COPY . .
 RUN bundle exec bootsnap precompile -j 1 app/ lib/
 
 # Precompile assets without a production SECRET_KEY_BASE.
-RUN DATABASE_URL=postgresql://precompile.invalid/none SECRET_KEY_BASE_DUMMY=1 ROTTEN_UI_AUTH=password ./bin/rails assets:precompile
+RUN DATABASE_URL=postgresql://precompile.invalid/none SECRET_KEY_BASE_DUMMY=1 ROTTEN_UI_AUTH=password ROTTEN_UI_HOSTS=precompile.invalid ./bin/rails assets:precompile
 
 
 

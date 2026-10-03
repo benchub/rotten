@@ -26,6 +26,7 @@ Every org-specific value comes from env. None has a default in this repo.
 | `ROTTEN_UI_ADMIN_GROUP` | no | Group whose members are admins. **If unset, nobody is an admin through OIDC.** |
 | `OIDC_REDIRECT_URI` | no | Full callback URL. If unset, it's built from the request as `<scheme>://<host>/auth/openid_connect/callback`. Set it when the app sits behind a proxy that changes the host. |
 | `OIDC_SCOPES` | no, default `openid email profile` | Space-separated scopes to request. `openid` is always added. Add `groups` when the provider needs that scope to send the groups claim, as Okta does; providers that don't know a `groups` scope, such as Google, reject the login with `invalid_scope` if it's requested. |
+| `ROTTEN_UI_CSP_FORM_ACTION_ORIGINS` | no | Comma-separated extra origins, such as `https://login.example.com`, that the browser may be redirected to after **Sign in**. See below. |
 
 In `oidc` mode the app refuses to boot if `OIDC_ISSUER`, `OIDC_CLIENT_ID` or
 `OIDC_CLIENT_SECRET` is missing or blank. The error names the missing
@@ -34,6 +35,26 @@ variables, never their values.
 The login uses the authorization code flow with PKCE, a nonce and a state
 parameter. `/login` shows a **Sign in** button that POSTs to
 `/auth/openid_connect` with a CSRF token. A GET there does nothing.
+
+**Redirect origins.** The Content-Security-Policy's `form-action` lets the
+Sign in form lead only to this app's origin and the origin of `OIDC_ISSUER`,
+and Chrome enforces that on every redirect that follows the POST. A login that
+passes through any other origin is blocked in the browser with a CSP error in
+the console. List those origins in `ROTTEN_UI_CSP_FORM_ACTION_ORIGINS`:
+
+- when discovery's `authorization_endpoint` isn't on the issuer's origin. On
+  Amazon Cognito, for example, the issuer is
+  `https://cognito-idp.<region>.amazonaws.com/<pool>` but users sign in at
+  the user pool domain, such as `https://<prefix>.auth.<region>.amazoncognito.com`;
+- when the provider federates or brokers to another one and redirects the
+  browser on: Okta routing rules to another IdP, Keycloak identity brokering,
+  Entra ID or Google sending a federated domain to its own SSO (for example
+  `https://adfs.example.com`).
+
+Each entry must be an `http://` or `https://` origin: scheme, host and an
+optional port, with no path, query, wildcard or credentials (a bare trailing
+`/` is accepted). Empty entries are ignored. Any other value stops the app
+from booting, with an error that names the bad entry.
 
 **What happens at each login:**
 
@@ -58,8 +79,18 @@ parameter. `/login` shows a **Sign in** button that POSTs to
   match exactly, case included.
 - **Groups claim.** It may be missing, a single string, or an array. Anything
   else counts as no groups, as do array elements that aren't strings, are
-  empty or very long, or contain NUL bytes or invalid UTF-8. A missing claim
-  therefore gives a viewer at most, never an admin.
+  empty or very long, or contain NUL bytes, control characters, or text that
+  isn't valid UTF-8. A missing claim therefore gives a viewer at most, never
+  an admin.
+- **Odd claim values.** The `sub`, email and name get the same treatment: a
+  value that isn't usable text counts as missing. Emails also may not contain
+  spaces, control characters or any invisible format character (Unicode
+  category Cf, such as bidi controls like U+202E, zero-width space, soft
+  hyphen, byte order mark or tag characters), so a lookalike of a real address
+  is refused rather than stored. The zero-width joiner and non-joiner are the
+  only exceptions, since Persian and Indic addresses use them.
+  `spec/security/oidc_provisioning_fuzz_spec.rb` feeds the callback hostile
+  values of every kind.
 - **Refusals** show a 403 page and grant no session. Any session the browser
   already had is ended too. Rotten refuses:
   - users in neither group when `ROTTEN_UI_VIEWER_GROUP` is set,
@@ -167,3 +198,49 @@ with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
 
 In `oidc` mode, `POST /login` returns 404 and `/login` shows no password form.
 In `password` mode the OIDC routes return 404 and OmniAuth isn't installed.
+
+## Production settings
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `ROTTEN_UI_HOSTS` | yes, in production | Comma-separated host names the app answers to, such as `rotten.example.com`. A name starting with a dot, such as `.example.com`, also allows its subdomains. |
+
+With `RAILS_ENV=production` the app refuses to boot without
+`ROTTEN_UI_HOSTS`. A request whose `Host` or `X-Forwarded-Host` isn't listed
+gets a 403. That blocks DNS rebinding, and keeps a forged host out of the URLs
+the app builds, such as the OIDC redirect URI when `OIDC_REDIRECT_URI` is
+unset. `/up` is exempt, so health checks can use an IP address.
+
+## Security
+
+`spec/security/` holds the security specs, and `make test-ui` runs them with
+everything else.
+
+- **CSRF.** Every route other than GET and HEAD is checked automatically,
+  including routes added later: each must refuse a missing, made-up or
+  foreign token, and a request from another origin. The OmniAuth request
+  phase, `POST /auth/openid_connect`, is checked the same way.
+- **Sessions.** The session cookie is encrypted, `HttpOnly` and
+  `SameSite=Lax`, and `Secure` in production, where HSTS is sent too. Sign-in
+  issues a new session, so a session planted before sign-in is useless.
+  Sign-out clears the cookie in the browser, but the session lives entirely in
+  the cookie, so a copy taken before sign-out keeps working until the user is
+  disabled or, for password users, the password changes. Sessions don't
+  expire on their own either.
+- **Headers.** A strict Content-Security-Policy: everything from this origin
+  only; scripts and styles also need the per-request nonce that importmap's
+  tags carry; no plugins, no framing, and forms may post only to this origin,
+  to the issuer's origin in `oidc` mode, and to any origins in
+  `ROTTEN_UI_CSP_FORM_ACTION_ORIGINS`, for the redirects to the identity
+  provider. Also
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, and a
+  `Permissions-Policy` that turns off camera, microphone, geolocation, payment
+  and similar features. `spec/security/csp_browser_spec.rb` checks the policy
+  in Chromium.
+- **Static analysis.** Brakeman must report no warnings, and bundler-audit
+  must find no gem with a known advisory. The specs also fail if
+  `config/brakeman.ignore`, `config/brakeman.yml` or `.bundler-audit.yml`
+  exists, since any of them could quietly suppress findings. bundler-audit's
+  advisory database is downloaded when the dev image is built, so the specs
+  run offline; rebuild the image with `--no-cache` to pick up new advisories.

@@ -45,6 +45,17 @@ module RottenUi
       "openid_connect:#{issuer}" if issuer.present?
     end
 
+    # scheme://host[:port] of the issuer, or nil if it isn't an http(s) URL.
+    def origin
+      uri = URI.parse(issuer.to_s)
+      return nil unless uri.is_a?(URI::HTTP) && uri.host.present?
+
+      port = uri.port == uri.default_port ? "" : ":#{uri.port}"
+      "#{uri.scheme}://#{uri.host.downcase}#{port}"
+    rescue URI::InvalidURIError
+      nil
+    end
+
     def strategy_options
       {
         name: "openid_connect",

@@ -30,6 +30,8 @@ RSpec.configure do |config|
     driven_by :selenium, using: :headless_chrome, screen_size: [1400, 1400] do |options|
       options.add_argument("--disable-dev-shm-usage")
       options.add_argument("--no-sandbox")
+      # Lets spec/security/csp_browser_spec.rb read CSP violations.
+      options.add_option("goog:loggingPrefs", { browser: "ALL" })
       options.binary = ENV["CHROME_BIN"] if ENV["CHROME_BIN"].present?
     end
   end

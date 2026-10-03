@@ -21,6 +21,25 @@ RSpec.describe "OIDC request phase CSRF protection", type: :request do
     expect(response).to redirect_to("/auth/failure")
   end
 
+  it "refuses to start a login from a POST with a made-up authenticity token" do
+    get "/login"
+
+    post "/auth/openid_connect", params: { authenticity_token: Base64.strict_encode64(SecureRandom.bytes(64)) }
+
+    expect(response).to redirect_to("/auth/failure")
+  end
+
+  it "refuses to start a login with another session's authenticity token" do
+    other = open_session
+    other.get "/login"
+    token = Nokogiri::HTML(other.response.body).at_css("meta[name='csrf-token']")["content"]
+    get "/login"
+
+    post "/auth/openid_connect", params: { authenticity_token: token }
+
+    expect(response).to redirect_to("/auth/failure")
+  end
+
   it "starts a login from a POST carrying the session's authenticity token" do
     get "/login"
     token = Nokogiri::HTML(response.body).at_css("form[action='/auth/openid_connect'] input[name='authenticity_token']")["value"]

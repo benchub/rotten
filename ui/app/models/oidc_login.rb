@@ -21,7 +21,12 @@ class OidcLogin
   MAX_EMAIL_LENGTH = 320
   MAX_NAME_LENGTH = 256
   MAX_SUBJECT_LENGTH = 256
-  EMAIL_FORMAT = /\A[^@\s]+@[^@\s]+\z/
+  # One @, and no spaces, control characters (C0 and C1), or invisible format
+  # characters (Unicode Cf: bidi controls, zero-width space, soft hyphen, tag
+  # characters, ...) that make an address look like another. ZWNJ and ZWJ
+  # (U+200C, U+200D) are allowed: Persian and Indic addresses use them.
+  EMAIL_UNSAFE = "[:space:]\\p{Cc}[\\p{Cf}&&[^\u200C\u200D]]".freeze
+  EMAIL_FORMAT = /\A[^@#{EMAIL_UNSAFE}]+@[^@#{EMAIL_UNSAFE}]+\z/
 
   def initialize(config:, provider:)
     @config = config
@@ -151,13 +156,21 @@ class OidcLogin
     values.filter_map { |group| clean_string(group, MAX_GROUP_LENGTH, strip: false) }.uniq
   end
 
+  # A usable claim string: text that converts to valid UTF-8 (Postgres
+  # rejects anything else) with no control characters, and within max_length
+  # after any strip. Anything else is treated as absent.
   def clean_string(value, max_length, strip: true)
-    return nil unless value.is_a?(String) && value.valid_encoding? && !value.include?("\0")
+    return nil unless value.is_a?(String)
+
+    value = value.encode(Encoding::UTF_8)
+    return nil unless value.valid_encoding? && !value.include?("\0")
 
     value = value.strip if strip
-    return nil if value.empty? || value.length > max_length
+    return nil if value.empty? || value.length > max_length || value.match?(/\p{Cc}/)
 
     value
+  rescue EncodingError
+    nil
   end
 
   def fetch(hash, key)
