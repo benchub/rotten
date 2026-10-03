@@ -38,18 +38,12 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Done when:** Passes, or -39 has removed `reportSamples`.
 - **Needs:** -34. Found in review of -34.
 
-### 20261001-103222-38: Add the worker outbox.
-- **Do:** Add an `outbox` table in `internal/state`. Save the batch and the next snapshot in one transaction. A sender drains the outbox oldest first and deletes each batch on ack. Cap the outbox size, and when it's full, drop the oldest batches and count them.
-- **Crash gap:** Today the worker saves its snapshot right after starting the processEvent goroutines, without waiting for them. A crash after the save loses that window, and a crash between sending and the save counts it twice on restart. The outbox should close both gaps. Until then, document the risk in the `harvest` comment.
-- **Red test:**
-  - With the server down for three windows, all three windows arrive in order once it's back.
-  - Killing the worker between "saved" and "acked" causes no duplicates.
-  - When the cap is hit, the oldest batches get dropped and counted.
-- **Done when:** Passes.
-- **Needs:** -24, -37.
-
 ### 20261001-103222-39: Switch the worker over to the server.
 - **Do:** Remove the rotten DB connection, `identity`, and the stats goroutines from the worker. Move to a new config format (`ServerURL`, `PassKeyFile`, `ServerCAFile`, `StateDir`, `MaxSnapshotAge`), and update `conf`.
+- **Wiring from -38:**
+  - Build a `serverclient.Client`. Pass the same `*state.Store` as both `Config.State` and `Config.ServerOutbox`.
+  - Run a sender loop that calls `OutboxSender.Drain`. `Drain` returns on the first operational error, such as Unavailable, an auth error or a server-side ResourceExhausted. So the loop must back off with jitter and log loudly, especially on a persistent `Unauthenticated` or `PermissionDenied`, so it neither hot-loops nor fails silently.
+  - Expose the outbox depth and the dropped counters (`dropped_cap`, `dropped_rejected`) in logs.
 - **Red test:** End to end on the three-network layout (-105250-1). Restart the server mid-run, and check that the rows match the expected workload with nothing lost or duplicated.
 - **Done when:** Passes, and the worker binary has no rotten DB code.
 - **Needs:** -25, -34, -38, -105250-1.

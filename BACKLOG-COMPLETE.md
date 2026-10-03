@@ -511,3 +511,21 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Completed:** 2026-10-03, d129ed9.
   - **Shared helpers:** in `reports/partition_pruning_test.go`. They compute the daily partitions (cut at UTC midnight) that the range overlaps, and assert the plan touches all of them and no other child partition.
   - **Midnight coverage:** fixed ranges crossing midnight exercise the two-day case at any hour, with unit tests for the boundaries.
+
+### 20261001-103222-38: Add the worker outbox.
+- **Do:** Add an `outbox` table in `internal/state`. Save the batch and the next snapshot in one transaction. A sender drains the outbox oldest first and deletes each batch on ack. Cap the outbox size, and when it's full, drop the oldest batches and count them.
+- **Crash gap:** Today the worker saves its snapshot right after starting the processEvent goroutines, without waiting for them. A crash after the save loses that window, and a crash between sending and the save counts it twice on restart. The outbox should close both gaps. Until then, document the risk in the `harvest` comment.
+- **Red test:**
+  - With the server down for three windows, all three windows arrive in order once it's back.
+  - Killing the worker between "saved" and "acked" causes no duplicates.
+  - When the cap is hit, the oldest batches get dropped and counted.
+- **Done when:** Passes.
+- **Needs:** -24, -37.
+- **Completed:** 2026-10-03, 74f23e1.
+  - **Schema:** SQLite schema v2 adds `outbox` plus drop counters, and migrates v1→v2.
+  - **Atomic save:** `SaveSnapshotAndEnqueue` saves the snapshot and enqueues the batch in one transaction, and enforces the cap (288 by default, `state.Options.OutboxCap`) in that same transaction.
+  - **Payload:** a deterministically serialized proto, so resends are byte-identical.
+  - **Sender:** `OutboxSender.Drain` sends oldest first and deletes on ack. It stops on operational errors: Unavailable, Unauthenticated, PermissionDenied, server ResourceExhausted and transport errors. It drops and counts InvalidArgument, FailedPrecondition, AlreadyExists, and the client-side `HarvestTooLargeError`.
+  - **Crash test:** the store is reopened after a lost ack, and a server that dedupes on `batch_id` ends up with exactly one copy.
+  - **Wiring:** `Config.ServerOutbox` is a library hook, and the legacy direct DB path is unchanged. -39 wires it up and adds the backoff for the sender loop.
+  - **`fingerprint.Query`:** added so the batch can carry pg_query's normalized text.
