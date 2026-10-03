@@ -50,14 +50,15 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - Security headers and CSP.
   - Host header handling.
   - Fuzzing user provisioning with nasty claim values.
-  - SQL injection through report parameters.
   - Brakeman and bundler-audit, run as specs.
+
+  SQL injection through report parameters moved to -50, since the report pages don't exist yet.
 - **Red test:** Each spec is written to fail against a deliberately weakened config first, such as CSRF turned off.
 - **Done when:** Passes.
 - **Needs:** -105250-2, -105250-3.
 ### 20261001-103222-50: Build the report pages.
 - **Do:** Add a source picker (project, environment, cluster, role) and a time range. Run the `reports/*.sql` files with bound parameters, and render sortable tables. Set a statement timeout on report queries.
-- **Red test:** A system test on the fixture: pick a source and range, and see the expected rows for each report. A slow query shows a friendly timeout message.
+- **Red test:** A system test on the fixture: pick a source and range, and see the expected rows for each report. A slow query shows a friendly timeout message. Add a `spec/security/` spec that feeds SQL-injection payloads into every report parameter (moved from -105250-4).
 - **Done when:** Passes.
 - **Needs:** -43 through -46, -49.
 
