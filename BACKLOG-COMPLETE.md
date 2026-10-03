@@ -942,3 +942,18 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Tests:** 765 UI examples.
   - **Review:** one Opus round, approved. The one finding, a duplicated predicate, was fixed.
   - **Follow-up:** 20261003-160000-1.
+
+### 20261001-103222-51: Build the fingerprint detail page.
+- **Do:** Show the normalized SQL, a time series chart, the top contexts, and stats for each source.
+- **Red test:** A system test on the fixture fingerprint.
+- **Done when:** Passes.
+- **Needs:** -47, -50.
+- **Completed:** 2026-10-03, 582c7a5.
+  - **Page:** `/fingerprints/:id` shows the escaped normalized SQL, two server-rendered SVG charts (calls and total ms, with `data-time` and `data-value` on each point), the top 10 contexts, and per-source stats.
+  - **SQL:** new `reports/fingerprint_contexts.sql` and `reports/fingerprint_sources.sql`, with Go tests.
+  - **Chart order:** the chart is always plotted in time order, and the page drops `sort` and `dir`.
+  - **Ids:** strictly validated; a bad id gets the controller's 404, and routing specs prove the controller is reached.
+  - **Tests:** 808 UI examples.
+  - **Review:** one Opus round, approved; the two low-severity findings were fixed.
+  - **Git identity:** this commit used `-c user.name/user.email` matching the earlier commits, because the global git identity was unreadable this session.
+  - **Follow-ups:** 20261003-170000-1 and 20261003-170000-2.

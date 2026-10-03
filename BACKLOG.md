@@ -42,12 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-51: Build the fingerprint detail page.
-- **Do:** Show the normalized SQL, a time series chart, the top contexts, and stats for each source.
-- **Red test:** A system test on the fixture fingerprint.
-- **Done when:** Passes.
-- **Needs:** -47, -50.
-
 ### 20261003-080454-1: Add hover tooltips and zoom to the SVG charts.
 - **Do:** Add a small Stimulus controller, with no chart library, to the server-rendered SVG time series from -51.
   - **Hover:** a vertical guide and a tooltip with the timestamp and value for the nearest point. The values come from `data-` attributes on the points, so there's no extra request.
@@ -163,5 +157,17 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 ### 20261003-160000-1: Narrow the report source picker as the user chooses.
 - **Do:** Project, environment, cluster and role are independent dropdowns, so the user can pick a combination that doesn't exist. They only find out when they run the report. Add a small Stimulus controller, or a server-rendered cascade, that narrows each dropdown to existing combinations. Keep it CSP-compliant.
 - **Red test:** A system spec where picking a project limits the environment options to that project's environments.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261003-170000-1: Run the fingerprint page's queries under one timeout.
+- **Do:** `/fingerprints/:id` runs three report queries: the time series, the contexts and the sources. Each runs in its own read-only transaction with its own `statement_timeout`, so the worst case is about 3 × `ROTTEN_UI_REPORT_TIMEOUT`. Run them in one transaction with a single deadline, or set a page-level budget.
+- **Red test:** With a tiny timeout and a slow query, the page fails within about one timeout, not three.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261003-170000-2: Show an all-sources row in the fingerprint stats table.
+- **Do:** The stats table covers only the selected project, environment, cluster and role. Add an "all sources" row, using the lifetime `fingerprint_stats` data or an aggregate across all sources, so operators see the fingerprint's overall footprint.
+- **Red test:** A system spec on the fixture shows the all-sources totals.
 - **Done when:** Passes.
 - **Needs:** none.
