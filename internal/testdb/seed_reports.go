@@ -100,9 +100,10 @@ const (
 //   - users on canvas cluster 13 has seven distinct recent contexts across
 //     both roles, so a top-five list drops two. RecentTopContexts computes
 //     the expected lists from this table.
-//   - Replica utilization (-46) measures event calls, like the legacy query,
-//     not context counts. Each job event has one context whose c equals the
-//     event's calls, so both measures agree. On canvas 13: "SendEmail" runs
+//   - Replica utilization (-46) attributes calls by event_context.c and splits
+//     event time across all contexts by c / sum(c) for that event. Each job
+//     event has one context whose c equals the event's calls. On canvas 13:
+//     "SendEmail" runs
 //     only on the primary (30 calls), "Reindex" splits 30:10 primary:replica
 //     (75% and 25%), and "ReplicaReport" runs only on the replica (15 calls).
 //   - controller "grades"#"show" runs only on replicas.
