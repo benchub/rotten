@@ -1,7 +1,9 @@
 # Server-drawn SVG charts for the fingerprint page. Everything goes through
 # tag helpers, so text is escaped, and styling is by class (see reports.css),
 # so the strict CSP needs no inline styles. Each point carries its bucket
-# start and value in data attributes for later hover tooltips.
+# start, end and value in data attributes, which the chart Stimulus
+# controller (app/javascript/controllers/chart_controller.js) reads for its
+# hover and focus tooltip and its drag-to-zoom.
 module FingerprintsHelper
   CHART_WIDTH = 720
   CHART_HEIGHT = 200
@@ -11,10 +13,11 @@ module FingerprintsHelper
   CHART_BOTTOM = 28
   CHART_POINT_RADIUS = 2.5
 
-  # rows are time series rows with a "bucket_start" Time and a numeric
-  # value under value_key. They're drawn in time order whatever order they
-  # come in.
-  def timeseries_chart(rows, value_key:, label:)
+  # rows are time series rows with "bucket_start" and "bucket_end" Times and
+  # a numeric value under value_key. They're drawn in time order whatever
+  # order they come in. zoom_url is the page to zoom to; the controller adds
+  # range, from and to.
+  def timeseries_chart(rows, value_key:, label:, zoom_url: nil)
     rows = rows.sort_by { |row| row["bucket_start"] }
     values = rows.map { |row| chart_value(row[value_key]) }
     max = values.max || 0.0
@@ -28,13 +31,29 @@ module FingerprintsHelper
                                    "text-anchor": "middle", class: "chart-empty")
     end
     parts << tag.polyline(points: points.map { |x, y, _| "#{x},#{y}" }.join(" "), class: "chart-line") if points.size > 1
-    points.each do |x, y, row|
-      parts << tag.circle(cx: x, cy: y, r: CHART_POINT_RADIUS, class: "chart-point",
-                          data: { time: row["bucket_start"].utc.iso8601, value: row[value_key].to_s })
+    # A roving tabindex: the chart is one Tab stop, and the chart controller
+    # moves focus between points with the arrow keys, Home and End.
+    points.each_with_index do |(x, y, row), i|
+      parts << tag.circle(cx: x, cy: y, r: CHART_POINT_RADIUS, class: "chart-point", tabindex: i.zero? ? 0 : -1,
+                          "aria-label": chart_point_label(label, row, row[value_key]),
+                          data: { time: row["bucket_start"].utc.iso8601, end: chart_end(row).iso8601,
+                                  value: row[value_key].to_s, chart_target: "point" })
     end
+    parts << tag.line(x1: CHART_LEFT, y1: CHART_TOP, x2: CHART_LEFT, y2: chart_baseline, class: "chart-guide chart-hidden",
+                      data: { chart_target: "guide" })
+    parts << tag.rect(x: CHART_LEFT, y: CHART_TOP, width: 0, height: chart_plot_height, class: "chart-selection chart-hidden",
+                      data: { chart_target: "selection" })
 
-    tag.svg(safe_join(parts), class: "timeseries-chart", role: "img", viewBox: "0 0 #{CHART_WIDTH} #{CHART_HEIGHT}",
-                              data: { series: value_key })
+    # A group, not an img, so the focusable points inside keep their labels.
+    svg = tag.svg(safe_join(parts), class: "timeseries-chart", role: "group", viewBox: "0 0 #{CHART_WIDTH} #{CHART_HEIGHT}",
+                                    data: { series: value_key, chart_target: "svg" })
+    tooltip = tag.div("", class: "chart-tooltip chart-hidden", "aria-hidden": "true", data: { chart_target: "tooltip" })
+    tag.div(svg + tooltip, class: "chart", data: {
+              controller: "chart", chart_label_value: label, chart_zoom_url_value: zoom_url,
+              action: "pointerdown->chart#start pointermove->chart#move pointerup->chart#finish " \
+                      "pointercancel->chart#cancel pointerleave->chart#leave focusin->chart#focus focusout->chart#blur " \
+                      "keydown->chart#key"
+            })
   end
 
   private
@@ -87,6 +106,18 @@ module FingerprintsHelper
   end
 
   def chart_time(row) = row["bucket_start"].utc.strftime("%Y-%m-%d %H:%M")
+
+  # data-time is the bucket start rounded down to the second, so data-end is
+  # that plus the bucket's width, rounded up for a short last bucket. A zoom
+  # from one point's data-time to another's data-end then spans whole buckets
+  # and draws no sliver of an extra one.
+  def chart_end(row)
+    start = row["bucket_start"].utc
+    (start.floor + (row["bucket_end"] - start).round(6)).ceil
+  end
+
+  # The same text the chart controller shows in its tooltip.
+  def chart_point_label(label, row, value) = "#{label}: #{chart_number(chart_value(value))} at #{chart_time(row)} UTC"
 
   def chart_number(value) = number_with_precision(value, precision: 2, strip_insignificant_zeros: true, delimiter: ",")
 end

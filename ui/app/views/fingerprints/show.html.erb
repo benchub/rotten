@@ -17,10 +17,14 @@
   <%= render "reports/messages", query: @query, timeout_seconds: @timeout_seconds %>
 
   <% if @series %>
+    <p class="report-hint">
+      Hover over or tab to a point for its value. Drag across a chart to zoom in.
+      <% if @reset_zoom_params %><%= link_to "Reset zoom", fingerprint_path(@fingerprint.id, @reset_zoom_params), class: "chart-reset" %><% end %>
+    </p>
     <h2>Calls</h2>
-    <%= timeseries_chart(@series, value_key: "calls", label: "Calls") %>
+    <%= timeseries_chart(@series, value_key: "calls", label: "Calls", zoom_url: @zoom_url) %>
     <h2>Total ms</h2>
-    <%= timeseries_chart(@series, value_key: "total_ms", label: "Total ms") %>
+    <%= timeseries_chart(@series, value_key: "total_ms", label: "Total ms", zoom_url: @zoom_url) %>
     <p><%= link_to "Time series as a table", report_path("fingerprint_timeseries", @query.link_params) %></p>
 
     <h2>Top contexts</h2>

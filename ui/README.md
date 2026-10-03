@@ -220,9 +220,36 @@ Each fingerprint has a page at `/fingerprints/<id>`. It shows the normalized
 SQL, and after you pick a source and time range: charts of calls and total
 time for each bucket, the top 10 contexts (job tag, or controller and
 action), and stats for each logical source, including the per-call mean time
-history kept in `fingerprint_stats`. The charts are SVG drawn on the server
-with no JavaScript; each point carries `data-time` and `data-value`. An
-unknown or malformed ID gets a 404. The page runs
+history kept in `fingerprint_stats`. The charts are SVG drawn on the server;
+each point carries `data-time`, `data-end` and `data-value`. A small
+Stimulus controller, `app/javascript/controllers/chart_controller.js`, with
+no chart library, adds to them:
+
+- **Hover:** a vertical guide and a tooltip with the time and value of the
+  nearest point, read from its data attributes, so there's no extra request.
+- **Keyboard:** each chart is one Tab stop. Tab lands on the first point,
+  or the one last focused, and the arrow keys, Home and End move between
+  points. Each point has an `aria-label` with the tooltip's text, and
+  focusing one shows its tooltip.
+- **Zoom:** drag across a chart to load the page again with a **Custom**
+  range from the start of the point nearest the left of the drag to the end
+  of the point nearest the right, so the range stays inside the data and
+  passes the usual range checks. A drag shorter than 4 pixels is a click and
+  doesn't zoom. The range goes in the URL, so it can be shared and the back
+  button works. The bucket stays as picked; with **Auto** it's re-picked for
+  the narrower range. As with any range, only events whose observed window
+  fits inside it count, so a bucket at the edge can show less than it did
+  zoomed out.
+- **Reset zoom:** the first zoom also puts the range from before it in
+  `reset_range`, `reset_from` and `reset_to`, and later zooms keep it. The
+  **Reset zoom** link goes back to that range, with the source, role and
+  bucket as they are now. Those parameters get the same validation as the
+  page's own; if they fail it, the page acts as if it weren't zoomed.
+  Picking a range with the form starts over.
+
+The controller only toggles classes and sets attributes and CSSOM
+properties, so it works under the strict CSP with no inline script or style.
+An unknown or malformed ID gets a 404. The page runs
 `fingerprint_timeseries.sql`, `fingerprint_contexts.sql` and
 `fingerprint_sources.sql`; the last two aren't listed under `/reports`. Each
 query has its own statement timeout.
