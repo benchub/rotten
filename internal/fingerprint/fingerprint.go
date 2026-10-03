@@ -141,7 +141,11 @@ func (s *walker) Struct(v reflect.Value) error {
 	if v.CanAddr() {
 		switch n := v.Addr().Interface().(type) {
 		case *pg_query.A_Expr:
-			rewriteArrayToIn(n)
+			wasIn := n.Kind == pg_query.A_Expr_Kind_AEXPR_IN
+			preserveArrayCasts := rewriteArrayToIn(n)
+			if wasIn || preserveArrayCasts {
+				preserveSingleInElementCasts(n)
+			}
 		case *pg_query.ColumnRef:
 			if !s.opts.KeepSchemas {
 				n.Fields = collapseColumnRefFields(n.Fields)
@@ -206,22 +210,29 @@ func (s *walker) Struct(v reflect.Value) error {
 // on more than one row.
 //
 // A cast array, x = ANY(ARRAY[a, b]::T[]), becomes x IN (a::T, b::T).
-// For a base type T, Postgres resolves ARRAY[...]::T[] by coercing each
-// element to T, so this is the same query, and pg_stat_statements on 16 and
-// 18 gives the two forms one queryid. A domain array (::posint[]) isn't
-// exact: Postgres coerces it as a whole, not per element. Merging it anyway
-// is an accepted over-merge, like IN (1::bigint) below. The cast can change the element type and the operator
-// (::bigint[] on an int column picks int4 = int8), and Postgres keeps that
-// apart from the uncast IN list. The fingerprint doesn't: it already ignores
-// element casts in IN lists, so IN (1::bigint) and IN (1) share one. That's
-// the accepted cost, and the cast array now follows the IN list's rule.
+// Explicit element casts matter to PostgreSQL queryids because they can change
+// the selected operator, so preserveSingleInElementCasts makes a single cast
+// visible to pg_query's fingerprinting instead of letting IN (1::bigint)
+// collapse into IN (1). The same rule is applied to array element casts after
+// this rewrite, so cast ANY arrays group with the corresponding cast IN list
+// instead of the uncast list. The exception is ::int[] array casts, which are
+// the parser's resolved form for plain integer lists on an int column, and
+// individual ::int-family element casts, which PostgreSQL omits as no-ops in
+// common int-column cases. Those keep the existing uncast IN-list grouping.
+//
+// PostgreSQL 18's squashed text for multi-element IN lists can drop element
+// casts entirely, recording IN ($1 /*, ... */) for both plain lists and some
+// casted lists. When we only receive that text, multi-element ::bigint lists
+// therefore merge with plain lists even though PG14-PG17 texts (and the
+// original unsquashed SQL) stay split. That is an accepted divergence caused
+// by pg_stat_statements text lossy squashing.
 //
 // It leaves alone: other operators (< ANY, = ALL, <> ANY), schema-qualified
 // OPERATOR(...) syntax, a non-literal array (= ANY($1) already fingerprints
 // like = $1, and '{1,2}'::int[] is a constant), a cast to anything but a
 // one-dimensional array type, an empty array (IN () isn't valid SQL), and
 // multidimensional arrays (IN ((1, 2)) would mean a row comparison).
-func rewriteArrayToIn(e *pg_query.A_Expr) {
+func rewriteArrayToIn(e *pg_query.A_Expr) bool {
 	var op string
 	switch {
 	case e.Kind == pg_query.A_Expr_Kind_AEXPR_OP_ANY && isOp(e.Name, "="):
@@ -229,22 +240,22 @@ func rewriteArrayToIn(e *pg_query.A_Expr) {
 	case e.Kind == pg_query.A_Expr_Kind_AEXPR_OP_ALL && isOp(e.Name, "<>"):
 		op = "<>"
 	default:
-		return
+		return false
 	}
 	arr := e.Rexpr.GetAArrayExpr()
 	var elemType *pg_query.TypeName
 	if tc := e.Rexpr.GetTypeCast(); tc != nil {
 		if elemType = arrayElemType(tc.TypeName); elemType == nil {
-			return
+			return false
 		}
 		arr = tc.Arg.GetAArrayExpr()
 	}
 	if arr == nil || len(arr.Elements) == 0 {
-		return
+		return false
 	}
 	for _, el := range arr.Elements {
 		if el.GetAArrayExpr() != nil {
-			return
+			return false
 		}
 	}
 	elems := arr.Elements
@@ -261,6 +272,32 @@ func rewriteArrayToIn(e *pg_query.A_Expr) {
 	e.Kind = pg_query.A_Expr_Kind_AEXPR_IN
 	e.Name = []*pg_query.Node{pg_query.MakeStrNode(op)}
 	e.Rexpr = pg_query.MakeListNode(elems)
+	return elemType == nil || !isIntTypeName(elemType)
+}
+
+// preserveSingleInElementCasts turns elem::T into elem::T::T inside IN lists.
+// pg_query's fingerprint ignores a single cast on an IN-list element but keeps
+// nested casts, and PostgreSQL queryids split the single-cast form from the
+// uncast form.
+func preserveSingleInElementCasts(e *pg_query.A_Expr) {
+	if e.Kind != pg_query.A_Expr_Kind_AEXPR_IN {
+		return
+	}
+	list := e.Rexpr.GetList()
+	if list == nil {
+		return
+	}
+	for i, el := range list.Items {
+		tc := el.GetTypeCast()
+		if tc == nil || tc.Arg.GetTypeCast() != nil || isIntTypeName(tc.TypeName) {
+			continue
+		}
+		list.Items[i] = &pg_query.Node{Node: &pg_query.Node_TypeCast{TypeCast: &pg_query.TypeCast{
+			Arg:      el,
+			TypeName: copyTypeName(tc.TypeName),
+			Location: -1,
+		}}}
+	}
 }
 
 // arrayElemType returns the element type of a one-dimensional array cast,
@@ -288,6 +325,18 @@ func copyTypeName(tn *pg_query.TypeName) *pg_query.TypeName {
 		Typemod:     tn.Typemod,
 		ArrayBounds: tn.ArrayBounds,
 		Location:    -1,
+	}
+}
+
+func isIntTypeName(tn *pg_query.TypeName) bool {
+	if tn == nil || len(tn.Names) == 0 {
+		return false
+	}
+	switch stringNodeValue(tn.Names[len(tn.Names)-1]) {
+	case "int4", "integer", "int":
+		return true
+	default:
+		return false
 	}
 }
 

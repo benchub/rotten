@@ -168,6 +168,16 @@ SELECT * FROM users WHERE id IN ($1 /*, ... */)
 SELECT * FROM users WHERE id IN ($1)
 -- case: in_list_f
 SELECT * FROM users WHERE id IN ($1,$2,$3)
+-- Explicit element casts change Postgres queryid grouping, even though
+-- pg_query's raw fingerprint ignores a single cast in an IN list.
+-- case: in_list_cast_bigint
+SELECT * FROM users WHERE id IN (1::bigint)
+-- case: in_list_cast_bigint_many
+SELECT * FROM users WHERE id IN (1::bigint, 2::bigint, 3::bigint)
+-- case: in_list_cast_mixed
+SELECT * FROM users WHERE id IN (1, 2::bigint)
+-- case: in_list_nested_cast
+SELECT * FROM users WHERE id IN (1::bigint::int)
 -- = ANY(ARRAY[...]) shares a Postgres 18 queryid with IN (...), so it groups too.
 -- case: in_list_any_a
 SELECT * FROM users WHERE id = ANY(ARRAY[1])
@@ -181,18 +191,21 @@ SELECT * FROM users WHERE id = ANY(ARRAY[$1 /*, ... */])
 SELECT * FROM users WHERE id = ANY(ARRAY[$1, $2, $3])
 -- case: in_list_any_param
 SELECT * FROM users WHERE id = ANY($1)
--- A cast array is the IN list with the cast pushed onto each element, which
--- is how Postgres resolves it, so it groups too, whatever the cast type.
+-- A cast array is the IN list with the cast pushed onto each element.
+-- Matching ::int[] casts keep the existing uncast grouping; wider casts split.
 -- case: in_list_any_cast_a
 SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3]::int[])
 -- case: any_array_cast
 SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3]::bigint[])
 -- case: in_list_any_cast_b
 SELECT * FROM users WHERE id = ANY(ARRAY[$1 /*, ... */]::bigint[])
--- A domain array is coerced as a whole, not per element, so this merge is
--- an accepted over-merge.
+-- A domain array is coerced as a whole, not per element, but the syntactic
+-- fingerprint still preserves the explicit cast instead of merging it into
+-- the uncast IN list.
 -- case: in_list_any_cast_domain
 SELECT * FROM users WHERE id = ANY(ARRAY[1, 2, 3]::posint[])
+-- case: any_array_nested_element_cast
+SELECT * FROM users WHERE id = ANY(ARRAY[1::bigint]::int[])
 
 -- NOT IN (...) and <> ALL(ARRAY[...]) group with each other (and with <> 1).
 -- case: not_in_list_a

@@ -31,18 +31,13 @@ var crossTables = []string{"x_in_lit", "x_in_param", "x_in_cast_param", "x_any_l
 // The fingerprint is taken with the table name swapped for its alias, since
 // table names are part of the fingerprint.
 //
-// The cast arrays group with the IN list too. With a matching cast (::int[]
-// on an int column), Postgres gives them the IN list's queryid. With a
-// widening cast (::bigint[]), Postgres gives them the queryid of
-// IN (1::bigint, 2::bigint), and the fingerprint already ignores element
-// casts in IN lists, so that's the IN list's fingerprint as well.
+// Casted elements stay separate from uncast IN lists when PostgreSQL keeps
+// them separate. No-op casts that PostgreSQL omits from the query tree, such
+// as ::int on an int column, keep grouping with the uncast list.
 var crossAlias = map[string]string{
-	"x_any_lit":           "x_in_lit",
-	"x_any_param":         "x_in_cast_param",
-	"x_any_cast_lit":      "x_in_lit",
-	"x_any_cast_wide_lit": "x_in_lit",
-	"x_any_cast_param":    "x_in_cast_param",
-	"x_all_ne_lit":        "x_not_in_lit",
+	"x_any_lit":    "x_in_lit",
+	"x_any_param":  "x_in_cast_param",
+	"x_all_ne_lit": "x_not_in_lit",
 }
 
 // runCrossWorkload runs each logical query with several list lengths and
@@ -197,6 +192,110 @@ func crossQueryIDs(t *testing.T, version int, tables ...string) map[string]map[i
 		}
 	}
 	return out
+}
+
+func oneQueryID(t *testing.T, conn *pgx.Conn, table, query string, args ...any) (int64, string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, "select pg_stat_statements_reset()"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, query, args...); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	rows, err := conn.Query(ctx, "select queryid, query from pg_stat_statements where query like $1 and lower(query) not like 'create%' order by calls desc, query", "%"+table+"%")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []struct {
+		qid   int64
+		query string
+	}
+	for rows.Next() {
+		var r struct {
+			qid   int64
+			query string
+		}
+		if err := rows.Scan(&r.qid, &r.query); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("%s: got %d pg_stat_statements rows, want 1: %v", query, len(got), got)
+	}
+	return got[0].qid, got[0].query
+}
+
+func TestPostgresInListElementCastQueryIDs(t *testing.T) {
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
+
+	type caseDef struct {
+		name string
+		sql  string
+	}
+	cases := []caseDef{
+		{"plain_one", "select * from x_cast_id where id in (1)"},
+		{"plain_many", "select * from x_cast_id where id in (1, 2, 3)"},
+		{"int_cast", "select * from x_cast_id where id in (1::int4)"},
+		{"int_cast_many", "select * from x_cast_id where id in (1::int, 2::int, 3::int)"},
+		{"single_cast", "select * from x_cast_id where id in (1::bigint)"},
+		{"single_cast_many", "select * from x_cast_id where id in (1::bigint, 2::bigint, 3::bigint)"},
+		{"nested_cast", "select * from x_cast_id where id in (1::bigint::int)"},
+		{"mixed_cast", "select * from x_cast_id where id in (1, 2::bigint)"},
+		{"any_array_nested_cast", "select * from x_cast_id where id = any(array[1::bigint]::int[])"},
+	}
+	for _, v := range []int{14, 15, 16, 17, 18} {
+		db := testdb.StartObserved(t, v)
+		conn := db.Connect(t)
+		ctx := context.Background()
+		if _, err := conn.Exec(ctx, "create table x_cast_id (id int)"); err != nil {
+			t.Fatal(err)
+		}
+		qids := map[string]int64{}
+		texts := map[string]string{}
+		for _, c := range cases {
+			qid, text := oneQueryID(t, conn, "x_cast_id", c.sql)
+			qids[c.name] = qid
+			texts[c.name] = text
+		}
+		t.Logf("pg%d IN cast queryids: %v", v, qids)
+		t.Logf("pg%d IN cast texts: %v", v, texts)
+
+		if qids["int_cast"] != qids["plain_one"] {
+			t.Errorf("pg%d split no-op single int cast from plain IN-list: int cast %d, plain %d", v, qids["int_cast"], qids["plain_one"])
+		}
+		if qids["int_cast_many"] != qids["plain_many"] {
+			t.Errorf("pg%d split no-op multi int casts from plain IN-list: int casts %d, plain %d", v, qids["int_cast_many"], qids["plain_many"])
+		}
+		for _, name := range []string{"single_cast", "single_cast_many", "nested_cast", "mixed_cast", "any_array_nested_cast"} {
+			if qids[name] == qids["plain_one"] {
+				t.Errorf("pg%d merged %s with plain IN-list as queryid %d", v, name, qids[name])
+			}
+		}
+		if v == 18 {
+			if qids["single_cast_many"] != qids["mixed_cast"] {
+				t.Errorf("pg18 split squashed mixed and all-cast IN lists: all-cast %d, mixed %d", qids["single_cast_many"], qids["mixed_cast"])
+			}
+		} else if qids["single_cast_many"] == qids["mixed_cast"] {
+			t.Errorf("pg%d merged mixed and all-cast IN lists as queryid %d", v, qids["mixed_cast"])
+		}
+		for _, pair := range [][2]string{
+			{"plain_one", "plain_many"},
+			{"single_cast", "single_cast_many"},
+			{"single_cast", "nested_cast"},
+			{"nested_cast", "any_array_nested_cast"},
+		} {
+			if qids[pair[0]] == qids[pair[1]] {
+				t.Errorf("pg%d merged %s and %s as queryid %d", v, pair[0], pair[1], qids[pair[0]])
+			}
+		}
+	}
 }
 
 func TestPostgresNotInSubqueryQueryIDs(t *testing.T) {

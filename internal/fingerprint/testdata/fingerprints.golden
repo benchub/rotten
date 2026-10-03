@@ -79,6 +79,10 @@ in_list_c	142a5dbdb9d2f157
 in_list_d	142a5dbdb9d2f157
 in_list_e	142a5dbdb9d2f157
 in_list_f	142a5dbdb9d2f157
+in_list_cast_bigint	f4b1ea47723ca4f8
+in_list_cast_bigint_many	f4b1ea47723ca4f8
+in_list_cast_mixed	f4b1ea47723ca4f8
+in_list_nested_cast	e7ce0b30e0961bc1
 in_list_any_a	142a5dbdb9d2f157
 in_list_any_b	142a5dbdb9d2f157
 in_list_any_c	142a5dbdb9d2f157
@@ -86,9 +90,10 @@ in_list_any_d	142a5dbdb9d2f157
 in_list_any_e	142a5dbdb9d2f157
 in_list_any_param	142a5dbdb9d2f157
 in_list_any_cast_a	142a5dbdb9d2f157
-any_array_cast	142a5dbdb9d2f157
-in_list_any_cast_b	142a5dbdb9d2f157
-in_list_any_cast_domain	142a5dbdb9d2f157
+any_array_cast	f4b1ea47723ca4f8
+in_list_any_cast_b	f4b1ea47723ca4f8
+in_list_any_cast_domain	6e98f57c70c3c4d5
+any_array_nested_element_cast	e7ce0b30e0961bc1
 not_in_list_a	fd47940b888d69fe
 not_in_list_b	fd47940b888d69fe
 not_in_list_c	fd47940b888d69fe
