@@ -516,7 +516,7 @@ func (s *walker) StructField(f reflect.StructField, v reflect.Value) error {
 // Normalized takes a query, normalizes some elements to keep the "same" query from having different
 // fingerprints, and returns a short fingerprint of the query as determined by postgres'
 // fingerprint logic.
-// e.g. "SELECT 1" -> "02a281c251c3a43d2fe7457dff01f76c5cc523f8c8"
+// e.g. "SELECT 1" -> "50fde20626009aba"
 func Normalized(query string, opts Options) (fingerprint string, err error) {
 	/* This logic is a noble cause but I don't think it's robust enough for prime time
 	    modified_query := inRE.ReplaceAllString(

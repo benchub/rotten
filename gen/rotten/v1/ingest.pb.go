@@ -340,8 +340,8 @@ type FingerprintAggregate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The hex string from fingerprint.Normalized (pg_query's fingerprint of
 	// the munged, deparsed query), for example
-	// "02a281c251c3a43d2fe7457dff01f76c5cc523f8c8". It's a string, not an
-	// integer, so the format can change without a wire change.
+	// "50fde20626009aba". It's a string, not an integer, so the format can
+	// change without a wire change.
 	Fingerprint string `protobuf:"bytes,1,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
 	// pg_query.Normalize output of one representative query text for this
 	// fingerprint. The server stores it only when it first inserts the

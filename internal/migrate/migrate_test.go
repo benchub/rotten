@@ -85,6 +85,31 @@ func TestFingerprintStatsLastHoldsBigint(t *testing.T) {
 	}
 }
 
+func TestFingerprintColumnCommentsDescribeStoredValues(t *testing.T) {
+	db := testdb.StartRotten(t)
+	conn := db.Connect(t)
+	ctx := context.Background()
+
+	want := map[string]string{
+		"fingerprint": "Hex string from fingerprint.Normalized, matching proto.rotten.v1.FingerprintAggregate.fingerprint.",
+		"normalized":  "pg_query.Normalize output of one representative query text for this fingerprint, stored only on first insert.",
+	}
+	for column, comment := range want {
+		var got string
+		if err := conn.QueryRow(ctx, `
+			select col_description('rotten.fingerprints'::regclass, a.attnum)
+			from pg_attribute a
+			where a.attrelid = 'rotten.fingerprints'::regclass
+			  and a.attname = $1
+			  and not a.attisdropped`, column).Scan(&got); err != nil {
+			t.Fatalf("%s comment: %v", column, err)
+		}
+		if got != comment {
+			t.Errorf("%s comment = %q, want %q", column, got, comment)
+		}
+	}
+}
+
 func TestEventContextCountIsBigintEverywhere(t *testing.T) {
 	db := testdb.StartRotten(t)
 	conn := db.Connect(t)
