@@ -48,12 +48,13 @@ func (c *clock) Now() time.Time      { c.mu.Lock(); defer c.mu.Unlock(); return 
 func (c *clock) Add(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unlock() }
 
 type fixture struct {
-	db     *testdb.DB
-	owner  *pgxpool.Pool
-	clk    *clock
-	logs   *bytes.Buffer
-	stub   *stub
-	client rottenv1connect.IngestServiceClient
+	db      *testdb.DB
+	owner   *pgxpool.Pool
+	clk     *clock
+	logs    *bytes.Buffer
+	stub    *stub
+	touches *touchStore
+	client  rottenv1connect.IngestServiceClient
 }
 
 type syncBuf struct {
@@ -62,6 +63,60 @@ type syncBuf struct {
 }
 
 func (w *syncBuf) Write(p []byte) (int, error) { w.mu.Lock(); defer w.mu.Unlock(); return w.b.Write(p) }
+
+type touchCall struct {
+	id int64
+	at time.Time
+}
+
+type touchStore struct {
+	inner auth.Store
+	mu    sync.Mutex
+	calls []touchCall
+	err   error
+}
+
+func (s *touchStore) Lookup(ctx context.Context, id int64) (auth.Row, bool, error) {
+	return s.inner.Lookup(ctx, id)
+}
+
+func (s *touchStore) Preload(ctx context.Context) ([]auth.Row, error) {
+	return s.inner.Preload(ctx)
+}
+
+func (s *touchStore) Touch(ctx context.Context, id int64, at time.Time) error {
+	s.mu.Lock()
+	err := s.err
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := s.inner.Touch(ctx, id, at); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.calls = append(s.calls, touchCall{id: id, at: at})
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *touchStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.calls)
+}
+
+func (s *touchStore) last() touchCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[len(s.calls)-1]
+}
+
+func (s *touchStore) failTouch(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
 
 func setup(t *testing.T) *fixture {
 	t.Helper()
@@ -79,8 +134,9 @@ func setup(t *testing.T) *fixture {
 	t.Cleanup(owner.Close)
 
 	f := &fixture{db: db, owner: owner, clk: &clock{t: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}, logs: &bytes.Buffer{}, stub: &stub{}}
+	f.touches = &touchStore{inner: auth.NewPGStore(ingest)}
 	logger := slog.New(slog.NewTextHandler(&syncBuf{b: f.logs}, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	a := auth.New(auth.NewPGStore(ingest), auth.Options{TTL: 30 * time.Second, Now: f.clk.Now, Logger: logger, FailedAuthBurst: 10000, GlobalFailedAuthBurst: 10000})
+	a := auth.New(f.touches, auth.Options{TTL: 30 * time.Second, TouchEvery: time.Minute, Now: f.clk.Now, Logger: logger, FailedAuthBurst: 10000, GlobalFailedAuthBurst: 10000})
 	path, h := rottenv1connect.NewIngestServiceHandler(f.stub, connect.WithInterceptors(a.Interceptor()))
 	mux := http.NewServeMux()
 	mux.Handle(path, h)
@@ -181,6 +237,11 @@ func TestRevokedMidConnectionRejectedWithinTTL(t *testing.T) {
 
 func TestLastUsedThrottled(t *testing.T) {
 	f := setup(t)
+	defer func() {
+		if t.Failed() {
+			t.Log(f.logs.String())
+		}
+	}()
 	ctx := context.Background()
 	k, err := auth.CreateKey(ctx, f.owner, "w1", "", "test")
 	if err != nil {
@@ -196,29 +257,75 @@ func TestLastUsedThrottled(t *testing.T) {
 	if lastUsed() != nil {
 		t.Fatal("new key already has last_used_at")
 	}
+	firstTouchAt := f.clk.Now()
 	if err := f.call("Bearer " + k.Token); err != nil {
 		t.Fatal(err)
+	}
+	if got := f.touches.count(); got != 1 {
+		t.Fatalf("touch count after first call = %d, want 1", got)
+	}
+	if got := f.touches.last(); got.id != k.ID || !got.at.Equal(firstTouchAt) {
+		t.Fatalf("first touch = %+v, want id %d at %v", got, k.ID, firstTouchAt)
 	}
 	first := lastUsed()
 	if first == nil {
 		t.Fatal("last_used_at not set after a call")
 	}
-	if _, err := f.owner.Exec(ctx, "update rotten.api_keys set last_used_at = '2000-01-01 12:00:00+00' where name = 'w1'"); err != nil {
+	if !first.Equal(firstTouchAt) {
+		t.Fatalf("last_used_at after first call = %v, want %v", first, firstTouchAt)
+	}
+	sentinel := time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := f.owner.Exec(ctx, "update rotten.api_keys set last_used_at = $1 where name = 'w1'", sentinel); err != nil {
 		t.Fatal(err)
 	}
 	f.clk.Add(40 * time.Second) // past the cache TTL, inside the touch interval
 	if err := f.call("Bearer " + k.Token); err != nil {
 		t.Fatal(err)
 	}
-	if got := lastUsed(); got.Year() != 2000 {
-		t.Errorf("last_used_at updated again within a minute: %v", got)
+	if got := f.touches.count(); got != 1 {
+		t.Fatalf("touch count inside a minute = %d, want 1", got)
+	}
+	if got := lastUsed(); got == nil || !got.Equal(sentinel) {
+		t.Errorf("last_used_at inside a minute = %v, want %v", got, sentinel)
 	}
 	f.clk.Add(30 * time.Second)
+	secondTouchAt := f.clk.Now()
 	if err := f.call("Bearer " + k.Token); err != nil {
 		t.Fatal(err)
 	}
-	if got := lastUsed(); got.Year() == 2000 {
-		t.Error("last_used_at not updated after a minute")
+	if got := f.touches.count(); got != 2 {
+		t.Fatalf("touch count after a minute = %d, want 2", got)
+	}
+	if got := f.touches.last(); got.id != k.ID || !got.at.Equal(secondTouchAt) {
+		t.Fatalf("second touch = %+v, want id %d at %v", got, k.ID, secondTouchAt)
+	}
+	if got := lastUsed(); got == nil || !got.Equal(secondTouchAt) {
+		t.Errorf("last_used_at after a minute = %v, want %v", got, secondTouchAt)
+	}
+}
+
+func TestLastUsedTouchFailureLogged(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	k, err := auth.CreateKey(ctx, f.owner, "w1", "", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.touches.failTouch(errors.New("touch failed for test"))
+
+	if err := f.call("Bearer " + k.Token); err != nil {
+		t.Fatal(err)
+	}
+	var ts *time.Time
+	if err := f.owner.QueryRow(ctx, "select last_used_at from rotten.api_keys where name = 'w1'").Scan(&ts); err != nil {
+		t.Fatal(err)
+	}
+	if ts != nil {
+		t.Fatalf("last_used_at = %v, want nil after failed touch", ts)
+	}
+	logs := f.logs.String()
+	if !strings.Contains(logs, "auth: update last_used_at failed") || !strings.Contains(logs, "touch failed for test") {
+		t.Fatalf("logs did not surface touch failure:\n%s", logs)
 	}
 }
 
