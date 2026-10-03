@@ -33,6 +33,7 @@ WORKER_AMD64_IMAGE ?= rotten-worker:local-amd64
 WORKER_ARM64_IMAGE ?= rotten-worker:local-arm64
 SERVER_AMD64_IMAGE ?= rotten-server:local-amd64
 SERVER_ARM64_IMAGE ?= rotten-server:local-arm64
+UI_IMAGE ?= rotten-ui-dev
 
 DOCKER_RUN := docker run --rm -t \
 	-v "$(CURDIR)":/src -w /src \
@@ -47,7 +48,7 @@ DOCKER_SOCK := \
 
 GO_TEST_ARGS ?=
 
-.PHONY: test test-unit test-release golden shell image proto tools build build-native build-linux build-linux-smoke build-smoke build-images release-images
+.PHONY: test test-unit test-ui test-all test-release golden shell image ui-image proto tools build build-native build-linux build-linux-smoke build-smoke build-images release-images
 
 # buf is pinned at BUF_VERSION and stays out of go.mod (its dependency tree
 # is large). `make tools` installs it into ./bin with GOBIN, and `make proto`
@@ -86,8 +87,12 @@ proto:
 ## image: the Go test image, plus the rotten DB image (Postgres 18 + pg_partman)
 ## that internal/testdb.StartRotten runs by name.
 image:
-	docker build -q -f $(DOCKERFILE) -t $(IMAGE) . >/dev/null
-	docker build -q -f docker/rotten-db.Dockerfile -t rotten-db-test:18 docker >/dev/null
+	docker build --pull=false -q -f $(DOCKERFILE) -t $(IMAGE) . >/dev/null
+	docker build --pull=false -q -f docker/rotten-db.Dockerfile -t rotten-db-test:18 docker >/dev/null
+
+## ui-image: the Rails development/test image with Chromium for system specs.
+ui-image:
+	docker build --pull=false --platform linux/amd64 -q -f ui/dev.Dockerfile -t $(UI_IMAGE) ui >/dev/null
 
 ## build: native binaries, Linux amd64/arm64 binaries, and local production images.
 build: build-native build-linux build-images
@@ -141,6 +146,37 @@ test-release:
 ## test: all Go tests, race detector on, Docker socket mounted for testcontainers.
 test: image
 	$(DOCKER_RUN) $(DOCKER_SOCK) $(IMAGE) go test -race $(GO_TEST_ARGS) ./...
+
+## test-ui: Rails specs in Docker, against a migrated rotten test database.
+test-ui: image ui-image
+	@set -eu; \
+	net="rotten-ui-test-core-$$(date +%s)-$$$$"; \
+	db="rotten-ui-test-db-$$(date +%s)-$$$$"; \
+	cleanup() { docker rm -f "$$db" >/dev/null 2>&1 || true; docker network rm "$$net" >/dev/null 2>&1 || true; }; \
+	trap cleanup EXIT; \
+	docker network create "$$net" >/dev/null; \
+	docker run --rm --network "$$net" postgres:18 true >/dev/null; \
+	docker run -d --name "$$db" --network "$$net" -e POSTGRES_DB=rotten -e POSTGRES_PASSWORD=postgres -v "$(CURDIR)/dev/rotten-db-init.sql":/docker-entrypoint-initdb.d/001-rotten.sql:ro rotten-db-test:18 >/dev/null; \
+	ready=0; \
+	for attempt in $$(seq 1 60); do \
+		if [ "$$(docker inspect -f '{{.State.Running}}' "$$db" 2>/dev/null || true)" != "true" ]; then \
+			echo "Postgres container $$db stopped before becoming ready" >&2; \
+			docker logs "$$db" >&2 || true; \
+			exit 1; \
+		fi; \
+		if docker run --rm --network "$$net" postgres:18 pg_isready -h "$$db" -U postgres -d rotten >/dev/null 2>&1; then ready=1; break; fi; \
+		sleep 1; \
+	done; \
+	if [ "$$ready" != "1" ]; then \
+		echo "Postgres container $$db did not become ready after 60 attempts" >&2; \
+		docker logs "$$db" >&2 || true; \
+		exit 1; \
+	fi; \
+	$(DOCKER_RUN) --network "$$net" $(IMAGE) go run ./cmd/rotten-server migrate -dsn "postgres://rotten_owner:rotten_owner@$$db:5432/rotten?sslmode=disable"; \
+	docker run --rm -t --network "$$net" -v "$(CURDIR)/ui":/app -w /app -e RAILS_ENV=test -e DATABASE_URL="postgres://rotten_ui:rotten_ui@$$db:5432/rotten?sslmode=disable" -e SECRET_KEY_BASE=test $(UI_IMAGE) bundle exec rspec
+
+## test-all: Go and UI test suites.
+test-all: test test-ui
 
 ## test-unit: Go tests with -short, run natively on the host. No Docker.
 test-unit:

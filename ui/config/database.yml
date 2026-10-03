@@ -1,0 +1,19 @@
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  url: <%= ENV["DATABASE_URL"] %>
+  schema_search_path: rotten
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS", 5) %>
+  connect_timeout: <%= ENV.fetch("DATABASE_CONNECT_TIMEOUT", 2) %>
+
+development:
+  <<: *default
+  url: <%= ENV.fetch("DATABASE_URL", "postgres://rotten_ui:rotten_ui@localhost:5432/rotten?sslmode=disable") %>
+
+test:
+  <<: *default
+  url: <%= ENV.fetch("DATABASE_URL", "postgres://rotten_ui:rotten_ui@localhost:5432/rotten_test?sslmode=disable") %>
+
+production:
+  <<: *default
+  url: <%= ENV.fetch("DATABASE_URL") if ENV.fetch("RAILS_ENV", nil) == "production" %>

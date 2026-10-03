@@ -193,12 +193,43 @@ services:
         aliases:
           - rotten-worker
 
+  ui:
+    build:
+      context: ../ui
+      dockerfile: dev.Dockerfile
+    image: rotten-dev-ui:3.4
+    platform: linux/amd64
+    working_dir: /app
+    command:
+      - bin/rails
+      - server
+      - -b
+      - 0.0.0.0
+    environment:
+      DATABASE_URL: postgres://rotten_ui:rotten_ui@rotten-db:5432/rotten?sslmode=disable
+      SECRET_KEY_BASE: development-secret-key-base
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../ui:/app
+    depends_on:
+      server-migrate:
+        condition: service_completed_successfully
+    networks:
+      core:
+        aliases:
+          - rotten-ui
+      ui-public:
+        aliases:
+          - rotten-ui
+
 networks:
   observed:
     internal: true
   edge:
   core:
     internal: true
+  ui-public:
 
 volumes:
   observed-data:
