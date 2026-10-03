@@ -26,6 +26,7 @@ func TestAnyArrayGroupsWithIn(t *testing.T) {
 	in := fp(pre + "id IN (1, 2, 3)")
 	notIn := fp(pre + "id NOT IN (1, 2, 3)")
 	inSub := fp(pre + "id IN (SELECT user_id FROM accounts)")
+	notInSub := fp(pre + "id NOT IN (SELECT user_id FROM accounts)")
 
 	same := []struct{ want, q string }{
 		{in, "id = ANY(ARRAY[1])"},
@@ -66,7 +67,7 @@ func TestAnyArrayGroupsWithIn(t *testing.T) {
 	}
 	for _, q := range distinct {
 		got := fp(pre + q)
-		for _, other := range []string{in, notIn, inSub} {
+		for _, other := range []string{in, notIn, inSub, notInSub} {
 			if got == other {
 				t.Errorf("%s: shares fingerprint %s with an IN form, want distinct", q, got)
 			}

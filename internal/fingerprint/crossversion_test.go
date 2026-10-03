@@ -25,7 +25,7 @@ import (
 
 // crossTables names one table per logical query, so each pg_stat_statements
 // row can be traced back to its logical query by the table it mentions.
-var crossTables = []string{"x_in_lit", "x_in_param", "x_in_cast_param", "x_any_lit", "x_any_param", "x_any_cast_lit", "x_any_cast_wide_lit", "x_any_cast_param", "x_values_lit", "x_values_param"}
+var crossTables = []string{"x_in_lit", "x_in_param", "x_in_cast_param", "x_any_lit", "x_any_param", "x_any_cast_lit", "x_any_cast_wide_lit", "x_any_cast_param", "x_not_in_lit", "x_all_ne_lit", "x_not_in_sub", "x_all_ne_sub", "x_values_lit", "x_values_param"}
 
 // crossAlias pairs a table whose query should group with another table's.
 // The fingerprint is taken with the table name swapped for its alias, since
@@ -42,6 +42,7 @@ var crossAlias = map[string]string{
 	"x_any_cast_lit":      "x_in_lit",
 	"x_any_cast_wide_lit": "x_in_lit",
 	"x_any_cast_param":    "x_in_cast_param",
+	"x_all_ne_lit":        "x_not_in_lit",
 }
 
 // runCrossWorkload runs each logical query with several list lengths and
@@ -53,6 +54,9 @@ func runCrossWorkload(t *testing.T, conn *pgx.Conn) {
 		if _, err := conn.Exec(ctx, fmt.Sprintf("create table %s (id int, name text)", tbl)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := conn.Exec(ctx, "create table cross_accounts (user_id int)"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := conn.Exec(ctx, "select pg_stat_statements_reset()"); err != nil {
 		t.Fatal(err)
@@ -84,6 +88,10 @@ func runCrossWorkload(t *testing.T, conn *pgx.Conn) {
 			{"select * from x_any_cast_wide_lit where id = any(array[" + strings.Join(lits, ", ") + "]::bigint[])", nil},
 			// The array cast gives array[$1] its type, so no element casts.
 			{"select * from x_any_cast_param where id = any(array[" + strings.Join(params, ", ") + "]::int[])", args},
+			{"select * from x_not_in_lit where id not in (" + strings.Join(lits, ", ") + ")", nil},
+			{"select * from x_all_ne_lit where id <> all(array[" + strings.Join(lits, ", ") + "])", nil},
+			{"select * from x_not_in_sub where id not in (select user_id from cross_accounts)", nil},
+			{"select * from x_all_ne_sub where id <> all(select user_id from cross_accounts)", nil},
 			{"insert into x_values_lit (id, name) values " + strings.Join(vlits, ", "), nil},
 			{"insert into x_values_param (id, name) values " + strings.Join(vparams, ", "), vargs},
 		}
@@ -148,6 +156,74 @@ func crossFingerprints(t *testing.T, version int) map[string]map[string][]string
 	return out
 }
 
+func crossQueryIDs(t *testing.T, version int, tables ...string) map[string]map[int64][]string {
+	t.Helper()
+	db := testdb.StartObserved(t, version)
+	su := db.Connect(t)
+	ctx := context.Background()
+	const observer = "obs"
+	path := filepath.Join(testdb.RepoRoot(), "schema", "observer.sql")
+	if out, err := db.PSQL(t, path, map[string]string{"observer_role": observer, "observer_schema": "rotten"}); err != nil {
+		t.Fatalf("observer.sql: %v\n%s", err, out)
+	}
+	if _, err := su.Exec(ctx, fmt.Sprintf("alter role %s password '%s'", observer, observer)); err != nil {
+		t.Fatal(err)
+	}
+	runCrossWorkload(t, su)
+
+	obs, err := pgx.Connect(ctx, db.DSNAs(t, observer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obs.Close(ctx)
+	r := pgss.NewReader(obs)
+	stats, err := r.ReadStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pgss.NewTextCache(r).Fill(ctx, stats); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]map[int64][]string{}
+	for _, s := range stats {
+		for _, tbl := range tables {
+			if !strings.Contains(s.Query, tbl+" ") || strings.HasPrefix(strings.ToLower(s.Query), "create") {
+				continue
+			}
+			if out[tbl] == nil {
+				out[tbl] = map[int64][]string{}
+			}
+			out[tbl][s.QueryID] = append(out[tbl][s.QueryID], s.Query)
+		}
+	}
+	return out
+}
+
+func TestPostgresNotInSubqueryQueryIDs(t *testing.T) {
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
+
+	for _, v := range []int{14, 15, 16, 17, 18} {
+		got := crossQueryIDs(t, v, "x_not_in_sub", "x_all_ne_sub")
+		if len(got["x_not_in_sub"]) == 0 || len(got["x_all_ne_sub"]) == 0 {
+			t.Fatalf("pg%d recorded no NOT IN or <> ALL subquery statements: %v", v, got)
+		}
+		var notInQIDs, allQIDs []int64
+		for qid, notInQueries := range got["x_not_in_sub"] {
+			notInQIDs = append(notInQIDs, qid)
+			if allQueries, ok := got["x_all_ne_sub"][qid]; ok {
+				t.Errorf("pg%d merged NOT IN subquery with <> ALL subquery as queryid %d:\n  NOT IN: %v\n  <> ALL: %v", v, qid, notInQueries, allQueries)
+			}
+		}
+		for qid := range got["x_all_ne_sub"] {
+			allQIDs = append(allQIDs, qid)
+		}
+		sort.Slice(notInQIDs, func(i, j int) bool { return notInQIDs[i] < notInQIDs[j] })
+		sort.Slice(allQIDs, func(i, j int) bool { return allQIDs[i] < allQIDs[j] })
+		t.Logf("pg%d kept NOT IN subquery apart from <> ALL subquery: NOT IN queryids %v; <> ALL queryids %v", v, notInQIDs, allQIDs)
+	}
+}
+
 // TestCrossVersionListFingerprints checks that Postgres 18's squashed
 // IN-list text in pg_stat_statements fingerprints the same as the
 // per-length texts that Postgres 16 records, for every list length.
@@ -180,7 +256,7 @@ func TestCrossVersionListFingerprints(t *testing.T) {
 				squashed = squashed || strings.Contains(q, "/*, ... */")
 			}
 		}
-		if wantSquash := !strings.HasPrefix(tbl, "x_values_"); squashed != wantSquash {
+		if wantSquash := !strings.HasPrefix(tbl, "x_values_") && !strings.HasSuffix(tbl, "_sub"); squashed != wantSquash {
 			t.Errorf("%s: pg18 squashed = %v, want %v: %v", tbl, squashed, wantSquash, byVersion[18][tbl])
 		}
 		if len(all) != 1 {
