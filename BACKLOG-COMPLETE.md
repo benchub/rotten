@@ -1270,3 +1270,26 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Smoke check:** `internal/docscheck/makefile_test.go` checks the `-timeout` that `make -n test` passes.
   - **No semaphore:** ingest is serial, and `go test` runs each package as its own process, so a cap wouldn't help.
   - **Review:** one Opus round, clean.
+
+### 20261003-190000-1: Make replica utilization scale past 7 days on busy clusters.
+- **Do:** `replica_utilization_by_controller_action` took about 5.5s at 7d on the 10M-event perf seed and could hit the 15s UI timeout at 21d. Consider a structural fix at ingest.
+- **Red test:** A `make test-perf` case at 21d that stays within the UI timeout.
+- **Completed:** 2026-10-04, 856a966.
+  - **Migration 0011:**
+    - Adds `event_context.logical_source_id` and `attributed_time` (`events.time * c / sum(c)`), plus the index `(logical_source_id, observed_window_start)`.
+    - The backfill took about 7 minutes on 13M rows and blocks ingest while it runs.
+    - Both replica utilization reports now read only `event_context`.
+  - **Timings:** controller_action at 21d went from a timeout to 2.1s (custom plan) / 5.4s (generic). job at 21d went from 9.4s / 10.3s to 1.0s / 1.7s.
+  - **Upgrade safety:**
+    - The partial index `event_context_utilization_missing` and `rotten.repair_context_utilization(max_events)` (`SECURITY DEFINER`) fill in NULL rows written by an old `serve`.
+    - `serve` runs the repair at startup and then hourly.
+    - The docs say to stop `serve` before running `migrate` 0011.
+  - **Review:** two Opus rounds. Round 1 found the high-severity upgrade-window gap. The gate then caught `report_spec` assuming every report reads `rotten.events`.
+
+### 20261004-060000-3: Flaky system spec `spec/system/api_keys_spec.rb:107`.
+- **Do:** Wait on a stable selector instead of holding an element across a re-render.
+- **Red test:** Hard to reproduce; the spec must pass 10 times in a row.
+- **Completed:** 2026-10-04, 145ec56.
+  - **Cause:** the form doesn't use Turbo, so submitting loads a whole new page. `have_text` could read the old page's `<html>` node after it went stale, and chromedriver's `UnknownError` isn't retried.
+  - **Fix:** specs now wait for something only the new page has (an element or a new URL parameter) before reading text. The same fix was applied in `reports_spec`, `fingerprints_spec` and `oidc_login_spec`.
+  - **Result:** 10 out of 10 runs passed. Review: one Opus round, clean.

@@ -56,15 +56,3 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
 ## Phase F: Docs.
-
-### 20261003-190000-1: Make replica utilization scale past 7 days on busy clusters.
-- **Do:** After the -53 rewrite, `replica_utilization_by_controller_action` takes about 5.5s at 7d on the 10M-event perf seed (by_job about 3.2s). Cost grows linearly with the cluster's events in the range, so a busier cluster or a custom range up to 21 days could hit the 15s UI timeout. Consider a structural fix, such as storing each event's context total at ingest (a goose migration plus an ingest change), so the report doesn't recount all `event_context` rows.
-- **Red test:** A `make test-perf` case at 21d, or at 7d with a heavier seed, that stays within the UI timeout.
-- **Done when:** Passes.
-- **Needs:** none.
-
-### 20261004-060000-3: Flaky system spec `spec/system/api_keys_spec.rb:107`.
-- **Do:** It failed once during the 150000-1 build with a Selenium "Node with given id does not belong to the document" error (a stale element after a Turbo re-render), then passed on re-run. Make the spec wait on a stable selector after the action, rather than holding an element reference across a re-render.
-- **Red test:** Hard to reproduce. Run the spec in a loop with `UI_SPEC_ARGS`, or show that the fixed spec no longer holds element handles across navigation.
-- **Done when:** Passes 10 times in a row.
-- **Needs:** none.
