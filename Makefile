@@ -52,6 +52,10 @@ DOCKER_SOCK := \
 	-e TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
 
 GO_TEST_ARGS ?=
+# make test's go test timeout. go test's 10-minute default is too short for
+# internal/ingest when Docker is busy. A -timeout in GO_TEST_ARGS comes later
+# on the command line, so it wins.
+GO_TEST_TIMEOUT ?= 30m
 
 .PHONY: test test-unit test-ui test-perf test-all test-release golden shell image ui-image ui-image-check proto tools build build-native build-linux build-linux-smoke build-smoke build-images release-images
 
@@ -162,7 +166,7 @@ test-release:
 ## The vet line compiles the perf suite (build tag perf) without running it.
 test: image
 	$(DOCKER_RUN) $(IMAGE) go vet -tags perf ./reports
-	$(DOCKER_RUN) $(DOCKER_SOCK) $(IMAGE) go test -race $(GO_TEST_ARGS) ./...
+	$(DOCKER_RUN) $(DOCKER_SOCK) $(IMAGE) go test -race -timeout $(GO_TEST_TIMEOUT) $(GO_TEST_ARGS) ./...
 
 ## test-perf: the report performance suite (reports/perf_test.go, build tag
 ## perf). It seeds about 10 million events, so it takes several minutes and

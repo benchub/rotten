@@ -76,3 +76,11 @@ See [ui.md](ui.md) for running it.
 | `make test-all` | `make test` and `make test-ui`. |
 | `make test-perf` | The report performance suite. It seeds about 10 million events and takes several minutes. |
 | `make test-release` | Builds the release artifacts and smoke-tests them. |
+
+`GO_TEST_ARGS` passes extra flags to `go test`, for example
+`make test GO_TEST_ARGS=-count=1`. `make test` runs `go test` with
+`-timeout 30m` rather than Go's 10-minute default, because each test starts its
+own Postgres container, and under heavy Docker load `internal/ingest` can take
+longer than 10 minutes. Set `GO_TEST_TIMEOUT` to change it, as in
+`make test GO_TEST_TIMEOUT=45m`. A `-timeout` in `GO_TEST_ARGS` also wins,
+because it comes later on the command line.
