@@ -1058,3 +1058,21 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Not retried:** plain startup-wait deadlines, where Postgres never becomes ready. Retrying those would double a failure to about 6 minutes and risk Go's 10-minute timeout per package.
   - **Review:** one Opus round. Its one optional note, narrowing the retry, was fixed.
   - **Follow-up:** 20261004-020000-1.
+
+### 20261003-130000-2: Add a unique index on `users(provider, provider_uid)`.
+- **Do:** OIDC matches users on (provider, provider_uid), but nothing in the DB enforces that pair is unique. Add a goose migration with a partial unique index where `provider_uid IS NOT NULL`. Handle `RecordNotUnique` in OidcLogin's create path, which is already retried.
+- **Red test:** A Go migrate test that a duplicate (provider, provider_uid) is rejected, plus a Rails spec that a concurrent duplicate create is retried and doesn't become a 500.
+- **Done when:** Passes.
+- **Needs:** none.
+- **Completed:** 2026-10-04, 62818ea.
+  - **Migration 0009:** adds `users_provider_uid_key`, a plain unique index in a transaction. Before building it, the migration checks for existing duplicate pairs. If it finds any, it fails loudly and changes nothing; an operator decides which row keeps the identity. `docs/database.md` has a query to find duplicates.
+  - **Existing retry:** OidcLogin's existing retry already re-finds by (provider, sub); only a comment changed. A colliding email from a different subject still returns `:conflict`.
+  - **Specs:** the race specs commit from a separate thread, and the racer uses a different email, so only the new index can reject the insert.
+  - **Review:** one Opus round, clean. Optional nit: `migrate_test.go` hard-codes versions 8 and 9.
+
+### 20261003-130000-3: Revoke sessions when OIDC group membership is lost.
+- **Do:** A demotion or removal from the groups only takes effect at the user's next login. Decide whether to cap the session's lifetime (for example, re-authenticating after N hours) or re-check periodically. This needs a decision from the user; ask before building.
+- **Red test:** Depends on the decision.
+- **Done when:** Passes.
+- **Needs:** -105250-4.
+- **Closed:** 2026-10-04. Merged into 20261003-150000-1 by the user's session-lifetime decision: a generation counter plus a 12h absolute expiry.

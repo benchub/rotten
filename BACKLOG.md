@@ -28,6 +28,19 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **-53, 10M-row performance test:** A separate opt-in target, `make test-perf`. It's not part of `make test-all`.
 - **Report tasks -43 to -47** may run in parallel with Phase D.
 
+**Decisions (user, 2026-10-04).**
+- **Session lifetime: 20261003-130000-3 and -150000-1.** Build these as one task, in -150000-1, and close -130000-3 as merged into it.
+  - Add a per-user generation counter, `users.session_generation`. A goose migration adds the column and its grants.
+  - Bump the counter on:
+    - logout, which ends ALL of that user's sessions;
+    - a password change or reset;
+    - disabling the user;
+    - an OIDC login that finds the user has lost group access.
+  - Check the generation stored in the session on every request.
+  - Also stamp an absolute expiry in the session: 12 hours by default, configurable through an env var documented in `docs/ui.md`. When it passes, the user must log in again. For OIDC users, that re-check picks up group changes.
+- **-140000-2, login rate limits:** keep the in-process memory store. Document in `docs/ui.md` that each process keeps its own counters, so N Puma workers or replicas allow N× the limit, and recommend one UI process (or scale the limits to match).
+- **-140000-1, forced password change at first login:** don't build it.
+
 ---
 
 ## Phase A: Test harness and characterization.
@@ -44,23 +57,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ## Phase F: Docs.
 
-### 20261003-130000-2: Add a unique index on `users(provider, provider_uid)`.
-- **Do:** OIDC matches users on (provider, provider_uid), but nothing in the DB enforces that pair is unique. Add a goose migration with a partial unique index where `provider_uid IS NOT NULL`. Handle `RecordNotUnique` in OidcLogin's create path, which is already retried.
-- **Red test:** A Go migrate test that a duplicate (provider, provider_uid) is rejected, plus a Rails spec that a concurrent duplicate create is retried and doesn't become a 500.
-- **Done when:** Passes.
-- **Needs:** none.
-
-### 20261003-130000-3: Revoke sessions when OIDC group membership is lost.
-- **Do:** A demotion or removal from the groups only takes effect at the user's next login. Decide whether to cap the session's lifetime (for example, re-authenticating after N hours) or re-check periodically. This needs a decision from the user; ask before building.
-- **Red test:** Depends on the decision.
-- **Done when:** Passes.
-- **Needs:** -105250-4.
-
 ### 20261003-140000-1: Let users change their own password, and add `users:enable`.
 - **Do:**
   - Add a page where a logged-in password user changes their password, using the current one. The fingerprint check already ends their other sessions; re-fingerprint the current session.
   - Add a `users:enable[email]` rake task.
-  - Optionally, force a change at first login. That needs a goose migration (`must_change_password`); ask the user first.
+  - Don't add a forced change at first login. The user decided against it on 2026-10-04.
 - **Red test:**
   - Changing the password works, the current session stays alive, and other sessions are dropped.
   - A wrong current password is rejected.
@@ -68,20 +69,37 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes.
 - **Needs:** -105250-4.
 
-### 20261003-140000-2: Share login rate-limit counters across UI processes.
-- **Do:** The rate limits use a memory store in each process, so N Puma workers or replicas allow N times the limit. Pick a shared store (Solid Cache in the rotten DB would need a goose migration and grants), or document a single-process deployment. Ask the user.
-- **Red test:** Depends on the decision.
+### 20261003-140000-2: Document that login rate-limit counters are per process.
+- **Do:** The rate limits use a memory store in each process, so N Puma workers or replicas allow N times the limit. The user decided on 2026-10-04 to keep the memory store. In `docs/ui.md`, document:
+  - that each process keeps its own counters;
+  - the effective limit with N processes;
+  - the recommendation to run one UI process, or to scale the limits down to match.
+
+  If the Puma config defaults to more than one worker, say so. Also put a short comment next to the rate-limit code.
+- **Red test:** A docs smoke check (`internal/docscheck`, or a spec) that `docs/ui.md` mentions the per-process limit.
 - **Done when:** Passes.
 - **Needs:** none.
 
-### 20261003-150000-1: Make logout and expiry revoke stolen session cookies.
-- **Do:** With the cookie session store, a copy of the cookie taken before logout still works afterwards. Sessions also have no expiry. Two `pending` specs in `ui/spec/security/session_fixation_spec.rb` lock in this gap. Options:
-  - A server-side session store, which would need a goose migration and grants.
-  - A per-user session generation counter in `users`, bumped on logout.
-  - An absolute expiry stamped in the session.
+### 20261003-150000-1: Make logout and expiry revoke stolen session cookies, and pick up lost OIDC group access.
+- **Do:** With the cookie session store, a copy of the cookie taken before logout still works afterwards. Sessions also have no expiry. Two `pending` specs in `ui/spec/security/session_fixation_spec.rb` lock in this gap. 20261003-130000-3 (a demotion or group removal only takes effect at next login) was merged into this task.
 
-  Decide together with 20261003-130000-3, since both are about session lifetime. Ask the user.
-- **Red test:** Un-pend the two specs, and add an expiry spec.
+  Build the 2026-10-04 decision:
+  - A goose migration adds `users.session_generation bigint not null default 0`, with grants so `rotten_ui` can update it.
+  - Store the generation in the session at login. Check it on every request, and reset the session and redirect to login when it doesn't match.
+  - Bump the generation, which ends all of that user's sessions, on:
+    - logout;
+    - a password change or reset;
+    - `users:disable`;
+    - an OIDC login that denies a known user because they've lost group access.
+
+    Where the password fingerprint check already does this, keep one mechanism or keep both, but explain the choice.
+  - Stamp an absolute expiry in the session at login. The lifetime is 12h by default; read it from a `ROTTEN_UI_SESSION_LIFETIME_HOURS` env var (or similar), documented in `docs/ui.md`. When it has passed, reset the session and require a new login. That re-checks OIDC group membership.
+- **Red test:**
+  - Un-pend the two specs.
+  - Add an expiry spec.
+  - Add specs that each bump trigger revokes a copied cookie.
+  - Add a spec that an OIDC user losing their group at re-login revokes their other sessions.
+  - Add a Go migrate test for the column.
 - **Done when:** Passes.
 - **Needs:** none.
 
