@@ -28,6 +28,7 @@ RSpec.describe "Pass key admin", :api_keys, type: :system do
     fill_in "FQDN", with: "db1.example.test"
     click_button "Create pass key"
 
+    expect(page).to have_css("#pass-key-token")
     expect(page).to have_text("Copy this pass key now")
     token = find("#pass-key-token").text
     expect(token).to match(/\Arotten_\d+_[A-Za-z0-9_-]{43}\z/)
@@ -104,6 +105,9 @@ RSpec.describe "Pass key admin", :api_keys, type: :system do
     expect(owner_api_key_count).to eq(1)
   end
 
+  # The form submits without Turbo, so the whole document is replaced. Wait on
+  # an element only the new document has: have_text on the page reads the old
+  # <html> node, which goes stale mid-read if the swap lands in between.
   it "shows what's wrong with the form and keeps what was typed" do
     sign_in("admin")
 
@@ -112,8 +116,8 @@ RSpec.describe "Pass key admin", :api_keys, type: :system do
     fill_in "FQDN", with: "db1..example.test"
     click_button "Create pass key"
 
-    expect(page).to have_text("Name may only contain")
-    expect(page).to have_text("FQDN must be a host name")
+    expect(page).to have_css(".report-errors[role='alert']", text: "Name may only contain")
+    expect(page).to have_css(".report-errors[role='alert']", text: "FQDN must be a host name")
     expect(page).to have_field("Name", with: "worker db1")
     expect(page).not_to have_css("#pass-key-token")
     expect(owner_api_key_count).to eq(0)

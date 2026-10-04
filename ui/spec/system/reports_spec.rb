@@ -66,6 +66,9 @@ RSpec.describe "Reports", type: :system do
     select "replica", from: "Role"
     click_button "Run report"
 
+    # The old page already shows replica picked and a report table, so wait
+    # for the new page before reading rows.
+    expect(page).to have_current_path(/role=replica/)
     expect(page).to have_select("Role", selected: "replica")
     expect(report_rows("example", "calls", "total_ms")).to eq([
       ["select * from users where id = $1", "200", "80.00"],
@@ -160,6 +163,7 @@ RSpec.describe "Reports", type: :system do
     select "10 minutes", from: "Bucket"
     click_button "Run report"
 
+    expect(page).to have_current_path(/range=custom/)
     label = ->(ago) { (anchor - (ago * 60)).utc.strftime("%Y-%m-%d %H:%M") }
     expect(report_rows("bucket_start", "calls", "total_ms")).to eq([
       [label.(100), "0", "0.00"],
@@ -191,7 +195,7 @@ RSpec.describe "Reports", type: :system do
     pick_source(project: "canvas", cluster: "13")
     click_button "Run report"
 
-    expect(page).to have_text("This report took longer than 0.1 seconds and was stopped")
+    expect(page).to have_css(".report-errors", text: "This report took longer than 0.1 seconds and was stopped")
     expect(page).not_to have_css("table.report")
   ensure
     Rails.configuration.x.report_timeout_ms = original

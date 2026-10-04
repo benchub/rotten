@@ -39,6 +39,8 @@ RSpec.describe "Fingerprint detail", type: :system do
     select "10 minutes", from: "Bucket"
     click_button "Show"
 
+    # The old page has charts too, so wait for the new one before reading them.
+    expect(page).to have_current_path(/bucket=10m/)
     calls = chart_points("calls")
     expect(calls.size).to eq(18)
     expect(calls.sum { |point| point["data-value"].to_f }).to eq(1100)
@@ -81,6 +83,7 @@ RSpec.describe "Fingerprint detail", type: :system do
     select "replica", from: "Role"
     click_button "Show"
 
+    expect(page).to have_current_path(/role=replica/)
     expect(chart_points("calls").sum { |point| point["data-value"].to_f }).to eq(200)
     expect(table_rows("table.fingerprint-contexts")).to eq([["grades#show", "200"]])
     expect(table_rows("table.fingerprint-sources")).to eq([["replica", "200", "80.00", "0.40", "", "", ""]])

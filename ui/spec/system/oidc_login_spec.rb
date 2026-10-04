@@ -27,6 +27,7 @@ RSpec.describe "OIDC login", type: :system do
     visit "/login"
     click_button "Sign in"
 
+    expect(page).to have_link("Back to sign in")
     expect(page).to have_text("not in a group that can use Rotten")
     visit "/"
     expect(page).to have_current_path("/login")
