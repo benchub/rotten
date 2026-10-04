@@ -302,6 +302,9 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		actionID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := conn.Exec(ctx, testdb.FillContextUtilizationSQL); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := conn.Exec(ctx, `update rotten.fingerprint_stats
 		set count = $1, mean = 1, deviation = 1
 		where fingerprint_id = $2 and type = 'mean_time' and logical_source_id in (0, $3)`,

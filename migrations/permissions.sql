@@ -73,6 +73,18 @@ grant usage on rotten.api_keys_id_seq to rotten_ui;
 grant select, insert on rotten.ingested_batches to rotten_ingest;
 grant execute on function rotten.prune_ingested_batches() to rotten_ingest;
 
+-- event_context. rotten_ingest fills in context rows a pre-0011 server wrote
+-- without logical_source_id and attributed_time through
+-- repair_context_utilization(), never with a direct UPDATE. The check lets
+-- this file apply to a database migrated only part of the way, as some tests do.
+DO $$
+BEGIN
+    IF to_regprocedure('rotten.repair_context_utilization(integer)') IS NOT NULL THEN
+        GRANT EXECUTE ON FUNCTION rotten.repair_context_utilization(integer) TO rotten_ingest;
+    END IF;
+END
+$$;
+
 -- users. The Rails UI owns authentication and authorization state, including
 -- session_generation, which it bumps to end a user's sessions.
 grant select, insert, update, delete on rotten.users to rotten_ui;

@@ -375,8 +375,29 @@ func SeedReports(t testing.TB, db *DB) *Reports {
 			t.Fatalf("seed: stat %+v: %v", s, err)
 		}
 	}
+	if _, err := tx.Exec(ctx, FillContextUtilizationSQL); err != nil {
+		t.Fatalf("seed: context utilization: %v", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("seed: commit: %v", err)
 	}
 	return r
 }
+
+// FillContextUtilizationSQL sets event_context.logical_source_id and
+// attributed_time the way ingest and migration 0011 do, on rows a fixture
+// inserted directly. Replica utilization reads only those columns, so it
+// skips context rows without them.
+const FillContextUtilizationSQL = `
+update rotten.event_context ec
+set logical_source_id = e.logical_source_id,
+    attributed_time = e.time * ec.c::double precision / t.total::double precision
+from rotten.events e,
+     (select event_id, observed_window_start, sum(c) as total
+      from rotten.event_context
+      group by event_id, observed_window_start) t
+where ec.attributed_time is null
+  and e.id = ec.event_id
+  and e.observed_window_start = ec.observed_window_start
+  and t.event_id = ec.event_id
+  and t.observed_window_start = ec.observed_window_start`

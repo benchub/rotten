@@ -13,8 +13,11 @@
 --   This report returns both call utilization and time utilization. Call
 --   totals are returned as double precision because sums can exceed int64. Calls are
 --   attributed by event_context.c, matching the top-query reports. Time is
---   split across all of an event's context rows as event time * c / ctx_total;
---   ctx_total is computed before filtering to job-tagged contexts.
+--   split across all of an event's context rows as event time * c / the sum
+--   of the event's c, including contexts without a job tag. Ingest stores
+--   that share in event_context.attributed_time, and the event's source in
+--   event_context.logical_source_id (migration 0011), so this reads
+--   event_context alone.
 --
 -- Percentages:
 --   The primary percentage is role_value / primary_plus_replica_value * 100,
@@ -31,42 +34,21 @@ with sources as (
     and environment = $2
     and cluster = $3
     and role in ($6, $7)
-), event_context_with_totals as (
-  -- ctx_total is over all of an event's context rows. Joining events and
-  -- sources first keeps the window to the selected sources' contexts;
-  -- totaling every context row in the range made generic plans slow at
-  -- 7 days (docs/perf.md).
+), aggregated_events as (
   select
     s.cluster,
     s.role,
-    e.time,
     ec.job_tag_id,
-    ec.c,
-    sum(ec.c) over (partition by ec.event_id) as ctx_total
-  from rotten.events e
-  join sources s on s.id = e.logical_source_id
-  join rotten.event_context ec on ec.event_id = e.id
-    -- Ingest writes each context with its event's window. Saying so lets a
-    -- generic plan prune event_context to one partition per event.
-    and ec.observed_window_start = e.observed_window_start
+    sum(ec.c) as calls,
+    sum(ec.attributed_time)::double precision as total_ms
+  from rotten.event_context ec
+  join sources s on s.id = ec.logical_source_id
   -- Only windows fully inside [start, end) are counted; straddling windows are excluded on purpose.
-  where e.observed_window_start >= $4::timestamptz
-    and e.observed_window_start < $5::timestamptz
-    and e.observed_window_end <= $5::timestamptz
-    and ec.observed_window_start >= $4::timestamptz
+  where ec.observed_window_start >= $4::timestamptz
     and ec.observed_window_start < $5::timestamptz
     and ec.observed_window_end <= $5::timestamptz
-), aggregated_events as (
-  select
-    cluster,
-    role,
-    job_tag_id,
-    sum(c) as calls,
-    sum(time * c::double precision / ctx_total)::double precision as total_ms
-  from event_context_with_totals
-  where job_tag_id is not null
-    and ctx_total > 0
-  group by cluster, role, job_tag_id
+    and ec.job_tag_id is not null
+  group by s.cluster, s.role, ec.job_tag_id
 ), primary_events as (
   select *
   from aggregated_events

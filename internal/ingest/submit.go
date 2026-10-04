@@ -292,13 +292,21 @@ func insertAggregate(ctx context.Context, tx pgx.Tx, msg *rottenv1.SubmitHarvest
 		returning id`, fingerprintID, msg.GetLogicalSourceId(), msg.GetPhysicalSourceId(), start, end, metrics.GetCalls(), metrics.GetTotalTime()).Scan(&eventID); err != nil {
 		return err
 	}
+	var contextTotal uint64
+	for _, qc := range aggregate.GetContexts() {
+		contextTotal += qc.GetCount()
+	}
 	for _, qc := range aggregate.GetContexts() {
 		controllerID := optionalID(ids.controllers, qc.GetController())
 		actionID := optionalID(ids.actions, qc.GetAction())
 		jobTagID := optionalID(ids.jobTags, qc.GetJobTag())
+		// The same arithmetic, in the same order, as migration 0011's backfill.
+		attributedTime := metrics.GetTotalTime() * float64(qc.GetCount()) / float64(contextTotal)
 		if _, err := tx.Exec(ctx, `insert into rotten.event_context
-			(event_id, observed_window_start, observed_window_end, controller_id, action_id, job_tag_id, c)
-			values ($1, $2, $3, $4, $5, $6, $7)`, eventID, start, end, controllerID, actionID, jobTagID, qc.GetCount()); err != nil {
+			(event_id, observed_window_start, observed_window_end, controller_id, action_id, job_tag_id, c,
+			 logical_source_id, attributed_time)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, eventID, start, end, controllerID, actionID, jobTagID, qc.GetCount(),
+			msg.GetLogicalSourceId(), attributedTime); err != nil {
 			return err
 		}
 	}

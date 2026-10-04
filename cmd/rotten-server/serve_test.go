@@ -670,6 +670,59 @@ func waitForLog(t *testing.T, logs *serveLogs, substr string) {
 	}, logs.String)
 }
 
+func TestServeRepairsPreMigrationContextsAtStartup(t *testing.T) {
+	db := testdb.StartRotten(t)
+	ctx := context.Background()
+	owner, err := pgxpool.New(ctx, db.DSNAs(t, testdb.OwnerRole))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(owner.Close)
+	// Inserted the way a server from before migration 0011 does.
+	for _, q := range []string{
+		`insert into rotten.logical_sources (id, project, environment, cluster, role) values (1, 'canvas', 'production', '13', 'replica')`,
+		`insert into rotten.physical_sources (id, fqdn) values (1, 'r.example')`,
+		`insert into rotten.fingerprints (id, fingerprint, normalized) values (1, 'select 1', 'select $1')`,
+		`insert into rotten.events (id, fingerprint_id, logical_source_id, physical_source_id,
+			observed_window_start, observed_window_end, calls, time)
+			values (1, 1, 1, 1, date_trunc('hour', now()), date_trunc('hour', now()) + interval '5 minutes', 4, 8)`,
+		`insert into rotten.event_context (event_id, observed_window_start, observed_window_end, c)
+			select id, observed_window_start, observed_window_end, x.c from rotten.events, (values (1), (3)) x(c)`,
+	} {
+		if _, err := owner.Exec(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	ca := newTestCA(t)
+	cert, priv := ca.pair(t, 1)
+	certFile, keyFile := writePair(t, cert, priv)
+	proc := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+
+	waitForLog(t, proc.logs, "repaired context utilization")
+	if !strings.Contains(proc.logs.String(), `"msg":"repaired context utilization","rows":2`) {
+		t.Errorf("serve logs %q, want the repair to report rows=2", proc.logs.String())
+	}
+	var times []float64
+	rows, err := owner.Query(ctx, `select attributed_time from rotten.event_context
+		where logical_source_id = 1 order by c`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var v float64
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		times = append(times, v)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(times) != 2 || times[0] != 2 || times[1] != 6 {
+		t.Errorf("repaired attributed_time = %v, want [2 6]", times)
+	}
+}
+
 func TestServeTLS(t *testing.T) {
 	db := testdb.StartRotten(t)
 	owner, err := pgxpool.New(context.Background(), db.DSNAs(t, testdb.OwnerRole))

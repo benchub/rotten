@@ -117,6 +117,29 @@ table. UI sessions started before the matching UI release have no generation
 or expiry, so they're refused and users sign in again. See
 [ui.md](ui.md#sessions).
 
+**Migration 0011 blocks ingest while it runs, and rewrites
+`rotten.event_context`.** It adds `logical_source_id` and `attributed_time`
+(the context's share of its event's time, `events.time * c / sum(c)` over the
+event's contexts) to `rotten.event_context`. The server writes both at
+ingest, so the replica utilization reports read `event_context` alone. The
+migration backfills every existing row with one `UPDATE`, then builds
+`event_context_source_window` on `(logical_source_id, observed_window_start)`
+with a plain `CREATE INDEX`. In testing, that took about 7 minutes for 13
+million context rows. The `UPDATE` leaves the old row versions behind, so the
+existing partitions stay about twice their size until retention drops them.
+
+Stop `rotten-server serve` before you run this `migrate`, and start the new
+release afterwards. A `serve` from before 0011 inserts context rows without
+the new columns, and the reports skip those rows until they're filled in.
+That includes inserts that waited out the backfill and anything ingested
+until the old `serve` stops. Workers keep their harvests in their outbox
+while `serve` is down and resend them afterwards. If old rows get in anyway,
+for example during a rolling deploy, the new `serve` fills them in with
+`rotten.repair_context_utilization()` when it starts and then every hour, a
+batch of 1,000 events at a time. It logs `repaired context utilization` with
+the row count each time. A partial index, `event_context_utilization_missing`,
+finds those rows, and it's empty the rest of the time.
+
 ## 4. Partition maintenance and retention
 
 `rotten.events` and `rotten.event_context` are partitioned by day on
@@ -212,7 +235,7 @@ get nothing outside the `rotten` schema, and `PUBLIC` gets nothing in it.
 | Role | Used by | May |
 | --- | --- | --- |
 | `rotten_owner` | `rotten-server migrate`, `rotten-server keys`, pg_partman maintenance | Owns the database, the `rotten` schema and every table and partition. Runs migrations and grants. Creates, lists and revokes pass keys. Needs pg_partman's privileges in `public`. Use it only for administration, never for a long-running service. |
-| `rotten_ingest` | `rotten-server serve` | Read every event and lookup table. Insert into `controllers`, `actions`, `job_tags`, `logical_sources`, `physical_sources`, `logical_physical_sources`, `fingerprints`, `events`, `event_context` and `fingerprint_stats`, and update `fingerprint_stats`, `logical_sources.project` and `physical_sources.fqdn`. Never delete. On `api_keys`, read only `id`, `name`, `secret_hash`, `fqdn` and `revoked_at`, and update only `last_used_at`. Read and insert `ingested_batches`, and prune it only through `rotten.prune_ingested_batches()`. |
+| `rotten_ingest` | `rotten-server serve` | Read every event and lookup table. Insert into `controllers`, `actions`, `job_tags`, `logical_sources`, `physical_sources`, `logical_physical_sources`, `fingerprints`, `events`, `event_context` and `fingerprint_stats`, and update `fingerprint_stats`, `logical_sources.project` and `physical_sources.fqdn`. Never delete. On `api_keys`, read only `id`, `name`, `secret_hash`, `fqdn` and `revoked_at`, and update only `last_used_at`. Read and insert `ingested_batches`, and prune it only through `rotten.prune_ingested_batches()`. Fill in `event_context` rows that a pre-0011 server wrote only through `rotten.repair_context_utilization()`. |
 | `rotten_ui` | The Rails UI | Read every event and lookup table. On `api_keys`, read everything but `secret_hash`, insert only `name`, `secret_hash`, `fqdn` and `created_by`, and update only `revoked_at` and `revoked_by`; it can't delete a key. Select, insert, update and delete `users`, including bumping `session_generation`. Read `ui_audit_log`, and insert into it without setting `id` or `at`; it can't change or delete rows. |
 | `rotten_readonly` | People running `reports/*.sql` in psql, dashboards | Read the event and lookup tables only. No access to `api_keys`, `ingested_batches`, `users` or `ui_audit_log`. |
 

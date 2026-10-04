@@ -320,6 +320,49 @@ func TestSubmitHarvestWritesExpectedRowsAndDedupes(t *testing.T) {
 	}
 }
 
+// Replica utilization reads each context's logical source and share of its
+// event's time from event_context. Ingest writes them, matching what the
+// report computed from events: time * c / the sum of the event's c.
+func TestSubmitHarvestStoresContextUtilization(t *testing.T) {
+	f := setupSubmit(t)
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	req := harvestRequest(f.reg.GetLogicalSourceId(), f.reg.GetPhysicalSourceId(), start, "util", "fp-util-a", "fp-util-b")
+	req.Msg.Aggregates[1].Metrics.TotalTime = 0.1
+	req.Msg.Aggregates[1].Metrics.Calls = 1 + 1<<40 + 3
+	req.Msg.Aggregates[1].Contexts = []*rottenv1.QueryContext{
+		{Controller: "users", Action: "show", Count: 1},
+		{Controller: "users", Action: "index", Count: 1 << 40},
+		{JobTag: "UserJob#perform", Count: 3},
+	}
+	if _, err := f.handler.SubmitHarvest(f.ctx, req); err != nil {
+		t.Fatalf("SubmitHarvest: %v", err)
+	}
+
+	var rows, matched int
+	if err := f.owner.QueryRow(context.Background(), `
+		with x as (
+			select ec.logical_source_id, ec.attributed_time, e.logical_source_id as event_source,
+				e.time * ec.c::double precision / sum(ec.c) over (partition by ec.event_id) as want
+			from rotten.event_context ec
+			join rotten.events e on e.id = ec.event_id and e.observed_window_start = ec.observed_window_start
+		)
+		select count(*), count(*) filter (where logical_source_id = event_source and attributed_time = want) from x`).Scan(&rows, &matched); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 6 || matched != 6 {
+		t.Fatalf("contexts: %d rows, %d with the event's source and share of time; want 6 and 6", rows, matched)
+	}
+	var usersShow float64
+	if err := f.owner.QueryRow(context.Background(), `
+		select ec.attributed_time from rotten.event_context ec join rotten.actions a on a.id = ec.action_id
+		where a.action = 'show' and ec.c = 1`).Scan(&usersShow); err != nil {
+		t.Fatal(err)
+	}
+	if want := 0.1 * 1 / float64(1+1<<40+3); usersShow != want {
+		t.Fatalf("users#show attributed_time = %v, want %v", usersShow, want)
+	}
+}
+
 func TestSubmitHarvestStoresUint64ContextCountForReports(t *testing.T) {
 	f := setupSubmit(t)
 	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)

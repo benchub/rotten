@@ -20,7 +20,7 @@ RSpec.describe Report do
 
   it "loads each report's SQL from the reports directory" do
     described_class.files.each do |file|
-      expect(ReportSql.read(file)).to include("$1", "rotten.events")
+      expect(ReportSql.read(file)).to include("$1").and match(/\brotten\.(events|event_context)\b/)
     end
   end
 

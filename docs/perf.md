@@ -23,7 +23,7 @@ make test-perf PERF_TEST_ARGS='-run TestPerfReports'
    - **Windows:** 5 minutes long, spanning 21 days, so 21 populated daily partitions created by `public.create_partition_time`.
    - **Fingerprints:** pools of 15,000 for canvas and 5,000 for bridge. Fingerprints are picked with a skew (`pool*random()^2`), and calls are skewed too (`50000/idx`). On cluster 13 over 21 days, the hot fingerprint (id 1) has 16,549 events and the typical fingerprint (id 200) has 1,577.
    - **Outliers:** a slice of fingerprints is 10× slower in the last 2 hours, so `outliers` has something to find.
-   - **event_context:** about 1.3 rows per event, 20% of them job contexts.
+   - **event_context:** about 1.3 rows per event, 20% of them job contexts. Each row gets its event's `logical_source_id` and an equal share of its time as `attributed_time`, as ingest would write them (every context of a seeded event has the same `c`).
    - **fingerprint_stats:** `mean_time` rows per source and for source 0.
 
    Seeding takes 1m20s–2m15s.
@@ -34,7 +34,7 @@ make test-perf PERF_TEST_ARGS='-run TestPerfReports'
    - Each case gets one warmup, then the median of 5 runs (3 for the source-wide 24h and 7d cases).
    - A run canceled by the timeout is reported as a failure, and the suite carries on.
 3. **Asserts pruning and latency.**
-   - **Pruning:** `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` must scan only partitions that overlap the range, and at least one events partition. A partition counts as scanned when its node has loops > 0. Generic plans report pruned partitions as "Subplans Removed".
+   - **Pruning:** `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` must scan only partitions that overlap the range, and at least one events or event_context partition (replica_utilization reads only event_context). A partition counts as scanned when its node has loops > 0. Generic plans report pruned partitions as "Subplans Removed".
    - **Latency budgets** (median):
 
      | Reports | Ranges | Budget |
@@ -42,6 +42,7 @@ make test-perf PERF_TEST_ARGS='-run TestPerfReports'
      | Every report | 3h | 2s |
      | The fingerprint reports | 3h, 7d, 21d | 2s |
      | top_by_calls, top_by_total_time, outliers, both replica_utilization reports | 24h and 7d | 15s |
+     | Both replica_utilization reports | 21d | 15s |
 
      15s is the UI's `statement_timeout`, so it's the hard failure line: past it, the user gets an error page instead of a report. It's a ceiling, not a target. The 7d numbers below show how much headroom each report has.
 4. **Decides on the index.**
@@ -73,22 +74,26 @@ These are medians from the final run, with the index present. "Scanned" means pa
 | top_by_total_time | 3h | 26ms | 60ms | 1/1 | 60 |
 | outliers | 3h | 109ms | 124ms | 1/1 | 90 |
 | outliers role=primary | 3h | 66ms | 72ms | 1/1 | 90 |
-| replica_utilization_by_controller_action | 3h | 78ms | 127ms | 1/1 | 60 |
-| replica_utilization_by_job | 3h | 49ms | 82ms | 1/1 | 60 |
+| replica_utilization_by_controller_action | 3h | 16ms | 28ms | 1/1 | 30 |
+| replica_utilization_by_job | 3h | 6ms | 7ms | 1/1 | 30 |
 | top_by_calls | 24h | 162ms | 331ms | 2/2 | 58 |
 | top_by_calls role=replica | 24h | 111ms | 226ms | 2/2 | 58 |
 | top_by_total_time | 24h | 158ms | 324ms | 2/2 | 58 |
 | outliers | 24h | 554ms | 674ms | 2/2 | 87 |
 | outliers role=primary | 24h | 424ms | 478ms | 2/2 | 87 |
-| replica_utilization_by_controller_action | 24h | 635ms | 716ms | 2/2 | 58 |
-| replica_utilization_by_job | 24h | 390ms | 448ms | 2/2 | 58 |
+| replica_utilization_by_controller_action | 24h | 74ms | 207ms | 2/2 | 29 |
+| replica_utilization_by_job | 24h | 36ms | 58ms | 2/2 | 29 |
 | top_by_calls | 7d | 1.40s | 2.93s | 8/8 | 46 |
 | top_by_calls role=replica | 7d | 940ms | 1.99s | 8/8 | 46 |
 | top_by_total_time | 7d | 1.39s | 2.86s | 8/8 | 46 |
 | outliers | 7d | 1.13s | 1.53s | 8/8 | 69 |
 | outliers role=primary | 7d | 593ms | 555ms | 8/8 | 69 |
-| replica_utilization_by_controller_action | 7d | **5.37s** | **5.52s** | 8/8 | 46 |
-| replica_utilization_by_job | 7d | 3.09s | 3.23s | 8/8 | 46 |
+| replica_utilization_by_controller_action | 7d | 517ms | 1.88s | 8/8 | 23 |
+| replica_utilization_by_job | 7d | 269ms | 548ms | 8/8 | 23 |
+| replica_utilization_by_controller_action | 21d | 2.09s | **5.42s** | 21/21 | 10 |
+| replica_utilization_by_job | 21d | 967ms | 1.71s | 21/21 | 10 |
+
+The replica_utilization rows are from task 20261003-190000-1's final run, after migration 0011. Since they read only `event_context`, their Scanned and Removed columns count event_context partitions.
 
 Plan shapes:
 
@@ -100,10 +105,7 @@ Plan shapes:
   - The same scan of events, plus an index scan on `events_fingerprint_window` for the global baseline (`global_range_samples`).
   - At 7d the seeded slowdown (the last 2 hours) doesn't stand out against a 7-day baseline, so the report returns 0 rows and skips the context lookup. The 7d numbers cover the aggregation, not that last stage. The last stage is capped at 50 fingerprints anyway.
 - **replica_utilization:**
-  - Events come from bitmap scans, then are joined to `event_context`.
-  - Custom plans hash-join with a seq scan of the in-range event_context partitions.
-  - Generic plans nested-loop into `event_context` by `event_id`, pruned per loop to the event's own partition.
-  - Both feed a sort for the `ctx_total` window function.
+  - Reads only `event_context`, through `event_context_source_window` on `(logical_source_id, observed_window_start)`: a bitmap heap scan in custom plans, an index scan in generic plans. There's no join to events and no window function (migration 0011, see below).
 
 ### Per-fingerprint reports (cluster 13, hot fingerprint id 1 / typical fingerprint id 200)
 
@@ -131,7 +133,7 @@ Plan shapes:
 
 - **Pruning works for every report.** In both custom and generic plans, only the partitions overlapping the range are scanned, and the default partition never is. Custom plans prune at plan time. Generic plans prune at executor startup ("Subplans Removed"), and replica_utilization's generic plan also prunes per loop.
 - **The role filter doesn't defeat index use.** With `($N::text is null or role = $N::text)`, the events access paths are the same with and without a role. The `role=` variants are faster because they touch fewer sources.
-- **Every report is within budget at every measured preset.** The slowest is replica_utilization_by_controller_action at 7d, about 5.4–5.5s. That's within the 15s timeout, with roughly 3× headroom on this data set. See "Known limits".
+- **Every report is within budget at every measured preset.** The slowest is replica_utilization_by_controller_action at 21d with a generic plan, about 5.4s. That's within the 15s timeout, with roughly 3× headroom on this data set. See "Known limits".
 
 ## replica_utilization rewrite
 
@@ -155,6 +157,26 @@ Plan shapes:
 | 7d, after | 5.37s | 5.52s | 7.8M |
 
 The job report moved the same way: at 24h generic it went from 1.17s to 448ms, and at 7d from 6.22s with step 1 only to 3.23s. The "before" rows come from runs before the seed was made deterministic, so they compare a statistically equivalent data set, not an identical one.
+
+## replica_utilization at 21 days (migration 0011)
+
+**Red.** With the rewrite above, cost still grew with the cluster's events in the range: each run joined them to event_context and sorted for `ctx_total`. 21d cases timed out replica_utilization_by_controller_action in both plans; by_job took 9.4s custom and 10.2s generic.
+
+**Fix.** Migration 0011 adds `event_context.logical_source_id` and `event_context.attributed_time`: the event's source, and `events.time * c / sum(c)` over the event's contexts. Ingest writes both, the migration backfills existing rows, and it adds `event_context_source_window` on `(logical_source_id, observed_window_start)`. The reports now filter and sum `event_context` alone. Results are unchanged: the existing replica_utilization tests pass, the perf row counts match, and `internal/migrate` and `internal/ingest` tests check that the stored share equals the old window computation exactly.
+
+| Median (custom / generic) | Before | After |
+|---|---|---|
+| controller_action 7d | 6.80s / 6.73s | 517ms / 1.88s |
+| controller_action 21d | **timed out / timed out** | 2.09s / 5.42s |
+| job 7d | 3.60s / 3.58s | 269ms / 548ms |
+| job 21d | 9.36s / 10.25s | 967ms / 1.71s |
+
+Alternatives measured on the same seed:
+
+- **`events.context_total` only** (keep the join, drop the window): 21d custom 9.0s, and generic still timed out. Its backfill took 23 minutes.
+- **The same columns without the index:** faster on this seed (21d 1.3s / 3.6s), because cluster 13 holds most of the rows and a seq scan wins. On a database with many clusters, the index keeps the cost proportional to the selected cluster, not to everything in the range. Building it took 5 seconds.
+
+The backfill took about 7 minutes on 13M context rows. See `docs/database.md` for its locking.
 
 ## Index decision: `events (fingerprint_id, observed_window_start)`
 
@@ -218,12 +240,13 @@ All of these are well within budget. Before is the first run; after is the final
 - **Original budgets passed from the start.** The first full run had 3h and 24h cases only, and passed every pruning and latency budget.
 - **Index-decision red.** The test was extended to require `events_fingerprint_window` and to prove it pays off. It failed with "index events_fingerprint_window is missing" until migration 0008 was added.
 - **7d red (review round 1).** Adding the 7d cases timed out replica_utilization_by_controller_action's generic plan, the "canceling statement due to statement timeout" error. It passed after the rewrite above.
+- **21d red (task 20261003-190000-1).** Adding 21d replica_utilization cases timed out replica_utilization_by_controller_action in both plans. It passed after migration 0011.
 
 ## Known limits
 
-- **replica_utilization at 7d takes about 5.5s for controller_action and 3.2s for job** on this data set, in both custom and generic plans. That's within the 15s timeout. Most of the cost is joining the busy cluster's context rows in the range (millions of them) and sorting them for the `ctx_total` window, and it grows linearly with the cluster's events in the range. A cluster several times busier than cluster 13 here would approach the timeout at 7d. Custom ranges past 7d (up to 21 days of data) take proportionally longer. A further fix would need a structural change, for example storing `ctx_total` on events at ingest, which is out of scope here.
+- **replica_utilization reads every in-range context row of the cluster.** At 21d that's about 2.1s custom and 5.4s generic for controller_action on cluster 13, which holds most of the seeded rows. Cost is still linear in the cluster's context rows in the range, but it no longer joins events or sorts for a per-event total.
 - **The other source-wide reports at 7d** take 0.6–1.4s with custom plans and up to 2.9s with generic plans. They grow linearly too.
 - **Not covered:**
   - `fingerprint_stats` is seeded with `mean_time` rows only.
-  - The source-wide reports aren't measured past 7d.
+  - The source-wide reports other than replica_utilization aren't measured past 7d.
   - outliers at 7d doesn't exercise its context-lookup stage (see above).

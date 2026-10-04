@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benchub/rotten/internal/ingest"
 	"github.com/benchub/rotten/internal/testdb"
 	"github.com/jackc/pgx/v5"
 )
@@ -273,6 +274,17 @@ type utilizationContext struct {
 
 func insertUtilizationEvent(t *testing.T, conn *pgx.Conn, fixture *testdb.Reports, sourceKey string, start time.Time, calls float64, totalMS float64, contexts []utilizationContext) {
 	t.Helper()
+	insertPreMigrationUtilizationEvent(t, conn, fixture, sourceKey, start, calls, totalMS, contexts)
+	if _, err := conn.Exec(context.Background(), testdb.FillContextUtilizationSQL); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// insertPreMigrationUtilizationEvent inserts the way a server from before
+// migration 0011 does, without event_context.logical_source_id and
+// attributed_time.
+func insertPreMigrationUtilizationEvent(t *testing.T, conn *pgx.Conn, fixture *testdb.Reports, sourceKey string, start time.Time, calls float64, totalMS float64, contexts []utilizationContext) {
+	t.Helper()
 	ctx := context.Background()
 	var eventID int64
 	if err := conn.QueryRow(ctx, `insert into rotten.events
@@ -292,6 +304,51 @@ func insertUtilizationEvent(t *testing.T, conn *pgx.Conn, fixture *testdb.Report
 			c.Count); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A server from before migration 0011 can keep ingesting after the migration.
+// Its context rows don't count until the new server repairs them; then they
+// count the same as rows it ingested itself.
+func TestReplicaUtilizationCountsContextsRepairedFromAPreMigrationServer(t *testing.T) {
+	db := testdb.StartRotten(t)
+	fixture := testdb.SeedReports(t, db)
+	conn := db.Connect(t)
+	ctx := context.Background()
+
+	insertPreMigrationUtilizationEvent(t, conn, fixture, "canvas7r", fixture.Anchor.Add(-15*time.Minute), 4, 80, []utilizationContext{
+		{Controller: "legacy", Action: "index", Count: 3},
+		{Controller: "legacy", Action: "show", Count: 1},
+	})
+	report := func() map[string]replicaUtilizationRow {
+		t.Helper()
+		byName := map[string]replicaUtilizationRow{}
+		for _, row := range readReplicaUtilization(t, conn, "replica_utilization_by_controller_action.sql",
+			"canvas", testdb.ReportEnvironment, "7",
+			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
+			testdb.ReportPrimaryRole, testdb.ReportReplicaRole) {
+			byName[row.Name] = row
+		}
+		return byName
+	}
+	if _, ok := report()["legacy#index"]; ok {
+		t.Fatal("legacy#index counted before repair; want the pre-0011 rows skipped until repaired")
+	}
+
+	repaired, err := ingest.RepairContextUtilization(ctx, db.ConnectAs(t, testdb.IngestRole), 100)
+	if err != nil || repaired != 2 {
+		t.Fatalf("RepairContextUtilization = %d, %v; want 2, nil", repaired, err)
+	}
+	got := report()
+	index, show := got["legacy#index"], got["legacy#show"]
+	if index.ReplicaCalls != 3 || show.ReplicaCalls != 1 {
+		t.Fatalf("legacy replica calls = %v / %v, want 3 / 1; rows %+v", index.ReplicaCalls, show.ReplicaCalls, got)
+	}
+	assertFloat(t, index.ReplicaTotalMS, 60, "legacy#index replica time")
+	assertFloat(t, show.ReplicaTotalMS, 20, "legacy#show replica time")
+	usersShow := got["users#show"]
+	if usersShow.TotalCalls != 200 {
+		t.Errorf("users#show total calls = %v, want 200 unchanged", usersShow.TotalCalls)
 	}
 }
 

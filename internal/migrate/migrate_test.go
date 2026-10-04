@@ -452,3 +452,220 @@ func TestEventContextCountIsBigintEverywhere(t *testing.T) {
 		}
 	}
 }
+
+const eventContextUtilizationMigration = "0011_event_context_utilization.sql"
+
+// Migration 0011 copies each context's logical source and share of its
+// event's time onto event_context, so replica utilization doesn't join
+// events. Rows from before the migration are backfilled with the same values
+// the report used to compute: event time * c / the sum of the event's c.
+func TestEventContextUtilizationBackfill(t *testing.T) {
+	db := testdb.StartRottenEmpty(t)
+	ctx := context.Background()
+	dsn := db.DSNAs(t, testdb.OwnerRole)
+
+	before := migrationsBefore(t, eventContextUtilizationMigration)
+	if _, err := migrate.UpWith(ctx, dsn, before, migrations.Permissions); err != nil {
+		t.Fatalf("migrate to 0010: %v", err)
+	}
+	conn := db.Connect(t)
+	for _, q := range []string{
+		`insert into rotten.logical_sources (id, project, environment, cluster, role) values
+			(1, 'canvas', 'production', '13', 'primary'), (2, 'canvas', 'production', '13', 'replica')`,
+		`insert into rotten.physical_sources (id, fqdn) values (1, 'p.example'), (2, 'r.example')`,
+		`insert into rotten.fingerprints (id, fingerprint, normalized) values (1, 'select 1', 'select $1')`,
+		`insert into rotten.controllers (id, controller) values (1, 'users')`,
+		`insert into rotten.actions (id, action) values (1, 'show'), (2, 'new')`,
+		`insert into rotten.job_tags (id, job_tag) values (1, 'Job#perform')`,
+		// Three events: one with three contexts, one on the replica, and one
+		// a day earlier, in another partition.
+		`insert into rotten.events (id, fingerprint_id, logical_source_id, physical_source_id,
+			observed_window_start, observed_window_end, calls, time) values
+			(101, 1, 1, 1, date_trunc('hour', now()), date_trunc('hour', now()) + interval '5 minutes', 491, 250),
+			(102, 1, 2, 2, date_trunc('hour', now()), date_trunc('hour', now()) + interval '5 minutes', 3, 10),
+			(103, 1, 1, 1, date_trunc('hour', now()) - interval '1 day', date_trunc('hour', now()) - interval '1 day' + interval '5 minutes', 3, 7)`,
+		`insert into rotten.event_context (event_id, observed_window_start, observed_window_end, controller_id, action_id, job_tag_id, c)
+			select e.id, e.observed_window_start, e.observed_window_end, x.controller_id, x.action_id, x.job_tag_id, x.c
+			from rotten.events e
+			join (values (101, 1, 1, null::int, 200), (101, 1, 2, null, 41), (101, null, null, null, 250),
+			             (102, 1, 1, null, 3),
+			             (103, null, null, 1, 1), (103, null, null, 1, 2)) x(event_id, controller_id, action_id, job_tag_id, c)
+			  on x.event_id = e.id`,
+	} {
+		if _, err := conn.Exec(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	// What replica utilization computed before the migration.
+	if _, err := conn.Exec(ctx, `create table public.expected_utilization as
+		select ec.event_id, ec.c, e.logical_source_id,
+			e.time * ec.c::double precision / sum(ec.c) over (partition by ec.event_id) as attributed_time
+		from rotten.event_context ec
+		join rotten.events e on e.id = ec.event_id and e.observed_window_start = ec.observed_window_start`); err != nil {
+		t.Fatal(err)
+	}
+
+	if applied, err := migrate.Up(ctx, dsn); err != nil || !slices.Contains(applied, 11) {
+		t.Fatalf("migrate to 0011: applied %v, err %v; want it to include 11", applied, err)
+	}
+
+	var rows, matched, nulls int
+	if err := conn.QueryRow(ctx, `
+		select count(*),
+			count(*) filter (where ec.logical_source_id = x.logical_source_id and ec.attributed_time = x.attributed_time),
+			count(*) filter (where ec.logical_source_id is null or ec.attributed_time is null)
+		from rotten.event_context ec
+		join public.expected_utilization x on x.event_id = ec.event_id and x.c = ec.c`).Scan(&rows, &matched, &nulls); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 6 || matched != 6 || nulls != 0 {
+		t.Errorf("backfilled contexts: %d rows, %d match the old computation, %d null; want 6, 6, 0", rows, matched, nulls)
+	}
+	var usersShow float64
+	if err := conn.QueryRow(ctx, `select attributed_time from rotten.event_context where event_id = 101 and c = 200`).Scan(&usersShow); err != nil {
+		t.Fatal(err)
+	}
+	if want := 250.0 * 200.0 / 491.0; usersShow != want {
+		t.Errorf("users#show attributed_time = %v, want %v", usersShow, want)
+	}
+
+	for _, relation := range []string{"rotten.event_context", "rotten.event_context_partition_template"} {
+		for column, want := range map[string]string{"logical_source_id": "integer", "attributed_time": "double precision"} {
+			var got string
+			if err := conn.QueryRow(ctx, `
+				select format_type(a.atttypid, a.atttypmod)
+				from pg_attribute a
+				where a.attrelid = $1::regclass and a.attname = $2 and not a.attisdropped`, relation, column).Scan(&got); err != nil {
+				t.Fatalf("%s.%s: %v", relation, column, err)
+			}
+			if got != want {
+				t.Errorf("%s.%s type = %s, want %s", relation, column, got, want)
+			}
+		}
+	}
+	var indexDef string
+	if err := conn.QueryRow(ctx, `select pg_get_indexdef('rotten.event_context_source_window'::regclass)`).Scan(&indexDef); err != nil {
+		t.Fatalf("event_context_source_window index: %v", err)
+	}
+	if !strings.Contains(indexDef, "(logical_source_id, observed_window_start)") {
+		t.Errorf("event_context_source_window = %s, want it on (logical_source_id, observed_window_start)", indexDef)
+	}
+}
+
+// A server from before 0011 keeps inserting context rows without
+// logical_source_id and attributed_time until it's restarted.
+// repair_context_utilization fills them in, a batch of events at a time, the
+// same way the backfill does, and leaves rows that already have values alone.
+func TestRepairContextUtilization(t *testing.T) {
+	db := testdb.StartRotten(t)
+	ctx := context.Background()
+	conn := db.Connect(t)
+	for _, q := range []string{
+		`insert into rotten.logical_sources (id, project, environment, cluster, role) values
+			(1, 'canvas', 'production', '13', 'primary'), (2, 'canvas', 'production', '13', 'replica')`,
+		`insert into rotten.physical_sources (id, fqdn) values (1, 'p.example'), (2, 'r.example')`,
+		`insert into rotten.fingerprints (id, fingerprint, normalized) values (1, 'select 1', 'select $1')`,
+		`insert into rotten.controllers (id, controller) values (1, 'users')`,
+		`insert into rotten.actions (id, action) values (1, 'show'), (2, 'new')`,
+		`insert into rotten.events (id, fingerprint_id, logical_source_id, physical_source_id,
+			observed_window_start, observed_window_end, calls, time) values
+			(101, 1, 1, 1, date_trunc('hour', now()), date_trunc('hour', now()) + interval '5 minutes', 491, 250),
+			(102, 1, 2, 2, date_trunc('hour', now()), date_trunc('hour', now()) + interval '5 minutes', 3, 10),
+			(103, 1, 2, 2, date_trunc('hour', now()) - interval '1 day', date_trunc('hour', now()) - interval '1 day' + interval '5 minutes', 3, 7),
+			(104, 1, 2, 2, date_trunc('hour', now()), date_trunc('hour', now()) + interval '5 minutes', 5, 1)`,
+		// How a pre-0011 server inserts: one row at a time, naming only the old columns.
+		`insert into rotten.event_context (event_id, observed_window_start, observed_window_end, controller_id, action_id, c)
+			select e.id, e.observed_window_start, e.observed_window_end, x.controller_id, x.action_id, x.c
+			from rotten.events e
+			join (values (101, 1, 1, 200), (101, 1, 2, 41), (101, null, null, 250),
+			             (102, 1, 1, 3),
+			             (103, 1, 2, 1), (103, 1, 1, 2)) x(event_id, controller_id, action_id, c)
+			  on x.event_id = e.id`,
+		// Written by a current server; the repair must not touch it.
+		`insert into rotten.event_context (event_id, observed_window_start, observed_window_end, controller_id, action_id, c,
+			logical_source_id, attributed_time)
+			select id, observed_window_start, observed_window_end, 1, 1, 5, 2, 123.5 from rotten.events where id = 104`,
+	} {
+		if _, err := conn.Exec(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := conn.Exec(ctx, `create table public.expected_utilization as
+		select ec.event_id, ec.c, e.logical_source_id,
+			e.time * ec.c::double precision / sum(ec.c) over (partition by ec.event_id) as attributed_time
+		from rotten.event_context ec
+		join rotten.events e on e.id = ec.event_id and e.observed_window_start = ec.observed_window_start
+		where ec.event_id <> 104`); err != nil {
+		t.Fatal(err)
+	}
+
+	ingest := db.ConnectAs(t, testdb.IngestRole)
+	repair := func(batch int) int64 {
+		t.Helper()
+		var n int64
+		if err := ingest.QueryRow(ctx, "select rotten.repair_context_utilization($1)", batch).Scan(&n); err != nil {
+			t.Fatalf("repair_context_utilization(%d): %v", batch, err)
+		}
+		return n
+	}
+	nulls := func() int {
+		t.Helper()
+		var n int
+		if err := conn.QueryRow(ctx, `select count(*) from rotten.event_context
+			where logical_source_id is null or attributed_time is null`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	first := repair(1)
+	if first < 1 || first > 3 || nulls() != 6-int(first) {
+		t.Errorf("first batch of one event repaired %d rows, leaving %d null; want one event's rows (1-3) and the rest null", first, nulls())
+	}
+	total := first
+	for i := 0; i < 5; i++ {
+		total += repair(1)
+	}
+	if total != 6 || nulls() != 0 {
+		t.Errorf("repaired %d rows, %d still null; want 6 and 0", total, nulls())
+	}
+	if n := repair(1000); n != 0 {
+		t.Errorf("repair with nothing to do = %d, want 0", n)
+	}
+
+	var rows, matched int
+	if err := conn.QueryRow(ctx, `
+		select count(*),
+			count(*) filter (where ec.logical_source_id = x.logical_source_id and ec.attributed_time = x.attributed_time)
+		from rotten.event_context ec
+		join public.expected_utilization x on x.event_id = ec.event_id and x.c = ec.c`).Scan(&rows, &matched); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 6 || matched != 6 {
+		t.Errorf("repaired contexts: %d rows, %d match the old computation; want 6, 6", rows, matched)
+	}
+	var untouched float64
+	if err := conn.QueryRow(ctx, `select attributed_time from rotten.event_context where event_id = 104`).Scan(&untouched); err != nil {
+		t.Fatal(err)
+	}
+	if untouched != 123.5 {
+		t.Errorf("already-filled context attributed_time = %v, want 123.5 untouched", untouched)
+	}
+
+	var indexDef string
+	if err := conn.QueryRow(ctx, `select pg_get_indexdef('rotten.event_context_utilization_missing'::regclass)`).Scan(&indexDef); err != nil {
+		t.Fatalf("event_context_utilization_missing index: %v", err)
+	}
+	if !strings.Contains(indexDef, "WHERE (attributed_time IS NULL)") {
+		t.Errorf("event_context_utilization_missing = %s, want it partial on attributed_time IS NULL", indexDef)
+	}
+	for _, role := range []string{testdb.UIRole, testdb.ReadonlyRole} {
+		var ok bool
+		if err := conn.QueryRow(ctx, "select has_function_privilege($1, 'rotten.repair_context_utilization(integer)', 'execute')", role).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			t.Errorf("%s can execute repair_context_utilization", role)
+		}
+	}
+}

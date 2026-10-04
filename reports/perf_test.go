@@ -175,7 +175,7 @@ cross join lateral (
 
 const perfSeedContextSQL = `
 insert into rotten.event_context (event_id, observed_window_start, observed_window_end,
-    controller_id, action_id, job_tag_id, c)
+    controller_id, action_id, job_tag_id, c, logical_source_id, attributed_time)
 select
   e.id,
   e.observed_window_start,
@@ -183,7 +183,10 @@ select
   case when j.job then null else 1 + (e.fingerprint_id * 7 + k.n * 13) % 200 end,
   case when j.job then null else 1 + (e.fingerprint_id * 3 + k.n) % 50 end,
   case when j.job then 1 + (e.fingerprint_id + k.n) % 100 end,
-  greatest(1, round(e.calls / k.total))::bigint
+  greatest(1, round(e.calls / k.total))::bigint,
+  e.logical_source_id,
+  -- Every context of an event gets the same c, so each carries an equal share.
+  e.time / k.total
 from rotten.events e
 -- A hash of the event's natural key, not e.id: ids depend on which seeding
 -- connection got to the sequence first, so they aren't deterministic.
@@ -642,8 +645,8 @@ func assertPerfPruning(t *testing.T, conn *pgx.Conn, c perfCase, r perfResult) {
 			}
 		}
 	}
-	if len(r.summary.scanned["rotten.events"]) == 0 {
-		t.Errorf("%s: scans no events partition", c.name)
+	if len(r.summary.scanned["rotten.events"]) == 0 && len(r.summary.scanned["rotten.event_context"]) == 0 {
+		t.Errorf("%s: scans no events or event_context partition", c.name)
 	}
 }
 
@@ -681,6 +684,11 @@ func perfCases(f perfFixture) []perfCase {
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole)...)
 		add("replica_utilization_by_job "+r.label, "replica_utilization_by_job.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole)...)
+	}
+	// replica_utilization's cost grows with the cluster's events in the
+	// range, so it also runs over all 21 seeded days: the longest custom range.
+	for _, file := range []string{"replica_utilization_by_controller_action", "replica_utilization_by_job"} {
+		add(file+" 21d", file+".sql", d21, uiTimeout, 3, with(d21, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole)...)
 	}
 	// The fingerprint page runs these four together, with the UI's automatic
 	// bucket: the smallest that gives at most 200 buckets.

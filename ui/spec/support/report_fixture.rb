@@ -154,6 +154,20 @@ module ReportFixture
           SQL
         end
       end
+      # Ingest stores these per context row; replica utilization reads only them.
+      conn.exec(<<~SQL)
+        update rotten.event_context ec
+        set logical_source_id = e.logical_source_id,
+            attributed_time = e.time * ec.c::double precision / t.total::double precision
+        from rotten.events e,
+             (select event_id, observed_window_start, sum(c) as total
+              from rotten.event_context
+              group by event_id, observed_window_start) t
+        where e.id = ec.event_id
+          and e.observed_window_start = ec.observed_window_start
+          and t.event_id = ec.event_id
+          and t.observed_window_start = ec.observed_window_start
+      SQL
 
       STATS.each do |s|
         conn.exec_params(<<~SQL, [fingerprint_ids[s.fingerprint], s.source ? source_ids[s.source] : 0, s.type, s.count, s.mean, s.deviation, s.last])
