@@ -32,23 +32,23 @@ with sources as (
     and cluster = $3
     and role in ($6, $7)
 ), event_context_with_totals as (
-  select
-    ec.*,
-    sum(ec.c) over (partition by ec.event_id) as ctx_total
-  from rotten.event_context ec
-  where ec.observed_window_start >= $4::timestamptz
-    and ec.observed_window_start < $5::timestamptz
-    and ec.observed_window_end <= $5::timestamptz
-), aggregated_events as (
+  -- ctx_total is over all of an event's context rows. Joining events and
+  -- sources first keeps the window to the selected sources' contexts;
+  -- totaling every context row in the range made generic plans slow at
+  -- 7 days (docs/perf.md).
   select
     s.cluster,
     s.role,
+    e.time,
     ec.job_tag_id,
-    sum(ec.c) as calls,
-    sum(e.time * ec.c::double precision / ec.ctx_total)::double precision as total_ms
+    ec.c,
+    sum(ec.c) over (partition by ec.event_id) as ctx_total
   from rotten.events e
   join sources s on s.id = e.logical_source_id
-  join event_context_with_totals ec on ec.event_id = e.id
+  join rotten.event_context ec on ec.event_id = e.id
+    -- Ingest writes each context with its event's window. Saying so lets a
+    -- generic plan prune event_context to one partition per event.
+    and ec.observed_window_start = e.observed_window_start
   -- Only windows fully inside [start, end) are counted; straddling windows are excluded on purpose.
   where e.observed_window_start >= $4::timestamptz
     and e.observed_window_start < $5::timestamptz
@@ -56,9 +56,17 @@ with sources as (
     and ec.observed_window_start >= $4::timestamptz
     and ec.observed_window_start < $5::timestamptz
     and ec.observed_window_end <= $5::timestamptz
-    and ec.job_tag_id is not null
-    and ec.ctx_total > 0
-  group by s.cluster, s.role, ec.job_tag_id
+), aggregated_events as (
+  select
+    cluster,
+    role,
+    job_tag_id,
+    sum(c) as calls,
+    sum(time * c::double precision / ctx_total)::double precision as total_ms
+  from event_context_with_totals
+  where job_tag_id is not null
+    and ctx_total > 0
+  group by cluster, role, job_tag_id
 ), primary_events as (
   select *
   from aggregated_events

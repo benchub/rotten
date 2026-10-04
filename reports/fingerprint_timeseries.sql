@@ -30,9 +30,9 @@
 --
 -- Limits:
 --   The report rejects requests that would generate more than 10000 buckets.
---   The index decision for (fingerprint_id, observed_window_start) is deferred
---   to the -53 scale test, because the small report fixture is not enough
---   evidence to justify another partitioned-table index.
+--   Migration 0008 adds events (fingerprint_id, observed_window_start) for
+--   this report and the other per-fingerprint ones; docs/perf.md has the
+--   numbers behind it.
 --
 -- Window semantics:
 --   Only windows fully inside [$5, $6) are counted: observed_window_start must

@@ -48,7 +48,7 @@ DOCKER_SOCK := \
 
 GO_TEST_ARGS ?=
 
-.PHONY: test test-unit test-ui test-all test-release golden shell image ui-image proto tools build build-native build-linux build-linux-smoke build-smoke build-images release-images
+.PHONY: test test-unit test-ui test-perf test-all test-release golden shell image ui-image proto tools build build-native build-linux build-linux-smoke build-smoke build-images release-images
 
 # buf is pinned at BUF_VERSION and stays out of go.mod (its dependency tree
 # is large). `make tools` installs it into ./bin with GOBIN, and `make proto`
@@ -144,8 +144,18 @@ test-release:
 	ROTTEN_RELEASE_SMOKE=1 go test $(GO_TEST_ARGS) -run '^TestReleaseArtifactsSmoke$$' ./internal/release
 
 ## test: all Go tests, race detector on, Docker socket mounted for testcontainers.
+## The vet line compiles the perf suite (build tag perf) without running it.
 test: image
+	$(DOCKER_RUN) $(IMAGE) go vet -tags perf ./reports
 	$(DOCKER_RUN) $(DOCKER_SOCK) $(IMAGE) go test -race $(GO_TEST_ARGS) ./...
+
+## test-perf: the report performance suite (reports/perf_test.go, build tag
+## perf). It seeds about 10 million events, so it takes several minutes and
+## isn't part of test or test-all. ROTTEN_PERF_EVENTS overrides the count.
+## Results are recorded in docs/perf.md.
+PERF_TEST_ARGS ?=
+test-perf: image
+	$(DOCKER_RUN) $(DOCKER_SOCK) -e ROTTEN_PERF_EVENTS $(IMAGE) go test -tags perf -run '^TestPerf' -count=1 -timeout 90m -v $(PERF_TEST_ARGS) ./reports
 
 ## test-ui: Rails specs in Docker, against a migrated rotten test database.
 test-ui: image ui-image
