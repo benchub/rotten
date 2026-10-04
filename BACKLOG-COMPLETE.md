@@ -993,3 +993,17 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Tests:** 873 UI examples.
   - **Review:** one Opus round. The Medium finding (Turbo's snapshot cache) was fixed.
   - **Follow-up:** 20261003-180000-1.
+
+### 20261001-103222-53: Check report query performance.
+- **Do:** Seed about 10 million events across 21 partitions. Check report latency and plans, and add indexes as needed. Include a `fingerprint_timeseries` case that decides whether `events` needs an index on `(fingerprint_id, observed_window_start)`.
+- **Red test:** A benchmark-style test asserting partition pruning and a latency budget (for example, under two seconds for a three-hour range).
+- **Done when:** Passes. Record the numbers in `docs/`.
+- **Needs:** -50.
+- **Completed:** 2026-10-03, 56d4f1a.
+  - **Suite:** opt-in `make test-perf` (build tag `perf`, PG18), about 9 minutes. It seeds 10M events and 13M contexts over 21 partitions, deterministically from a fixed anchor. `make test` now vets the perf file.
+  - **Checks:** every report is checked for partition pruning, with custom and generic plans, at 3h, 24h and 7d. Fingerprint reports are also checked at 21d.
+  - **Index:** migration 0008 adds `events (fingerprint_id, observed_window_start)`. Fingerprint reports go from about 1s to about 50ms, and inserts cost 10–30% more. The build takes about 3s per 10M rows and holds a SHARE lock that blocks ingest.
+  - **Replica utilization:** both reports were rewritten to join event and source first, and to match `event_context` on `observed_window_start`. 7d is now about 5.5s instead of timing out.
+  - **Numbers:** in `docs/perf.md`.
+  - **Review:** two Opus rounds.
+  - **Follow-up:** 20261003-190000-1.

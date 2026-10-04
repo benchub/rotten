@@ -42,12 +42,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261001-103222-53: Check report query performance.
-- **Do:** Seed about 10 million events across 21 partitions. Check report latency and plans, and add indexes as needed. Include a `fingerprint_timeseries` case that decides whether `events` needs an index on `(fingerprint_id, observed_window_start)`.
-- **Red test:** A benchmark-style test asserting partition pruning and a latency budget (for example, under two seconds for a three-hour range).
-- **Done when:** Passes. Record the numbers in `docs/`.
-- **Needs:** -50.
-
 ## Phase F: Docs.
 
 ### 20261001-103222-54: Rewrite the README and write operator docs.
@@ -155,5 +149,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - Viewers get 403.
   - Admins see the entries newest first.
   - `users:disable` writes an audit row.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261003-190000-1: Make replica utilization scale past 7 days on busy clusters.
+- **Do:** After the -53 rewrite, `replica_utilization_by_controller_action` takes about 5.5s at 7d on the 10M-event perf seed (by_job about 3.2s). Cost grows linearly with the cluster's events in the range, so a busier cluster or a custom range up to 21 days could hit the 15s UI timeout. Consider a structural fix, such as storing each event's context total at ingest (a goose migration plus an ingest change), so the report doesn't recount all `event_context` rows.
+- **Red test:** A `make test-perf` case at 21d, or at 7d with a heavier seed, that stays within the UI timeout.
 - **Done when:** Passes.
 - **Needs:** none.
