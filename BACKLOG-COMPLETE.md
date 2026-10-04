@@ -1076,3 +1076,13 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Done when:** Passes.
 - **Needs:** -105250-4.
 - **Closed:** 2026-10-04. Merged into 20261003-150000-1 by the user's session-lifetime decision: a generation counter plus a 12h absolute expiry.
+
+### 20261003-200000-1: Fix the `serve` flag help text about config precedence.
+- **Do:** In `cmd/rotten-server/serve.go` around lines 221–230, the flag help says "default config X, then $ENV". `loadServeConfig` actually applies the flag, then the `ROTTEN_SERVER_*` env var, then the config file, then the default. Make the help text match, as `docs/server.md` already does.
+- **Red test:** A test that the help output states the actual precedence.
+- **Done when:** Passes.
+- **Needs:** none.
+- **Completed:** 2026-10-04, 74e593c.
+  - **Change:** a `serveFlagHelp` helper renders each serve flag's help as "(default $ENV, then config Key, else <default>)", using the same default constants as `loadServeConfig`.
+  - **Test:** `TestServeHelpStatesPrecedence` parses the real `serve -h` output against hard-coded expectations. Any unchecked flag fails it.
+  - **Review:** one Opus round, clean.

@@ -99,6 +99,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - Add an expiry spec.
   - Add specs that each bump trigger revokes a copied cookie.
   - Add a spec that an OIDC user losing their group at re-login revokes their other sessions.
+  - Un-pend the `users:disable` → `users:enable` cookie-replay spec added by 20261003-140000-1. Disable must bump the generation, so that enable doesn't revive old sessions. Remove the interim docs caveat about this from `docs/ui.md` and `ui/README.md`.
   - Add a Go migrate test for the column.
 - **Done when:** Passes.
 - **Needs:** none.
@@ -141,12 +142,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 ### 20261003-190000-1: Make replica utilization scale past 7 days on busy clusters.
 - **Do:** After the -53 rewrite, `replica_utilization_by_controller_action` takes about 5.5s at 7d on the 10M-event perf seed (by_job about 3.2s). Cost grows linearly with the cluster's events in the range, so a busier cluster or a custom range up to 21 days could hit the 15s UI timeout. Consider a structural fix, such as storing each event's context total at ingest (a goose migration plus an ingest change), so the report doesn't recount all `event_context` rows.
 - **Red test:** A `make test-perf` case at 21d, or at 7d with a heavier seed, that stays within the UI timeout.
-- **Done when:** Passes.
-- **Needs:** none.
-
-### 20261003-200000-1: Fix the `serve` flag help text about config precedence.
-- **Do:** In `cmd/rotten-server/serve.go` around lines 221–230, the flag help says "default config X, then $ENV". `loadServeConfig` actually applies the flag, then the `ROTTEN_SERVER_*` env var, then the config file, then the default. Make the help text match, as `docs/server.md` already does.
-- **Red test:** A test that the help output states the actual precedence.
 - **Done when:** Passes.
 - **Needs:** none.
 
