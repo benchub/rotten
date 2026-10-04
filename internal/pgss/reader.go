@@ -96,26 +96,62 @@ func (r *Reader) ExtVersion(ctx context.Context) ([2]int, error) {
 		`select extversion from pg_extension where extname = 'pg_stat_statements'`).Scan(&s); err != nil {
 		return r.ver, fmt.Errorf("pgss: read extversion: %w", err)
 	}
-	maj, min, ok := strings.Cut(s, ".")
-	a, err1 := strconv.Atoi(maj)
-	b, err2 := strconv.Atoi(min)
-	if !ok || err1 != nil || err2 != nil {
-		return r.ver, fmt.Errorf("pgss: unexpected extversion %q", s)
+	v, err := checkSupportedVersion(s)
+	if err != nil {
+		return r.ver, err
 	}
-	if a != 1 || b < 9 {
-		return r.ver, fmt.Errorf("pgss: extversion %s is older than 1.9 (Postgres 14)", s)
-	}
-	r.ver = [2]int{a, b}
-	r.query = selectSQL(b)
+	r.ver = v
+	r.query = selectSQL(v[1])
 	return r.ver, nil
+}
+
+// checkSupportedVersion parses extversion s and checks that the reader
+// supports it. Majors other than 1 are rejected because selectSQL and col key
+// only on the 1.x minor and a 2.x's columns are unknown; accepting a new major
+// means extending selectSQL and col first.
+func checkSupportedVersion(s string) ([2]int, error) {
+	v, err := parseExtVersion(s)
+	if err != nil {
+		return [2]int{}, err
+	}
+	if v[0] != 1 {
+		return [2]int{}, fmt.Errorf("pgss: pg_stat_statements %s has unsupported major version %d; rotten supports 1.x", s, v[0])
+	}
+	if v[1] < 9 {
+		return [2]int{}, fmt.Errorf("pgss: extversion %s is older than 1.9 (Postgres 14)", s)
+	}
+	return v, nil
 }
 
 // HasMinmaxReset reports whether the extension supports the min/max only
 // reset (1.11, Postgres 17+).
 func (r *Reader) HasMinmaxReset(ctx context.Context) (bool, error) {
 	v, err := r.ExtVersion(ctx)
-	return v[1] >= 11, err
+	return hasMinmaxReset(v), err
 }
+
+// parseExtVersion parses an extversion like "1.11" into (major, minor). Like
+// observer.sql's string_to_array(extversion, '.')::int[] cast, it accepts any
+// number of dot-separated parts and errors on non-numeric ones. A missing
+// minor part counts as 0, and parts after the minor are ignored.
+func parseExtVersion(s string) ([2]int, error) {
+	var v [2]int
+	for i, p := range strings.Split(s, ".") {
+		n, err := strconv.Atoi(p)
+		if err != nil || p == "" || p[0] < '0' || p[0] > '9' {
+			return [2]int{}, fmt.Errorf("pgss: unexpected extversion %q", s)
+		}
+		if i < len(v) {
+			v[i] = n
+		}
+	}
+	return v, nil
+}
+
+// hasMinmaxReset reports whether version v is at least 1.11. The major > 1
+// branch matches observer.sql's int-array comparison; it becomes reachable
+// once checkSupportedVersion accepts a new major.
+func hasMinmaxReset(v [2]int) bool { return v[0] > 1 || (v[0] == 1 && v[1] >= 11) }
 
 // col returns expr when the extension minor version is at least since, and a
 // typed NULL otherwise.
