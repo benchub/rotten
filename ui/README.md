@@ -327,7 +327,8 @@ Each report runs as `rotten_ui` in a read-only transaction with
 never applies to the next request on the same connection. A report that runs
 past it is stopped, and the page answers 503 with a message suggesting a
 shorter range or a narrower source. `ROTTEN_UI_REPORT_TIMEOUT` sets the
-limit; see [`docs/ui.md`](../docs/ui.md#general).
+limit for the whole page: the fingerprint page's three queries share it, each
+getting only what's left. See [`docs/ui.md`](../docs/ui.md#general).
 
 ## Pass keys
 

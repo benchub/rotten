@@ -1,7 +1,8 @@
 # One fingerprint: its normalized SQL, and for a picked source and time range
 # a time series chart, its top contexts and its stats on each role. The
 # source and range go through the same ReportQuery validation as the
-# fingerprint time series report, and every query runs through ReportRunner.
+# fingerprint time series report, and every query runs through one
+# ReportRunner, so the page shares one timeout.
 class FingerprintsController < ApplicationController
   RANGE_FIELDS = %i[range from to].freeze
 

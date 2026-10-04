@@ -223,6 +223,27 @@ RSpec.describe "Fingerprint detail", type: :request do
     expect(response.body).to include("took longer than")
   end
 
+  it "stops the page within one timeout when every query is slow" do
+    sign_in
+    get "/fingerprints/#{users_id}", params: source_params
+    original_timeout = Rails.configuration.x.report_timeout_ms
+    Rails.configuration.x.report_timeout_ms = 300
+    allow(ReportSql).to receive(:read).and_wrap_original do |original, file|
+      sql = original.call(file).sub(/;\s*\z/, "")
+      "with slow as materialized (select pg_sleep(0.25)) select q.* from (\n#{sql}\n) q, slow"
+    end
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    get "/fingerprints/#{users_id}", params: source_params
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    expect(response).to have_http_status(:service_unavailable)
+    expect(response.body).to include("took longer than 0.3\n")
+    expect(elapsed).to be < 0.65
+  ensure
+    Rails.configuration.x.report_timeout_ms = original_timeout if original_timeout
+  end
+
   it "doesn't list the fingerprint detail queries as reports" do
     sign_in
 

@@ -249,6 +249,24 @@ RSpec.describe "Fingerprint detail", type: :system do
     end
   end
 
+  it "shows the timeout message when the page's queries together run past the timeout" do
+    users_id = @fixture.fingerprint_ids.fetch("users")
+    original = Rails.configuration.x.report_timeout_ms
+    Rails.configuration.x.report_timeout_ms = 300
+    allow(ReportSql).to receive(:read).and_wrap_original do |read, file|
+      sql = read.call(file).sub(/;\s*\z/, "")
+      "with slow as materialized (select pg_sleep(0.25)) select q.* from (\n#{sql}\n) q, slow"
+    end
+
+    visit "/fingerprints/#{users_id}?project=canvas&environment=production&cluster=13&range=3h&bucket=10m"
+
+    expect(page).to have_text("This report took longer than 0.3 seconds and was stopped")
+    expect(page).to have_no_css("svg.timeseries-chart")
+    expect(page).to have_no_css("table.fingerprint-contexts")
+  ensure
+    Rails.configuration.x.report_timeout_ms = original
+  end
+
   it "shows the SQL and the source picker before a source is picked" do
     jobs_id = @fixture.fingerprint_ids.fetch("jobs")
     visit "/fingerprints/#{jobs_id}"

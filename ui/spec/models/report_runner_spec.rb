@@ -39,6 +39,32 @@ RSpec.describe ReportRunner do
     expect(setting("statement_timeout")).not_to eq("50ms")
   end
 
+  it "shares one time budget across its queries" do
+    runner = described_class.new(timeout_ms: 1_000)
+    runner.run("select pg_sleep(0.6)", [])
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    expect { runner.run("select pg_sleep(0.7)", []) }.to raise_error(ActiveRecord::QueryCanceled)
+    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.65
+  end
+
+  it "gives the next query only what's left of the budget" do
+    runner = described_class.new(timeout_ms: 5_000)
+    runner.run("select pg_sleep(0.5)", [])
+
+    sql = "select setting::integer from pg_settings where name = 'statement_timeout'"
+    left = runner.run(sql, []).rows.first.first
+    expect(left).to be_between(1_000, 4_600)
+  end
+
+  it "raises QueryCanceled without querying once the budget is spent" do
+    runner = described_class.new(timeout_ms: 50)
+    expect { runner.run("select pg_sleep(1)", []) }.to raise_error(ActiveRecord::QueryCanceled)
+
+    expect(ApplicationRecord).not_to receive(:with_connection)
+    expect { runner.run("select 1", []) }.to raise_error(ActiveRecord::QueryCanceled)
+  end
+
   it "uses the configured timeout by default" do
     original = Rails.configuration.x.report_timeout_ms
     Rails.configuration.x.report_timeout_ms = 4321

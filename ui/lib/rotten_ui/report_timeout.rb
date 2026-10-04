@@ -1,5 +1,5 @@
 module RottenUi
-  # The statement timeout for report queries, from ROTTEN_UI_REPORT_TIMEOUT in
+  # The time limit for a report page's queries, from ROTTEN_UI_REPORT_TIMEOUT in
   # seconds. Unset or blank means 15 seconds.
   class ReportTimeout
     DEFAULT_SECONDS = 15
