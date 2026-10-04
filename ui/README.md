@@ -17,21 +17,14 @@ if it's missing or anything else. Every user is a `viewer` or an `admin`. A
 user whose `active` flag is false is locked out, whatever the identity
 provider says.
 
+[`docs/ui.md`](../docs/ui.md) is the reference for deploying the app and for
+every environment variable it reads, in both modes. This section describes
+how each mode behaves.
+
 ### OIDC mode
 
 Every org-specific value comes from env. None has a default in this repo.
-
-| Variable | Required | Meaning |
-| --- | --- | --- |
-| `OIDC_ISSUER` | yes | Issuer URL. Endpoints and keys come from its `/.well-known/openid-configuration`. |
-| `OIDC_CLIENT_ID` | yes | Client ID of the app registered with the identity provider. |
-| `OIDC_CLIENT_SECRET` | yes | Its client secret. |
-| `OIDC_GROUPS_CLAIM` | no, default `groups` | Claim, in the ID token or userinfo, that lists the user's groups. |
-| `ROTTEN_UI_VIEWER_GROUP` | no | Group whose members may sign in. If unset, any authenticated user is a viewer. |
-| `ROTTEN_UI_ADMIN_GROUP` | no | Group whose members are admins. **If unset, nobody is an admin through OIDC.** |
-| `OIDC_REDIRECT_URI` | no | Full callback URL. If unset, it's built from the request as `<scheme>://<host>/auth/openid_connect/callback`. Set it when the app sits behind a proxy that changes the host. |
-| `OIDC_SCOPES` | no, default `openid email profile` | Space-separated scopes to request. `openid` is always added. Add `groups` when the provider needs that scope to send the groups claim, as Okta does; providers that don't know a `groups` scope, such as Google, reject the login with `invalid_scope` if it's requested. |
-| `ROTTEN_UI_CSP_FORM_ACTION_ORIGINS` | no | Comma-separated extra origins, such as `https://login.example.com`, that the browser may be redirected to after **Sign in**. See below. |
+The variables are listed in [`docs/ui.md`](../docs/ui.md#oidc-mode).
 
 In `oidc` mode the app refuses to boot if `OIDC_ISSUER`, `OIDC_CLIENT_ID` or
 `OIDC_CLIENT_SECRET` is missing or blank. The error names the missing
@@ -116,8 +109,9 @@ from booting, with an error that names the bad entry.
 
 ### Identity provider app checklist
 
-The deploy repo does the real setup with its own values. The provider app
-needs:
+The deploy repo does the real setup with its own values. For Okta,
+step by step, see [`docs/ui.md`](../docs/ui.md#pointing-oidc-at-okta). Any
+provider app needs:
 
 - **Type:** a web app (confidential client) using the authorization code
   grant. PKCE is sent, so enable it if the provider asks.
@@ -275,11 +269,8 @@ Each report runs as `rotten_ui` in a read-only transaction with
 `SET LOCAL statement_timeout`, so the limit ends with the transaction and
 never applies to the next request on the same connection. A report that runs
 past it is stopped, and the page answers 503 with a message suggesting a
-shorter range or a narrower source.
-
-| Variable | Required | Meaning |
-| --- | --- | --- |
-| `ROTTEN_UI_REPORT_TIMEOUT` | no | Statement timeout for each report query, in seconds; fractions such as `2.5` are allowed. Default `15`. The app refuses to boot if the value isn't a number from 0.001 to 2147483. |
+shorter range or a narrower source. `ROTTEN_UI_REPORT_TIMEOUT` sets the
+limit; see [`docs/ui.md`](../docs/ui.md#general).
 
 ## Pass keys
 
@@ -320,9 +311,8 @@ CLI still works alongside the UI.
 
 ## Production settings
 
-| Variable | Required | Meaning |
-| --- | --- | --- |
-| `ROTTEN_UI_HOSTS` | yes, in production | Comma-separated host names the app answers to, such as `rotten.example.com`. A name starting with a dot, such as `.example.com`, also allows its subdomains. |
+[`docs/ui.md`](../docs/ui.md) covers the production image and its required
+settings: `DATABASE_URL`, `SECRET_KEY_BASE` and `ROTTEN_UI_HOSTS`.
 
 With `RAILS_ENV=production` the app refuses to boot without
 `ROTTEN_UI_HOSTS`. A request whose `Host` or `X-Forwarded-Host` isn't listed

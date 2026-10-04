@@ -1,362 +1,153 @@
 rotten
 ======
-Requests Over Time, Tracked Easily Now is a project written to help optimize your app
-by letting you know which queries it is murdering your DB with. A reasonable person
-might ask, "Isn't this why we have pgBadger?" to which I would say that while
-pgBadger provides excellent analytics in a readable format,
 
-1. it requires full logging to not be misleading
-2. full logging is problematic when you're logging to a remote server for compliance
-   reasons, and also already approaching the packets/sec limits of your hardware 
-   _before_ enabling full logging.
-3. pgBadger reports are generated once for a static set of queries. If you want to
-   drill in on a subset of data, that doesn't work.
+**Requests Over Time, Tracked Easily Now.** Rotten shows you which queries
+are hurting your Postgres databases, over any time range you like, without
+full query logging.
 
-rotten attemps to address these things. It does so by frequently looking at the helpful
-data gathered by pg_stat_statements and recording how much each counter grew since the
-last look. This has shortcomings, but it gets us 95% of the
-usefulness of logging all queries in order to see which are problematic, without any of
-the firehose problems that full logging can bring.
+pgBadger is great, but it needs full logging to tell the truth, and full
+logging is expensive on a busy server, especially when the logs must go to a
+remote host for compliance. Its reports are also fixed once generated.
+Rotten instead looks at `pg_stat_statements` every few minutes, records how
+much each statement's counters grew, and stores that in its own database.
+That gets you most of what full logging would, at a fraction of the cost, and
+you can slice it by time, source, controller, action or job.
 
-Instead of recording our analysis to text files, like pgBadger does, we just store the
-data in an additional database and punt on any form of UI. Yes, that's a bit of a cop
-out, but it also lets us employ the power of SQL to filter our data and pull whatever 
-report we might want, for whatever time period we might want.
+Architecture
+------------
 
-Assumptions
-===========
-As a young project rotten makes a lot of assumptions. Among them:
+```
+ observed Postgres 14–18 (primary or replica)
+     ^   rotten_observer: pg_read_all_stats, plus a min/max-only reset on 17+
+     |
+ rotten-worker (Go, one per observed database)
+     - reads pg_stat_statements and diffs it against a local snapshot
+     - fingerprints statements; pulls controller, action and job from comments
+     - keeps a durable outbox of unsent harvests (SQLite, in StateDir)
+     |
+     |   HTTPS, TLS 1.3 only, "Authorization: Bearer <pass key>", Connect RPC
+     v
+ rotten-server serve (Go)            rotten-server migrate | keys (admin CLI)
+     - checks the pass key and           as rotten_owner
+       its pinned FQDN                        |
+     - validates, then writes each harvest   |
+       in one transaction, as rotten_ingest  |
+     v                                        v
+ rotten database (Postgres 18 + pg_partman; daily partitions, retention)
+     ^
+     |   rotten_ui
+ rotten UI (Rails 8.1): reports, fingerprint pages, pass key admin;
+                        OIDC (such as Okta) or password login
+```
 
-1. You are using pg_stat_statements. Rotten doesn't reset its counters, so other tools that
-   read them keep working. On Postgres 17 and later, it does reset min and max after each
-   harvest.
-2. You are ok with not getting everything from pg_stat_statements, but rather the "most"
-   interesting queries. Getting *everything* is orders of magnitude too expensive to be
-   useful on busy systems, and anyway, this project is only trying to find the worst 
-   offenders, not an exhaustive snapshot.
-3. You are ok with a SQL prompt as a UI for now.
-4. You will have an observer role on your monitored dbs (default `rotten_observer`) that
-   reads pg_stat_statements directly through `pg_read_all_stats`. On Postgres 17 and later,
-   it can also call one security definer function that resets only min and max.
-5. Your monitored databases have distinct identifiers of some kind (fqdn, IP, etc) as well
-   as some logical identification ("the primary production server" or "cluster38 secondary").
+Workers reach the server but never the rotten database. The server and UI
+share only the database. The SQL behind every report is in `reports/`, and
+you can run it yourself in psql as `rotten_readonly`.
 
-How to use it
-=============
-1. Get and install Go 1.27 or later. http://www.golang.org
-2. Build it. A native build needs cgo and a C compiler, because pg_query_go compiles
-   libpg_query from C:
-  ```bash
-  go build ./cmd/rotten-worker
-  ```
-   That writes a `rotten-worker` binary in the current directory.
-   Native builds work on macOS and Linux. `make test-unit` runs natively, and `make test`
-   runs the full suite in Docker.
+Quick start
+-----------
 
-   For release artifacts, run:
-  ```bash
-  make build
-  ```
-   This writes native binaries to `dist/native`, Linux amd64 and arm64 binaries to
-   `dist/linux/<arch>`, and local production images tagged `rotten-worker:local` and
-   `rotten-server:local`. The server is built with `CGO_ENABLED=0`. The worker uses
-   cgo for `pg_query_go`; cross-compiling it from macOS without a Linux cross C
-   toolchain does not work, so the Linux worker binaries are built through Docker.
-   Version metadata comes from git and is available with `rotten-worker --version` and
-   `rotten-server --version`.
+The dev stack runs everything in Docker: an observed Postgres 18, a worker,
+the server, the rotten database and the UI.
 
-   `make build` uses native-platform Docker builds for the images, and
-   `docker build --platform` for the Linux worker binaries. Before running it, make
-   sure these base image variants are pulled locally:
-   - `golang:1.27` for `linux/amd64` and `linux/arm64`.
-   - `debian:stable-slim` for the host Docker platform.
-   - `gcr.io/distroless/static-debian12:nonroot` for the host Docker platform.
+```sh
+docker compose -f dev/docker-compose.yaml up
+```
 
-   To build both Linux worker architectures and per-architecture production images, run:
-  ```bash
-  make release-images
-  ```
-   That target uses `docker build --platform` and needs the corresponding base image
-   variants available locally before it runs. In addition to `golang:1.27` for both
-   architectures, pull `debian:stable-slim` and
-   `gcr.io/distroless/static-debian12:nonroot` for both `linux/amd64` and
-   `linux/arm64`. For example, on an arm64 host, pull the amd64 variants with:
-  ```bash
-  docker pull --platform linux/amd64 golang:1.27
-  docker pull --platform linux/amd64 debian:stable-slim
-  docker pull --platform linux/amd64 gcr.io/distroless/static-debian12:nonroot
+- The UI is at http://localhost:3000. Sign in as the fake viewer or fake
+  admin; no identity provider is needed.
+- The server is at https://localhost:8443. Check it with:
+
+  ```sh
+  docker compose -f dev/docker-compose.yaml cp certs:/certs/ca.pem ca.pem
+  curl --cacert ca.pem https://localhost:8443/healthz
   ```
 
-   The production images are:
-   - `docker/worker.Dockerfile`, based on Debian slim, running as a numeric non-root user.
-   - `docker/server.Dockerfile`, based on distroless static, running as non-root.
+Reports fill in as the worker harvests, every 10 seconds in the dev stack,
+whatever runs on the observed database. See `dev/README.md`
+for the details, and `docker compose -f dev/docker-compose.yaml down -v` to
+remove it all.
 
-   Both images log to the container's stdout stream and default to config-file
-   startup (`/etc/rotten-worker/worker.json` and `/etc/rotten/server.json`). The server image
-   also honors the `ROTTEN_SERVER_*` environment overrides described below. Build and
-   push multi-platform manifests in the deploy repository; this repository only builds
-   per-platform images and binaries.
-3. Install pg_partman in the rotten db. See https://github.com/pgpartman/pg_partman. tldr:
- - download pg_partman and `make install`
- - add `pg_partman_bgw` to `shared_preload_libraries` in postgresql.conf
- - run `CREATE EXTENSION pg_partman` in the rotten db
-4. Create a `rotten_owner` login role, make it the owner of the rotten db, and grant it
-   pg_partman's non-superuser privileges (all on pg_partman's tables and sequences, and
-   execute on its functions and procedures). Then build and run the migrations as that role:
-  ```bash
-  go build ./cmd/rotten-server
-  ROTTEN_OWNER_DSN='postgres://rotten_owner@host/rotten' ./rotten-server migrate
-  ```
-   Running `migrate` again is safe; it applies only what's new. Grants for the other
-   roles are reapplied on every run from `migrations/permissions.sql`.
+Setting it up for real
+----------------------
 
-   **Partition retention.** pg_partman drops `events` and `event_context` partitions
-   older than the retention period. The default is 21 days. To change it, pass
-   `-retention` or set `ROTTEN_RETENTION` (the flag wins):
-  ```bash
-  ./rotten-server migrate -retention 45d
-  ROTTEN_RETENTION='45 days' ./rotten-server migrate
-  ```
-   It takes a whole number of days, from 1 through 3650, written as `45 days`, `45d`, or a
-   Go duration like `1080h`. `migrate` writes it to `public.part_config` on every run, so
-   a run without the setting puts retention back to 21 days. Pass the same value every
-   time. An invalid value fails `migrate` before it changes anything.
+Follow these in order:
 
-   **Server keys.** Workers authenticate to `rotten-server` with a pass key in an
-   `Authorization: Bearer` header. Manage keys as `rotten_owner` through `ROTTEN_ADMIN_DSN`:
-  ```bash
-  export ROTTEN_ADMIN_DSN='postgres://rotten_owner@host/rotten'
-  ./rotten-server keys create --fqdn db1.example.com db1-worker
-  ./rotten-server keys list
-  ./rotten-server keys revoke db1-worker
-  ```
-   `create` prints the key once. The database keeps only a SHA-256 hash of its secret, so
-   a lost key can't be recovered; revoke it and create a new one. `list` never shows
-   secrets. `--fqdn` pins a key to one worker host. The server refuses to register or
-   accept harvests for any source with an unpinned key, so give every worker key `--fqdn`.
-   A revoked key stops working within the server's key cache TTL, 30 seconds by default.
-   To keep malformed or stale keys from causing one database lookup per RPC, the
-   server applies two token buckets to failed key lookups: one per client IP
-   (burst 5, refilling by 1 lookup every 10 seconds) and one global bucket
-   (burst 50, refilling by 1 lookup every second). A lookup needs both tokens.
-   Once a bucket is over budget, unknown uncached keys return `Unauthenticated`
-   without an `api_keys` lookup. Successful authentication and database lookup
-   errors refund their reserved tokens; database errors still return
-   `Unavailable`. At startup, the server preloads non-revoked keys into its auth
-   cache so valid workers can reconnect after a restart without spending failed
-   lookup budget. A key created after startup from an over-budget IP works after
-   the next token refill; from another IP it works immediately if the global
-   bucket has budget. IPv6 clients are grouped by /64. The client IP comes from
-   the connection peer address, not `X-Forwarded-For`; behind a load balancer,
-   all workers share the load balancer's source IP and therefore share one
-   per-client budget. Tune the per-client and global bursts/refills with the
-   `FailedAuth*` config keys or matching `ROTTEN_SERVER_*` env vars.
+1. [Build](docs/building.md) the binaries and images.
+2. [Set up the rotten database](docs/database.md): Postgres 18, pg_partman
+   and its background worker, the four roles, migrations and retention.
+3. [Run rotten-server](docs/server.md) with a TLS certificate.
+4. [Prepare each observed database](docs/observed.md) with the observer role.
+5. [Issue a pass key](docs/keys.md) for each worker.
+6. [Configure and run each worker](docs/worker.md).
+7. [Deploy the UI](docs/ui.md), with OIDC or password login.
 
-   **HTTPS ingest server.** Run the listener as `rotten_ingest`, separately from
-   migrations and key administration:
-  ```bash
-  ROTTEN_INGEST_DSN='postgres://rotten_ingest@host/rotten' \
-    ./rotten-server serve -listen :8443 \
-    -tls-cert /path/to/server-chain.pem -tls-key /path/to/server-key.pem
-  ```
-   TLS 1.3 is the minimum; there is no plaintext listener or TLS 1.2 fallback.
-   Clients must trust the server's CA and verify its hostname. Worker bearer keys,
-   not client certificates, authenticate RPCs. The existing Connect API is mounted
-   with pass-key authentication, including HTTP/2 support. `Register` creates
-   or reuses source rows for the worker. `SubmitHarvest` writes one harvest
-   batch transactionally and deduplicates retries by `batch_id`.
+`docs/plan.md` records the design and the decisions behind it, and
+`docs/perf.md` the report performance work.
 
-   The server can also read a JSON config file with the same exported-key
-   format as the worker config:
-  ```json
-  {
-    "DSN": "postgres://rotten_ingest@host/rotten",
-    "Listen": ":8443",
-    "TLSCert": "/path/to/server-chain.pem",
-    "TLSKey": "/path/to/server-key.pem",
-    "ShutdownTimeout": 10,
-    "HealthTimeout": 1,
-    "FailedAuthBurst": 5,
-    "FailedAuthRefill": 10,
-    "GlobalFailedAuthBurst": 50,
-    "GlobalFailedAuthRefill": 1
-  }
-  ```
-   `ShutdownTimeout`, `HealthTimeout`, `FailedAuthRefill`, and
-   `GlobalFailedAuthRefill` are whole seconds. Precedence is
-   flags, then `ROTTEN_SERVER_*` environment variables, then the config file,
-   then defaults. For compatibility when no config file is used, the old
-   `ROTTEN_INGEST_DSN`, `ROTTEN_LISTEN`, `ROTTEN_TLS_CERT`, and
-   `ROTTEN_TLS_KEY` names still work.
+Development
+-----------
 
-   | Flag | Config key | Environment override | Default |
-   | --- | --- | --- | --- |
-   | `-config` | n/a | n/a | No config file |
-   | `-dsn` | `DSN` | `ROTTEN_SERVER_DSN` | Required; use `rotten_ingest` |
-   | `-listen` | `Listen` | `ROTTEN_SERVER_LISTEN` | `:8443` |
-   | `-tls-cert` | `TLSCert` | `ROTTEN_SERVER_TLS_CERT` | Required PEM certificate chain, leaf first |
-   | `-tls-key` | `TLSKey` | `ROTTEN_SERVER_TLS_KEY` | Required matching PEM private key |
-   | `-shutdown-timeout` | `ShutdownTimeout` | `ROTTEN_SERVER_SHUTDOWN_TIMEOUT` | `10` seconds |
-   | `-health-timeout` | `HealthTimeout` | `ROTTEN_SERVER_HEALTH_TIMEOUT` | `1` second |
-   | `-failed-auth-burst` | `FailedAuthBurst` | `ROTTEN_SERVER_FAILED_AUTH_BURST` | `5` failed lookups per client |
-   | `-failed-auth-refill` | `FailedAuthRefill` | `ROTTEN_SERVER_FAILED_AUTH_REFILL` | `10` seconds per token |
-   | `-global-failed-auth-burst` | `GlobalFailedAuthBurst` | `ROTTEN_SERVER_GLOBAL_FAILED_AUTH_BURST` | `50` failed lookups globally |
-   | `-global-failed-auth-refill` | `GlobalFailedAuthRefill` | `ROTTEN_SERVER_GLOBAL_FAILED_AUTH_REFILL` | `1` second per token |
+Go 1.27 and Docker. `make test` runs the Go tests in Docker against real
+Postgres 14 through 18, `make test-ui` runs the Rails specs, and `make
+test-all` runs both. There's no CI; run `make test-all` before you call
+something done. `ui/README.md` covers the UI.
 
-   Explicit flags override env and config values. The certificate and key must load before
-   the server connects to the database or opens its listener; invalid files abort
-   startup. Keep the key file readable only by the server's service account.
-   Replace both files to rotate certificates. The server reads their contents every
-   second (including files replaced by rename or symlink swaps, even with unchanged
-   timestamps), and SIGHUP forces an immediate reload. Only a successfully parsed,
-   matching pair replaces the active certificate. Missing, malformed, or mismatched
-   files log reload errors and leave the last good pair active; polling retries
-   until the files are repaired. This does not validate certificate expiry or CA
-   trust on the server; clients still enforce those checks.
-   New TLS connections use the new certificate; existing connections remain open
-   with their original TLS session. TLS session resumption is disabled to ensure
-   reconnecting clients always verify the current certificate. SIGINT/SIGTERM stop
-   accepting new connections, drain in-flight requests for up to
-   `ShutdownTimeout`, and stop the certificate reload and prune loops. If that
-   timeout expires, the server cancels outstanding request contexts, force-closes
-   HTTP connections so database transactions roll back, logs the timeout, and
-   exits nonzero instead of waiting indefinitely for pooled connections. The
-   unauthenticated `GET /healthz` readiness endpoint does a short database ping:
-   it returns `200 ok` when the rotten DB is reachable and `503 unhealthy` when
-   it is not, without including database error text in the response. Use it for
-   load-balancer or Kubernetes readiness; process liveness is still the service
-   manager's job.
+Known issues
+------------
 
-   **Ingest validation limits.** The server rejects semantically invalid
-   `SubmitHarvest` and `Register` requests before opening a database transaction.
-
-   | Input | Limit |
-   | --- | ---: |
-   | Connect request body | 32 MiB |
-   | Fingerprint aggregates per harvest | 2000 |
-   | Query-context entries per harvest | 2000 |
-   | Fingerprint string | 128 bytes |
-   | Normalized query string | 8 KiB |
-   | Context strings | 512 bytes |
-   | Floating metric values | 1e15 ms |
-   | Harvest window duration | 24 hours |
-   | Harvest window future skew | 5 minutes |
-   | Register source strings | 255 bytes |
-   | Register `worker_version` | 128 bytes |
-
-   The aggregate and context caps cover the worker's current top-N selection:
-   the union of 100 entries for each of 19 metrics, rounded up to 2000. The
-   24-hour window limit leaves room for valid worker configurations and outbox
-   replay; there is no "too far in the past" check. Future worker RPC sending
-   must truncate normalized query strings to 8 KiB at a UTF-8 boundary before
-   sending. Window times must be ordered and no more than five minutes ahead of
-   the server clock. Numeric metric fields must be finite and non-negative. All
-   stored text must be valid UTF-8 and cannot contain NUL bytes, matching
-   PostgreSQL `text`.
-5. Install `pg_stat_statements` in the monitored database:
- - add `pg_stat_statements` to `shared_preload_libraries` in postgresql.conf (this is a comma-separated string)
- - run `CREATE EXTENSION pg_stat_statements` in the monitored database
-6. As a superuser on each monitored database (Postgres 14 through 18), run `schema/observer.sql`
-   with psql. The worker never resets pg_stat_statements' counters. It saves a snapshot after
-   each harvest and reports the difference. On Postgres 17 and later, it resets only min and
-   max after each harvest, through the wrapper that script creates.
-   Note: min, max, mean, and stddev times are now exec time only (planning time isn't
-   mixed in), while total time is still plan + exec.
-7. Unless you like to be webscale with tmux, script up some systemd services to run rotten.
-8. Modify the conf to fit your environment.
-  1. `ObservedDBConn` is the monitored database connection. Extra care has been
-     given in rotten to make sure that rotten will correctly send a root CA with
-     the needed intermediate certs, if you are working with such an environment.
-  2. `ServerURL`, `PassKeyFile`, and `ServerCAFile` point the worker at
-     `rotten-server`. `PassKeyFile` contains the single bearer key printed by
-     `rotten-server keys create --fqdn <worker fqdn>`. `ServerCAFile` is the CA
-     that signed the server certificate. The worker no longer accepts
-     `RottenDBConn`; if that old key is present, startup fails before connecting.
-  3. `StateDir` is required. It's the directory where the worker keeps its local
-     SQLite state: the pg_stat_statements snapshot and the durable outbox of
-     harvests waiting for the server. The worker creates it if it's missing, so
-     it must be writable by the worker's user. Each worker needs its own
-     `StateDir`, since a second worker on the same directory refuses to start. If
-     the state is lost, the next harvest is a baseline that records nothing, and
-     reporting picks up one window later.
-  4. `MaxSnapshotAge` is required, in seconds. If the saved snapshot is older
-     than this, say after the worker was down for a while, the next harvest is a
-     baseline instead of one huge window. A common setting is three times
-     `ObservationInterval`.
-  5. `SanityCheck` is a query that will be run against the Observed DB before each window.
-     Returning a boolean True value will tell rotten to proceed; a False will cause rotten
-     to quit with a nonzero exit. A query that returns no rows or NULL is also a failed
-     sanity check. The assumption is that systemd will keep restarting rotten until
-     SanityCheck returns True, and also that you have a function you might call which tells you what the
-     database you have connected to thinks it is.
-     This is useful in environments where the host rotten is connecting to might not be what
-     rotten intends. For example, you might want to be gathering statistics from a secondary
-     database, but the secondary hostname might currently point to the primary server, while
-     the secondary undergoes maintenance. While that might be exactly what most database
-     clients would want, it's not helpful for rotten's purposes. Potentially worse, rotten
-     would not know when to reconnect once maintenance is done, and so would stay connected to
-     the primary until it dies or is manually restarted.
-     Transient observed-database connection failures do not exit the worker. The worker
-     reconnects with capped exponential backoff and jitter, then resumes harvesting against
-     the current pg_stat_statements counters.
-  6. `StatusInterval` is how often to report status (in seconds) to its log. With
-     `-noIdleHands`, the status reporter also acts as a watchdog: if the worker stops
-     completing loops, attempting harvests, or retrying reconnects for several observation
-     windows, it logs the last liveness reason and exits nonzero so the supervisor can
-     restart it. Healthy baseline harvests and reconnect retries count as liveness.
-  7. `ObservationInterval` is how long (in seconds) to let pg_stat_statements gather info
-     for. This is the most granular you can make your reports, and the lower you set this,
-     the more data you will need to store in your rotten db.
-  8. `FQDN` is some unique string (typically the FQDN of the observed db) to help find a
-     physical log if more information is desired other than the fingerprint.
-  9. `Project`, `Environment`, `Cluster`, and `Role` are logical identifiers for where the samples
-     of data are coming from.
-  10. `KeepSchemas` is optional and defaults to `false`. By default, rotten ignores schema
-     names when it fingerprints queries, so `users`, `public.users`, and `shard_1.users`
-     all group together. Set it to `true` if your schemas mean different things and you
-     want their queries kept apart.
-  11. `CursorPattern` and `TempTablePattern` are optional. They're regexes that match the
-     cursor and temp-table names your app or ORM generates, so a fresh random name doesn't
-     make a fresh fingerprint. Leave them out to use the defaults shown in `conf`:
-     cursors look like `users_cursor_ab12`, and temp tables look like
-     `users_temp_table_qwerty`, with a random suffix of six or more characters. Each
-     pattern needs exactly two capture groups: the prefix before the generated part and the
-     suffix after it. Write any other grouping as `(?:...)`. A pattern that matches the
-     empty string is rejected. Rotten keeps those and replaces the middle with `_cursor_x` or
-     `_temp_table_x`. Write `CursorPattern` unanchored. Rotten anchors it to whole names
-     when it walks the parse tree and uses it as is to search whole statements. To match
-     your generator, look at real names in `pg_stat_statements` and fit the random part.
-     For example, if temp tables get a three-character suffix like `users_temp_table_abc`,
-     use `([^\\s]+)_temp_table_[0-9a-z]{3}[0-9a-z]*([^\\s]*)`. That's the JSON form, with each backslash doubled.
-     Changing a pattern changes fingerprints for the names it matches, so
-     history from before and after the change won't line up for those queries. An invalid
-     regex stops the worker at startup with an error that names the setting.
-  12. `MinmaxResetSchema` is optional and defaults to `rotten`. On Postgres 17 and later, it's
-     the schema where `schema/observer.sql` created `pg_stat_statements_minmax_reset()`. Set
-     it to match the `observer_schema` you passed to that script. Postgres 14 through 16
-     ignore it.
-9. SIGINT and SIGTERM are graceful. The worker finishes the current harvest, stops the
-   watchdog/status reporter, retries outbox sends for up to 10 seconds, logs any durable
-   batches still queued, closes the local state store, and exits 0. A second signal cancels
-   the in-flight harvest immediately, skips or aborts the flush, closes the store, and exits
-   1 because the stop was forced. If the current harvest does not finish inside the 10-second
-   shutdown budget, the worker force-cancels it, closes the store, and exits 1.
-
-Known Issues
-============
-- The code is ugly.
+- **UI sessions can't be revoked.** Sessions live in an encrypted cookie. A
+  copy taken before sign-out keeps working, and sessions never expire on
+  their own. Disabling the user ends them, and for password users so does a
+  password change.
+- **OIDC group changes apply at the next login.** Someone removed from the
+  admin or viewer group keeps their current session's access until they sign
+  in again or are disabled with `users:disable`.
+- **Login rate limits are per process.** With several Puma workers or
+  containers, the limit is multiplied by their number.
+- **Replica utilization is slow at long ranges.** On busy clusters, ranges
+  of 7 days or more can approach the 15-second report timeout.
+- **The fingerprint page can take up to three report timeouts**, since it
+  runs three queries, each with its own.
+- **No self-service password change**, and no `users:enable` task.
+- **The report source picker doesn't narrow.** You can pick a project,
+  environment, cluster and role combination that doesn't exist.
+- **No audit log viewer.** Key creates and revokes are recorded in
+  `ui_audit_log`, but only SQL can show them, and user admin actions aren't
+  recorded.
+- **Postgres 14 through 16** keep min and max times for each statement's
+  whole lifetime, since they can't reset them on their own.
+- **The fingerprinter doesn't have the Postgres 18 parser yet.** It uses
+  `pg_query_go`'s Postgres 17 parser until a release with 18 ships.
+- **The outbox size isn't configurable.** It holds 288 harvests.
+- **A test flake:** testcontainers sometimes times out inspecting a port when
+  the whole suite runs in parallel.
 
 TODO
-====
-Um yeah quite a bit.
+----
 
-- make a UI
-- allow for arbitrary logical source descriptions, not just Project/Environment/Cluster/Role
-- allow for arbitrary locations of the functions in the observed db
-- allow for an arbitrary observer role name other than "rotten-observer"
-- allow the observation window to adjust size as needed for processing
-- allow for a worker pool of reparse executions to speed things up in wall time
-- configurable context, instead of the hardcoded controller/action/job_tag, with their hard-coded regexes
-- keep a log of the queries we can't parse
-- While we make an effort to normalize cursors and temp tables, those regexs should probably not be hardcoded.
-- Collapse IN () and VALUES clauses of constants, so that IN (1,2,3) is the same as IN (1).
+From the backlog:
+
+- Expire UI sessions and make sign-out revoke them.
+- End sessions when OIDC group membership is lost.
+- Share login rate-limit counters across UI processes.
+- Let users change their own password, and add `users:enable`.
+- Add a unique index on `users(provider, provider_uid)`.
+- Run the fingerprint page's queries under one timeout.
+- Show an all-sources row in the fingerprint stats table.
+- Narrow the report source picker as the user chooses.
+- Add an audit log viewer, and audit user admin actions.
+- Make replica utilization scale past 7 days on busy clusters.
+- Build the UI dev image natively on arm64.
+- Cover the dev-only fake OIDC login route in the CSRF spec.
+- Fix the testcontainers port-inspection flake.
+
+Ideas, not yet in the backlog:
+
+- Store more metrics per event, such as rows, block reads, I/O time and WAL
+  bytes.
+- Detect the role (primary or replica) from `pg_is_in_recovery()` instead of
+  the static `Role` setting.
+- Reduce contention on the shared `fingerprint_stats` rows.
+- Prometheus metrics from the server and worker.
+- Move to the Postgres 18 parser when `pg_query_go` ships it.

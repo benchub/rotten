@@ -66,7 +66,7 @@ type Configuration struct {
 	// names in fingerprints. True keeps them apart.
 	KeepSchemas bool
 	// CursorPattern and TempTablePattern are optional. Leaving them out
-	// keeps the built-in patterns. See the README.
+	// keeps the built-in patterns. See docs/worker.md.
 	CursorPattern    string
 	TempTablePattern string
 	// MinmaxResetSchema is optional. It's the schema schema/observer.sql
