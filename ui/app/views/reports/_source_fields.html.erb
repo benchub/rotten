@@ -1,21 +1,23 @@
 <%# The source picker and time range fields shared by the report and fingerprint pages. %>
-<div>
-  <%= label_tag :project, "Project" %>
-  <%= select_tag :project, options_for_select(query.projects, query.project) %>
-</div>
-<div>
-  <%= label_tag :environment, "Environment" %>
-  <%= select_tag :environment, options_for_select(query.environments, query.environment) %>
-</div>
-<div>
-  <%= label_tag :cluster, "Cluster" %>
-  <%= select_tag :cluster, options_for_select(query.clusters, query.cluster) %>
-</div>
-<% if report.role_filter? %>
+<%= tag.div class: "source-picker", data: { controller: "source-picker", source_picker_catalog_value: query.catalog.to_json } do %>
   <div>
-    <%= label_tag :role, "Role" %>
-    <%= select_tag :role, options_for_select([["All roles", ""]] + query.roles, query.role.to_s) %>
+    <%= label_tag :project, "Project" %>
+    <%= select_tag :project, options_for_select(query.projects, query.project), data: { source_picker_target: "project", action: "source-picker#narrow" } %>
   </div>
+  <div>
+    <%= label_tag :environment, "Environment" %>
+    <%= select_tag :environment, options_for_select(query.environments, query.environment), data: { source_picker_target: "environment", action: "source-picker#narrow" } %>
+  </div>
+  <div>
+    <%= label_tag :cluster, "Cluster" %>
+    <%= select_tag :cluster, options_for_select(query.clusters, query.cluster), data: { source_picker_target: "cluster", action: "source-picker#narrow" } %>
+  </div>
+  <% if report.role_filter? %>
+    <div>
+      <%= label_tag :role, "Role" %>
+      <%= select_tag :role, options_for_select([["All roles", ""]] + query.roles, query.role.to_s), data: { source_picker_target: "role" } %>
+    </div>
+  <% end %>
 <% end %>
 <% if report.utilization? %>
   <% utilization_roles = query.roles | [ReportQuery::DEFAULT_PRIMARY_ROLE, ReportQuery::DEFAULT_REPLICA_ROLE] %>

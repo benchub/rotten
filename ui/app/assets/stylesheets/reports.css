@@ -3,6 +3,7 @@
 .reports a { text-decoration: underline; }
 .report-list li { margin: 0.25rem 0; }
 .report-form { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; margin: 1rem 0 0.25rem; }
+.report-form .source-picker { display: contents; }
 .report-form label { display: block; font-size: 0.85rem; }
 .report-form select, .report-form input { border: 1px solid #999; padding: 0.15rem 0.3rem; }
 .report-form input[type="submit"] { cursor: pointer; }

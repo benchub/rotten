@@ -46,6 +46,22 @@ RSpec.describe "Reports", type: :request do
     expect(response.body).not_to include('class="report"')
   end
 
+  it "renders every source choice, and the catalog for the picker to narrow them, so the form works without JavaScript" do
+    sign_in
+
+    get "/reports/top_by_calls", params: source_params
+
+    form = Nokogiri::HTML(response.body)
+    options = ->(name) { form.css("select[name=#{name}] option").map { |o| o["value"] } }
+    expect(options.("project")).to eq(%w[bridge canvas])
+    expect(options.("environment")).to eq(%w[production])
+    expect(options.("cluster")).to eq(%w[13 7])
+    expect(options.("role")).to eq(["", "primary", "replica"])
+    picker = form.at_css("[data-controller=source-picker]")
+    expect(JSON.parse(picker["data-source-picker-catalog-value"])).to eq(LogicalSource.catalog)
+    expect(picker.css("select").map { |s| s["data-source-picker-target"] }).to eq(%w[project environment cluster role])
+  end
+
   it "404s for a report that doesn't exist" do
     sign_in
 
