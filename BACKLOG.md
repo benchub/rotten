@@ -57,23 +57,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ## Phase F: Docs.
 
-### 20261003-140000-2: Document that login rate-limit counters are per process.
-- **Do:** The rate limits use a memory store in each process, so N Puma workers or replicas allow N times the limit. The user decided on 2026-10-04 to keep the memory store. In `docs/ui.md`, document:
-  - that each process keeps its own counters;
-  - the effective limit with N processes;
-  - the recommendation to run one UI process, or to scale the limits down to match.
-
-  If the Puma config defaults to more than one worker, say so. Also put a short comment next to the rate-limit code.
-- **Red test:** A docs smoke check (`internal/docscheck`, or a spec) that `docs/ui.md` mentions the per-process limit.
-- **Done when:** Passes.
-- **Needs:** none.
-
-### 20261003-150000-2: Cover the dev-only fake OIDC login route in the CSRF spec.
-- **Do:** `ui/spec/security/csrf_spec.rb` enumerates routes from the test environment, so the `OMNIAUTH_FAKE=1` dev route isn't covered. Add a spec that boots with the fake enabled, or assert that the route can't exist in production.
-- **Red test:** A fake route that skips CSRF fails the spec.
-- **Done when:** Passes.
-- **Needs:** none.
-
 ### 20261003-160000-1: Narrow the report source picker as the user chooses.
 - **Do:** Project, environment, cluster and role are independent dropdowns, so the user can pick a combination that doesn't exist. They only find out when they run the report. Add a small Stimulus controller, or a server-rendered cascade, that narrows each dropdown to existing combinations. Keep it CSP-compliant.
 - **Red test:** A system spec where picking a project limits the environment options to that project's environments.
@@ -126,18 +109,14 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - `ingest`'s `TestSubmitHarvestValidationRejectsBadInputBeforeWriting/context_string_longer_than_512_bytes` failed with `failed to receive message: unexpected EOF`, then `dial ... network is unreachable` over IPv6.
   - `reports`' `TestOutliersSkipsZeroDeviationAndMissingSourceHistory` failed with `password authentication failed for user "postgres"` on a host port. That suggests the port had been reused by another container.
 
-  Both passed on re-run, and a single gate run is clean, so this is low priority. Investigate:
+  Both passed on re-run.
+
+  **Update (2026-10-04):** It also happened in a *single* gate run, with no concurrent Docker load, while landing 060000-1, 140000-2 and 150000-2. The failures were `ingest` `TestSubmitHarvestRejectsDuplicateFingerprints`, with `SASL authentication failed` on a host port, and `reports` `TestFingerprintTimeseriesRejectsMonthWidth`, with `password authentication failed`. The two failures were on adjacent host ports, 57963 and 57962, within the same second. So it isn't limited to concurrent gates, and this is now medium priority. Investigate:
   - whether the DSN retry treats EOF and auth failures as retryable;
   - whether testdb should re-read the mapped port before each connect attempt;
   - whether testdb should verify it reached the right container, for example with a per-container password or `application_name` check.
-- **Red test:** A unit test of the connect-retry classification. Or document why concurrent full gates are unsupported.
-- **Done when:** Passes, or the limitation is documented in `docs/building.md`.
-- **Needs:** none.
-
-### 20261004-060000-1: Make `HasMinmaxReset` compare the major version.
-- **Do:** `internal/pgss/reader.go` around line 117 checks only the minor version (`v[1] >= 11`), so a future pg_stat_statements 2.0 would skip the minmax reset. Since 200000-4, `schema/observer.sql` compares the whole version as an int array and would accept 2.0. Make the Go side agree, using `v[0] > 1 || (v[0] == 1 && v[1] >= 11)`, and handle a version with no minor part.
-- **Red test:** A table test that `2.0` and `2` count as having it, `1.11` and `1.12` do, and `1.10` and `1.9` don't.
-- **Done when:** Passes.
+- **Red test:** A unit test of the connect-retry classification, and/or a check that testdb reached its own container.
+- **Done when:** Passes. Documenting this alone is no longer enough, because it happens in single gate runs too.
 - **Needs:** none.
 
 ### 20261004-060000-2: The `ingest` test package can exceed Go's 10-minute timeout under heavy Docker load.

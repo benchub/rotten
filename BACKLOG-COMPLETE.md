@@ -1157,3 +1157,33 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Review:** one Opus round. Its low finding (no bump on the lost-groups email-conflict path) was fixed in the final round.
   - **Follow-ups:** 20261004-060000-2 (ingest package timeout under load) and 20261004-060000-3 (flaky api_keys system spec).
 - **20261003-130000-3:** resolved by this task.
+
+### 20261003-140000-2: Document that login rate-limit counters are per process.
+- **Do:** The rate limits use a memory store in each process, so N Puma workers or replicas allow N times the limit. The user decided on 2026-10-04 to keep the memory store. Document this in `docs/ui.md`, recommend running one process or scaling the limits down, and comment the rate-limit code.
+- **Red test:** A docs smoke check that `docs/ui.md` mentions the per-process limit.
+- **Completed:** 2026-10-04, 97d974b.
+  - **Docs:** `docs/ui.md` has a new "Login rate limits" section:
+    - one row each for `POST /login` and `PATCH /password`: 10 attempts per IP and 5 per email or user, every 3 minutes;
+    - a worked N-process example;
+    - a recommendation to run one process, or to divide only `ATTEMPTS_PER_IP` and `ATTEMPTS_PER_EMAIL`, keeping each at least 1 and leaving `ATTEMPTS_WINDOW` alone.
+  - **Puma:** it defaults to a single process.
+  - **Test:** `internal/docscheck/ratelimit_test.go` checks each table row against the controller constants.
+  - **Review:** two Opus rounds plus a final fix. They covered per-row checking, a scaled limit dropping to 0, and dividing the window.
+
+### 20261003-150000-2: Cover the dev-only fake OIDC login route in the CSRF spec.
+- **Do:** `ui/spec/security/csrf_spec.rb` enumerates routes from the test environment, so the `OMNIAUTH_FAKE=1` dev route isn't covered. Add a spec that boots with the fake enabled, or assert that the route can't exist in production.
+- **Red test:** A fake route that skips CSRF fails the spec.
+- **Completed:** 2026-10-04, ff89c6a.
+  - **In-process coverage:** the CSRF spec redraws the routes with the fake on, stubs development, and runs the forged-request checks against `POST /auth/fake/:persona`. Injecting `skip_forgery_protection` makes 4 examples fail.
+  - **Development boot:** a `rails runner` development boot checks that every state-changing dev route is covered.
+  - **Production:** absence of the route in production stays in `spec/config/oidc_boot_spec.rb`; review removed a duplicate check.
+  - **Production code:** no changes needed; the fake was already guarded in the routes and the controller.
+
+### 20261004-060000-1: Make `HasMinmaxReset` compare the major version.
+- **Do:** Compare `v[0] > 1 || (v[0] == 1 && v[1] >= 11)`, and handle a version with no minor part.
+- **Red test:** A table test with 2.0, 2, 1.11 and 1.12 true, and 1.10 and 1.9 false.
+- **Completed:** 2026-10-04, 521a7f8.
+  - **Helpers:** `parseExtVersion`, `hasMinmaxReset` and `checkSupportedVersion` in `internal/pgss/reader.go`, table-tested in `version_test.go`.
+  - **Parsing** matches observer.sql's `::int[]` cast: "2" is 2.0, "1.11.1" is accepted as 1.11, and non-numeric or signed parts are rejected.
+  - **2.x:** `ExtVersion` still rejects majors other than 1 (the columns are unknown, and `selectSQL` and `col` key on the 1.x minor). It now says "unsupported major version" instead of the misleading "older than 1.9", and a comment explains why.
+  - **Review:** two Opus rounds plus a final fix.
