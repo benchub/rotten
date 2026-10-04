@@ -225,6 +225,20 @@ func hostDSN(ctx context.Context, resolver hostPortResolver, dbName string) (str
 	return u.String(), nil
 }
 
+// runPostgres starts a Postgres container, retrying once on a Docker API
+// timeout. Every attempt's container is registered for cleanup.
+func runPostgres(t testing.TB, ctx context.Context, image string, opts ...testcontainers.ContainerCustomizer) (testcontainers.Container, error) {
+	t.Helper()
+	return runContainerWithRetry(ctx, t, image, func(ctx context.Context) (testcontainers.Container, error) {
+		c, err := postgres.Run(ctx, image, opts...)
+		testcontainers.CleanupContainer(t, c)
+		if c == nil {
+			return nil, err
+		}
+		return c, err
+	})
+}
+
 func start(t testing.TB, image, dbName string, extra ...testcontainers.ContainerCustomizer) *DB {
 	t.Helper()
 	ctx := context.Background()
@@ -238,8 +252,7 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).WithStartupTimeout(3*time.Minute)),
 	}, extra...)
-	c, err := postgres.Run(ctx, image, opts...)
-	testcontainers.CleanupContainer(t, c)
+	c, err := runPostgres(t, ctx, image, opts...)
 	if err != nil {
 		if image == RottenImage {
 			t.Fatalf("testdb: start %s: %v (is the image built? run `make image`)", image, err)
@@ -264,8 +277,7 @@ func startNoHostDSN(t testing.TB, image, dbName string, extra ...testcontainers.
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).WithStartupTimeout(3 * time.Minute)),
 	}, extra...)
-	c, err := postgres.Run(ctx, image, opts...)
-	testcontainers.CleanupContainer(t, c)
+	c, err := runPostgres(t, ctx, image, opts...)
 	if err != nil {
 		if image == RottenImage {
 			t.Fatalf("testdb: start %s: %v (is the image built? run `make image`)", image, err)
