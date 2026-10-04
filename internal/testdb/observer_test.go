@@ -49,8 +49,8 @@ func TestObserverWrapperHijack(t *testing.T) {
 			const observer, schema = "obs", "rotten"
 
 			execAll(t, su,
-				"create role evil login password 'evil'",
-				"create role app login password 'app'",
+				"create role evil login password '"+db.RolePassword("evil")+"'",
+				"create role app login password '"+db.RolePassword("app")+"'",
 				"grant create on schema public to evil",
 				"create table public.hijacked (who text)",
 				"grant insert on public.hijacked to public")
@@ -71,7 +71,7 @@ func TestObserverWrapperHijack(t *testing.T) {
 				t.Fatalf("observer.sql: %v\n%s", err, out)
 			}
 			execAll(t, evil, "drop function public.pg_stat_statements_reset(int, int, int, bool)", overload)
-			execAll(t, su, fmt.Sprintf("alter role %s password '%s'", observer, observer))
+			execAll(t, su, fmt.Sprintf("alter role %s password '%s'", observer, db.RolePassword(observer)))
 
 			execAll(t, su, "select 1 as rotten_marker")
 			const q = `select minmax_stats_since from pg_stat_statements where query like '%rotten_marker%'`
@@ -209,7 +209,7 @@ func TestObserverOldExtension(t *testing.T) {
 			if out, err := loadObserver(t, db, observer, schema); err != nil {
 				t.Fatalf("observer.sql after update: %v\n%s", err, out)
 			}
-			execAll(t, su, fmt.Sprintf("alter role %s password '%s'", observer, observer))
+			execAll(t, su, fmt.Sprintf("alter role %s password '%s'", observer, db.RolePassword(observer)))
 			obs, err := pgx.Connect(ctx, db.DSNAs(t, observer))
 			if err != nil {
 				t.Fatal(err)
@@ -243,12 +243,12 @@ func TestObserverSQL(t *testing.T) {
 				}
 			}
 			// The script doesn't set a password. Give it one so we can log in.
-			if _, err := su.Exec(ctx, fmt.Sprintf("alter role %s password '%s'", pgx.Identifier{observer}.Sanitize(), observer)); err != nil {
+			if _, err := su.Exec(ctx, fmt.Sprintf("alter role %s password '%s'", pgx.Identifier{observer}.Sanitize(), db.RolePassword(observer))); err != nil {
 				t.Fatal(err)
 			}
 
 			// Another role runs a query with recognizable text.
-			if _, err := su.Exec(ctx, "create role app login password 'app'"); err != nil {
+			if _, err := su.Exec(ctx, "create role app login password '"+db.RolePassword("app")+"'"); err != nil {
 				t.Fatal(err)
 			}
 			app, err := pgx.Connect(ctx, db.DSNAs(t, "app"))

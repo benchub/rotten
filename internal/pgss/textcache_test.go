@@ -27,7 +27,7 @@ func TestTextCacheMatrix(t *testing.T) {
 			}
 			su := db.Connect(t)
 			for _, s := range []string{
-				"alter role rotten_observer password 'rotten_observer'",
+				"alter role rotten_observer password '" + db.RolePassword("rotten_observer") + "'",
 				"create table tc_t (id int primary key)",
 			} {
 				if _, err := su.Exec(ctx, s); err != nil {
@@ -152,7 +152,7 @@ func TestTextCacheSkipsHiddenKeys(t *testing.T) {
 	db := testdb.StartObserved(t, 18)
 	su := db.Connect(t)
 	for _, s := range []string{
-		"create role tc_nopriv login password 'tc_nopriv'",
+		"create role tc_nopriv login password '" + db.RolePassword("tc_nopriv") + "'",
 		"select /*tc_hidden*/ 1",
 	} {
 		if _, err := su.Exec(ctx, s); err != nil {
@@ -199,7 +199,7 @@ func TestTextCacheAppliesCachedTextWhenMissFetchFails(t *testing.T) {
 	}
 	su := db.Connect(t)
 	for _, s := range []string{
-		"alter role rotten_observer password 'rotten_observer'",
+		"alter role rotten_observer password '" + db.RolePassword("rotten_observer") + "'",
 		"select /*tc_cached_before_fetch_error*/ 1",
 	} {
 		if _, err := su.Exec(ctx, s); err != nil {

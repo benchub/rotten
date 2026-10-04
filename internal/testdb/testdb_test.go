@@ -102,9 +102,9 @@ func TestHostDSNWaitsForMappedPort(t *testing.T) {
 		port:         network.MustParsePort("15432/tcp"),
 	}
 
-	dsn, err := hostDSNWithRetry(context.Background(), resolver, "observed", time.Second, 0)
+	dsn, err := connectVerified(context.Background(), resolver, "observed", "postgres", time.Second, 0, func(context.Context, string) error { return nil })
 	if err != nil {
-		t.Fatalf("hostDSNWithRetry: %v", err)
+		t.Fatalf("connectVerified: %v", err)
 	}
 	if resolver.mappedCalls != 4 {
 		t.Fatalf("MappedPort calls = %d, want 4", resolver.mappedCalls)

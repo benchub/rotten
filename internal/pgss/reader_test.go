@@ -26,7 +26,7 @@ func TestReaderMatrix(t *testing.T) {
 			}
 			su := db.Connect(t)
 			for _, s := range []string{
-				"alter role rotten_observer password 'rotten_observer'",
+				"alter role rotten_observer password '" + db.RolePassword("rotten_observer") + "'",
 				"create table pgss_t (id int primary key, v text)",
 				"insert into pgss_t select g, 'x' from generate_series(1, 100) g",
 			} {

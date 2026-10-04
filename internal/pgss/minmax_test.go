@@ -55,7 +55,7 @@ func TestMinmaxResetWindow(t *testing.T) {
 				t.Fatalf("observer.sql: %v\n%s", err, out)
 			}
 			su := db.Connect(t)
-			if _, err := su.Exec(ctx, "alter role rotten_observer password 'rotten_observer'"); err != nil {
+			if _, err := su.Exec(ctx, "alter role rotten_observer password '"+db.RolePassword("rotten_observer")+"'"); err != nil {
 				t.Fatal(err)
 			}
 			obs, err := pgx.Connect(ctx, db.DSNAs(t, "rotten_observer"))

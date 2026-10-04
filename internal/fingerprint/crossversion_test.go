@@ -110,7 +110,7 @@ func crossFingerprints(t *testing.T, version int) map[string]map[string][]string
 	if out, err := db.PSQL(t, path, map[string]string{"observer_role": observer, "observer_schema": "rotten"}); err != nil {
 		t.Fatalf("observer.sql: %v\n%s", err, out)
 	}
-	if _, err := su.Exec(ctx, fmt.Sprintf("alter role %s password '%s'", observer, observer)); err != nil {
+	if _, err := su.Exec(ctx, fmt.Sprintf("alter role %s password '%s'", observer, db.RolePassword(observer))); err != nil {
 		t.Fatal(err)
 	}
 	runCrossWorkload(t, su)
@@ -161,7 +161,7 @@ func crossQueryIDs(t *testing.T, version int, tables ...string) map[string]map[i
 	if out, err := db.PSQL(t, path, map[string]string{"observer_role": observer, "observer_schema": "rotten"}); err != nil {
 		t.Fatalf("observer.sql: %v\n%s", err, out)
 	}
-	if _, err := su.Exec(ctx, fmt.Sprintf("alter role %s password '%s'", observer, observer)); err != nil {
+	if _, err := su.Exec(ctx, fmt.Sprintf("alter role %s password '%s'", observer, db.RolePassword(observer))); err != nil {
 		t.Fatal(err)
 	}
 	runCrossWorkload(t, su)

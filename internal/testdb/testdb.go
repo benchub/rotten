@@ -47,10 +47,11 @@ const postgresPort = "5432/tcp"
 var RottenRoles = []string{OwnerRole, IngestRole, UIRole, ReadonlyRole}
 
 // ConnectAs opens a connection logged in as role and closes it at test
-// cleanup.
+// cleanup. Like Connect, it retries once after re-verifying the route if the
+// first attempt looks like it reached the wrong or a dying container.
 func (d *DB) ConnectAs(t testing.TB, role string) *pgx.Conn {
 	t.Helper()
-	conn, err := pgx.Connect(context.Background(), d.DSNAs(t, role))
+	conn, err := connectRerouted(context.Background(), func() string { return d.DSNAs(t, role) }, pgx.Connect, d.reverifier())
 	if err != nil {
 		t.Fatalf("testdb: connect as %s: %v", role, err)
 	}
@@ -60,11 +61,45 @@ func (d *DB) ConnectAs(t testing.TB, role string) *pgx.Conn {
 
 // DB is a running Postgres container.
 type DB struct {
-	// DSN connects as the postgres superuser.
+	// DSN connects as the postgres superuser, whose password is random per
+	// container so a recycled host port can't silently reach another one.
 	DSN string
 
-	c      testcontainers.Container
-	dbName string
+	c        testcontainers.Container
+	dbName   string
+	password string
+	secret   string
+}
+
+// RolePassword is the password testdb gives role in this container. For
+// containers with a host port it's unique per container, so a recycled port
+// that reaches another container fails auth. Tests that create or alter roles
+// should set this password and connect with DSNAs or ConnectAs.
+func (d *DB) RolePassword(role string) string {
+	if role == "postgres" {
+		return d.password
+	}
+	if d.secret == "" {
+		return role
+	}
+	return role + "_" + d.secret
+}
+
+// reverifier returns a func that re-reads the mapped port, confirms the
+// superuser password works there, and updates DSN. It returns nil (no retry)
+// for containers without a host DSN.
+func (d *DB) reverifier() func() error {
+	if d.c == nil || d.DSN == "" {
+		return nil
+	}
+	return func() error {
+		dsn, err := connectVerified(context.Background(), d.c, d.dbName, d.password, 10*time.Second, 100*time.Millisecond, pgxPing)
+		if err != nil {
+			return err
+		}
+		d.DSN = dsn
+		return nil
+	}
 }
 
 // Container returns the underlying testcontainers container for tests that
@@ -98,7 +133,7 @@ func (d *DB) Restart(t testing.TB, whileStopped ...func()) {
 	if err := d.c.Start(ctx); err != nil {
 		t.Fatalf("testdb: start container after restart: %v", err)
 	}
-	dsn, err := connectableHostDSNWithRetry(ctx, d.c, d.dbName, 30*time.Second, 100*time.Millisecond)
+	dsn, err := connectVerified(ctx, d.c, d.dbName, d.password, 30*time.Second, 100*time.Millisecond, pgxPing)
 	if err != nil {
 		t.Fatalf("testdb: restarted container did not become ready: %v", err)
 	}
@@ -111,7 +146,7 @@ func (d *DB) Connect(t testing.TB) *pgx.Conn {
 	if d.DSN == "" {
 		t.Fatalf("testdb: database has no host DSN; use QueryInContainer or an internal network DSN for containers without published ports")
 	}
-	conn, err := pgx.Connect(context.Background(), d.DSN)
+	conn, err := connectRerouted(context.Background(), func() string { return d.DSN }, pgx.Connect, d.reverifier())
 	if err != nil {
 		t.Fatalf("testdb: connect: %v", err)
 	}
@@ -119,8 +154,7 @@ func (d *DB) Connect(t testing.TB) *pgx.Conn {
 	return conn
 }
 
-// DSNAs returns the DSN for logging in as role, whose password is the role
-// name.
+// DSNAs returns the DSN for logging in as role with RolePassword(role).
 func (d *DB) DSNAs(t testing.TB, role string) string {
 	t.Helper()
 	if d.DSN == "" {
@@ -130,7 +164,7 @@ func (d *DB) DSNAs(t testing.TB, role string) string {
 	if err != nil {
 		t.Fatalf("testdb: parse DSN: %v", err)
 	}
-	u.User = url.UserPassword(role, role)
+	u.User = url.UserPassword(role, d.RolePassword(role))
 	return u.String()
 }
 
@@ -156,57 +190,7 @@ type hostPortResolver interface {
 	MappedPort(context.Context, string) (network.Port, error)
 }
 
-func hostDSNWithRetry(ctx context.Context, resolver hostPortResolver, dbName string, timeout time.Duration, pollInterval time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var lastErr error
-	for {
-		dsn, err := hostDSN(ctx, resolver, dbName)
-		if err == nil {
-			return dsn, nil
-		}
-		lastErr = err
-		timer := time.NewTimer(pollInterval)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return "", fmt.Errorf("mapped port %q not ready after %s: %w", postgresPort, timeout, lastErr)
-		case <-timer.C:
-		}
-	}
-}
-
-func connectableHostDSNWithRetry(ctx context.Context, resolver hostPortResolver, dbName string, timeout time.Duration, pollInterval time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var lastErr error
-	for {
-		dsn, err := hostDSN(ctx, resolver, dbName)
-		if err == nil {
-			conn, err := pgx.Connect(ctx, dsn)
-			if err == nil {
-				conn.Close(ctx)
-				return dsn, nil
-			}
-			lastErr = err
-		} else {
-			lastErr = err
-		}
-		timer := time.NewTimer(pollInterval)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return "", fmt.Errorf("host DSN did not become connectable after %s: %w", timeout, lastErr)
-		case <-timer.C:
-		}
-	}
-}
-
-func hostDSN(ctx context.Context, resolver hostPortResolver, dbName string) (string, error) {
+func hostDSN(ctx context.Context, resolver hostPortResolver, dbName, password string) (string, error) {
 	host, err := resolver.Host(ctx)
 	if err != nil {
 		return "", err
@@ -217,7 +201,7 @@ func hostDSN(ctx context.Context, resolver hostPortResolver, dbName string) (str
 	}
 	u := url.URL{
 		Scheme:   "postgres",
-		User:     url.UserPassword("postgres", "postgres"),
+		User:     url.UserPassword("postgres", password),
 		Host:     net.JoinHostPort(host, port.Port()),
 		Path:     dbName,
 		RawQuery: "sslmode=disable",
@@ -242,10 +226,11 @@ func runPostgres(t testing.TB, ctx context.Context, image string, opts ...testco
 func start(t testing.TB, image, dbName string, extra ...testcontainers.ContainerCustomizer) *DB {
 	t.Helper()
 	ctx := context.Background()
+	password := newSuperuserPassword()
 	opts := append([]testcontainers.ContainerCustomizer{
 		postgres.WithDatabase(dbName),
 		postgres.WithUsername("postgres"),
-		postgres.WithPassword("postgres"),
+		postgres.WithPassword(password),
 		testcontainers.WithExposedPorts(postgresPort),
 		testcontainers.WithWaitStrategyAndDeadline(3*time.Minute,
 			wait.ForListeningPort(postgresPort).WithStartupTimeout(3*time.Minute),
@@ -259,11 +244,11 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 		}
 		t.Fatalf("testdb: start %s: %v", image, err)
 	}
-	dsn, err := hostDSNWithRetry(ctx, c, dbName, 30*time.Second, 100*time.Millisecond)
+	dsn, err := connectVerified(ctx, c, dbName, password, 30*time.Second, 100*time.Millisecond, pgxPing)
 	if err != nil {
-		t.Fatalf("testdb: connection string: %v", err)
+		t.Fatalf("testdb: connect to new container: %v", err)
 	}
-	return &DB{DSN: dsn, c: c, dbName: dbName}
+	return &DB{DSN: dsn, c: c, dbName: dbName, password: password, secret: newSuperuserPassword()}
 }
 
 func startNoHostDSN(t testing.TB, image, dbName string, extra ...testcontainers.ContainerCustomizer) *DB {
@@ -284,7 +269,7 @@ func startNoHostDSN(t testing.TB, image, dbName string, extra ...testcontainers.
 		}
 		t.Fatalf("testdb: start %s: %v", image, err)
 	}
-	return &DB{c: c, dbName: dbName}
+	return &DB{c: c, dbName: dbName, password: "postgres"}
 }
 
 // StartRotten is StartRottenEmpty plus migrate.Up, run as OwnerRole, so the
@@ -292,7 +277,8 @@ func startNoHostDSN(t testing.TB, image, dbName string, extra ...testcontainers.
 func StartRotten(t testing.TB) *DB {
 	t.Helper()
 	db := StartRottenEmpty(t)
-	if _, err := migrate.Up(context.Background(), db.DSNAs(t, OwnerRole)); err != nil {
+	_, err := connectRerouted(context.Background(), func() string { return db.DSNAs(t, OwnerRole) }, migrate.Up, db.reverifier())
+	if err != nil {
 		t.Fatalf("testdb: migrate: %v", err)
 	}
 	return db
@@ -300,7 +286,7 @@ func StartRotten(t testing.TB) *DB {
 
 // StartRottenEmpty starts Postgres 18 with pg_partman installed in public, a
 // database named rotten owned by OwnerRole, and the roles in RottenRoles
-// (LOGIN, password = role name; see DSNAs). OwnerRole gets what pg_partman
+// (LOGIN, password = RolePassword; see DSNAs). OwnerRole gets what pg_partman
 // needs to create partitions. It uses RottenImage, which `make image` builds.
 // It doesn't load the schema.
 func StartRottenEmpty(t testing.TB) *DB {
@@ -321,7 +307,7 @@ func initializeRottenEmpty(t testing.TB, db *DB) {
 	for _, r := range RottenRoles {
 		// The password is interpolated as a literal, so role names must not
 		// contain single quotes.
-		if _, err := conn.Exec(ctx, fmt.Sprintf("create role %s login password '%s'", pgx.Identifier{r}.Sanitize(), r)); err != nil {
+		if _, err := conn.Exec(ctx, fmt.Sprintf("create role %s login password '%s'", pgx.Identifier{r}.Sanitize(), db.RolePassword(r))); err != nil {
 			t.Fatalf("testdb: create role %s: %v", r, err)
 		}
 	}
@@ -345,7 +331,7 @@ func initializeRottenEmptyInContainer(t testing.TB, db *DB) {
 	var sql bytes.Buffer
 	sql.WriteString("CREATE EXTENSION IF NOT EXISTS pg_partman SCHEMA public;\n")
 	for _, r := range RottenRoles {
-		sql.WriteString(fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s';\n", pgx.Identifier{r}.Sanitize(), r))
+		sql.WriteString(fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s';\n", pgx.Identifier{r}.Sanitize(), db.RolePassword(r)))
 	}
 	owner := pgx.Identifier{OwnerRole}.Sanitize()
 	for _, q := range []string{
@@ -372,7 +358,7 @@ func migrateRottenInContainer(t testing.TB, db *DB) {
 		dst,
 		"migrate",
 		"-dsn",
-		internalDSN(OwnerRole, OwnerRole, "localhost", db.dbName),
+		internalDSN(OwnerRole, db.RolePassword(OwnerRole), "localhost", db.dbName),
 	}, tcexec.Multiplexed())
 	if err != nil {
 		t.Fatalf("testdb: exec rotten-server migrate: %v", err)
@@ -419,10 +405,7 @@ func execSQLInContainer(t testing.TB, db *DB, sql string) {
 // It works for containers with no host-published Postgres port.
 func (d *DB) QueryInContainer(t testing.TB, role string, query string) [][]string {
 	t.Helper()
-	password := role
-	if role == "postgres" {
-		password = "postgres"
-	}
+	password := d.RolePassword(role)
 	const sep = "\x1f"
 	code, r, err := d.c.Exec(context.Background(), []string{
 		"psql",

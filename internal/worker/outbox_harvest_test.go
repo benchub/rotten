@@ -103,7 +103,7 @@ func startObservedVersionForWorker(t *testing.T, version int) *testdb.DB {
 	conn := db.Connect(t)
 	ctx := context.Background()
 	for _, s := range []string{
-		"alter role rotten_observer password 'rotten_observer'",
+		"alter role rotten_observer password '" + db.RolePassword("rotten_observer") + "'",
 		"create table widgets (id int primary key, name text)",
 		"insert into widgets select g, 'w' || g from generate_series(1, 10) g",
 	} {
