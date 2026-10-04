@@ -78,7 +78,7 @@ RSpec.describe "Fingerprint detail", type: :request do
   it "keeps the chart in time order whatever sort is asked for" do
     sign_in
 
-    ["", "&sort=calls&dir=desc", "&sort=bucket_start&dir=asc", "&sort=bucket_start&dir=desc"].each do |extra|
+    ["", "&sort=calls&dir=desc", "&sort=bucket_start&dir=asc", "&sort=bucket_start&dir=desc", "&sort=calls&sort_report=nope"].each do |extra|
       get "/fingerprints/#{users_id}?#{source_params.merge(bucket: '10m').to_query}#{extra}"
 
       expect(response).to have_http_status(:ok)

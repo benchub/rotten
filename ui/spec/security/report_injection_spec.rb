@@ -29,7 +29,7 @@ module ReportInjectionSpec
     { "a" => "' or 1=1 --" }
   ].freeze
 
-  PARAMS = %w[project environment cluster role range from to sort dir primary_role replica_role fingerprint_id bucket].freeze
+  PARAMS = %w[project environment cluster role range from to sort dir primary_role replica_role fingerprint_id bucket sort_report].freeze
 end
 
 RSpec.describe "Report SQL injection", type: :request do
@@ -66,7 +66,7 @@ RSpec.describe "Report SQL injection", type: :request do
       params.each do |param|
         it "treats every payload in #{param} as a value" do
           (payloads + structured).each do |payload|
-            expect_safe("/reports/#{report.key}", base.merge(param => payload))
+            expect_safe("/reports", base.merge("report" => report.key, param => payload))
           end
           expect(ReportFixture.table_counts).to eq(@counts)
         end
@@ -74,8 +74,8 @@ RSpec.describe "Report SQL injection", type: :request do
 
       it "treats payloads in the custom range as values" do
         payloads.each do |payload|
-          expect_safe("/reports/#{report.key}", base.merge("range" => "custom", "from" => payload, "to" => "2026-01-01T00:00"))
-          expect_safe("/reports/#{report.key}", base.merge("range" => "custom", "from" => "2026-01-01T00:00", "to" => payload))
+          expect_safe("/reports", base.merge("report" => report.key, "range" => "custom", "from" => payload, "to" => "2026-01-01T00:00"))
+          expect_safe("/reports", base.merge("report" => report.key, "range" => "custom", "from" => "2026-01-01T00:00", "to" => payload))
         end
         expect(ReportFixture.table_counts).to eq(@counts)
       end
@@ -119,10 +119,32 @@ RSpec.describe "Report SQL injection", type: :request do
   end
 
   it "doesn't leak another project's rows through the source fields" do
-    get "/reports/top_by_calls", params: base.merge("project" => "canvas' or project = 'bridge")
+    get "/reports", params: base.merge("report" => "top_by_calls", "project" => "canvas' or project = 'bridge")
 
     expect(response).to have_http_status(:unprocessable_content)
     expect(response.body).not_to include("programs")
+  end
+
+  it "rejects every payload in the report parameter with a 422, running nothing" do
+    expect(ReportRunner).not_to receive(:new)
+
+    (payloads + structured).each do |payload|
+      expect_safe("/reports", base.merge("report" => payload))
+      expect(response).to have_http_status(:unprocessable_content), payload.inspect
+      expect(response.body).to include("Report is not one of the choices")
+    end
+    expect(ReportFixture.table_counts).to eq(@counts)
+  end
+
+  it "keeps payloads as values through the /reports/:id redirect" do
+    (payloads + structured).each do |payload|
+      get "/reports/top_by_calls", params: base.merge("project" => payload)
+      expect(response).to have_http_status(:moved_permanently)
+      expect(URI(response.location).path).to eq("/reports")
+
+      expect_safe(response.location, {})
+    end
+    expect(ReportFixture.table_counts).to eq(@counts)
   end
 
   it "404s for payloads in the report name" do
@@ -135,7 +157,7 @@ RSpec.describe "Report SQL injection", type: :request do
   end
 
   it "rejects a sort column that isn't in the report's whitelist" do
-    get "/reports/top_by_calls", params: base.merge("sort" => "calls; drop table rotten.events")
+    get "/reports", params: base.merge("report" => "top_by_calls", "sort" => "calls; drop table rotten.events")
 
     expect(response).to have_http_status(:unprocessable_content)
     expect(response.body).to include("Sort is not a column of this report")

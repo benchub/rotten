@@ -7,13 +7,16 @@
   <pre class="fingerprint-sql"><%= @fingerprint.normalized %></pre>
 
   <%= form_with url: fingerprint_path(@fingerprint.id), method: :get, class: "report-form", data: { turbo: false } do %>
-    <%= render "reports/source_fields", query: @query, report: @query.report, fingerprint_field: false %>
+    <%= render "reports/source_fields", query: @query, reports: [@query.report] %>
+    <%= render "reports/report_fields", query: @query, reports: [@query.report], fingerprint_field: false %>
     <div>
       <%= submit_tag "Show", name: nil %>
     </div>
   <% end %>
-  <p class="report-hint">Times are UTC. From and To are used only with a Custom time range.</p>
 
+  <% if @query.submitted? && @query.errors.empty? %>
+    <%= render "reports/window", query: @query %>
+  <% end %>
   <%= render "reports/messages", query: @query, timeout_seconds: @timeout_seconds %>
 
   <% if @series %>
@@ -25,7 +28,7 @@
     <%= timeseries_chart(@series, value_key: "calls", label: "Calls", zoom_url: @zoom_url) %>
     <h2>Total ms</h2>
     <%= timeseries_chart(@series, value_key: "total_ms", label: "Total ms", zoom_url: @zoom_url) %>
-    <p><%= link_to "Time series as a table", report_path("fingerprint_timeseries", @query.link_params) %></p>
+    <p><%= link_to "Time series as a table", reports_path({ report: "fingerprint_timeseries" }.merge(@query.link_params)) %></p>
 
     <h2>Top contexts</h2>
     <% if @contexts.empty? %>

@@ -1,6 +1,7 @@
 # Deploying the UI
 
-The UI is a Rails 8.1 app in `ui/`. It shows the reports, a page for each
+The UI is a Rails 8.1 app in `ui/`. It has the reports workbench
+(`/reports`: pick a dataset, then the report to run on it), a page for each
 fingerprint, pass key admin and the audit log. It connects to the rotten
 database as `rotten_ui` and never runs migrations; `rotten-server migrate`
 owns the schema, so run that first ([database.md](database.md)).

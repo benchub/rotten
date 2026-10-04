@@ -25,23 +25,139 @@ RSpec.describe "Reports", type: :system do
     select range, from: "Time range"
   end
 
-  it "lists every report from the home page" do
+  # Runs the report and waits for its results, since the page before may
+  # show a table too.
+  def run_report(title)
+    choose title
+    click_button "Run report"
+    expect(page).to have_css("h2.report-title", text: title)
+  end
+
+  it "lists every report, with its description, from the home page" do
     visit "/"
     click_link "Reports"
 
-    expect(page).to have_link("Top queries by total time")
-    expect(page).to have_link("Top queries by calls")
-    expect(page).to have_link("Outliers")
-    expect(page).to have_link("Replica utilization by controller and action")
-    expect(page).to have_link("Replica utilization by job")
-    expect(page).to have_link("Fingerprint time series")
+    Report.all.each do |report|
+      expect(page).to have_field(report.title, type: "radio")
+      expect(page).to have_css("label[for='report_#{report.key}']", text: report.description)
+    end
+    expect(page).to have_checked_field("Top queries by total time")
+  end
+
+  it "runs one report on a dataset, then switches to another with one click, keeping the dataset" do
+    visit "/reports"
+    pick_source(project: "canvas", cluster: "13", role: "replica", range: "Last 6 hours")
+    run_report("Top queries by calls")
+
+    expect(report_rows("example", "calls")).to eq([
+      ["select * from users where id = $1", "200"],
+      ["update delayed_jobs set locked_by = $1 where id = $2", "25"]
+    ])
+
+    within("nav.report-tabs") { click_link "Top queries by total time" }
+
+    expect(page).to have_css("h2.report-title", text: "Top queries by total time")
+    expect(page).to have_css("nav.report-tabs a[aria-current='page']", text: "Top queries by total time")
+    expect(page).to have_select("Project", selected: "canvas")
+    expect(page).to have_select("Cluster", selected: "13")
+    expect(page).to have_select("Role", selected: "replica")
+    expect(page).to have_select("Time range", selected: "Last 6 hours")
+    expect(page).to have_checked_field("Top queries by total time")
+    expect(page).to have_css(".report-window", text: "(last 6 hours)")
+    expect(report_rows("example", "total_ms")).to eq([
+      ["update delayed_jobs set locked_by = $1 where id = $2", "1,200.00"],
+      ["select * from users where id = $1", "80.00"]
+    ])
+  end
+
+  it "keeps the role through a report that doesn't filter by it" do
+    visit "/reports"
+    pick_source(project: "canvas", cluster: "13", role: "replica")
+    run_report("Top queries by calls")
+
+    within("nav.report-tabs") { click_link "Replica utilization by job" }
+    expect(page).to have_css("h2.report-title", text: "Replica utilization by job")
+    expect(page).to have_no_select("Role")
+
+    # Rerun it from the form, where the role is hidden but still sent. Only
+    # the form sends the utilization roles, so they show the new page loaded.
+    expect(page).to have_no_current_path(/primary_role=/)
+    click_button "Run report"
+    expect(page).to have_current_path(/[?&]primary_role=primary(&|\z)/)
+    expect(page).to have_current_path(/[?&]replica_role=replica(&|\z)/)
+    expect(page).to have_current_path(/[?&]report=replica_utilization_by_job(&|\z)/)
+    expect(page).to have_current_path(/[?&]role=replica(&|\z)/)
+
+    within("nav.report-tabs") { click_link "Top queries by calls" }
+    expect(page).to have_css("h2.report-title", text: "Top queries by calls")
+    expect(page).to have_select("Role", selected: "replica")
+    expect(report_rows("example", "calls")).to eq([
+      ["select * from users where id = $1", "200"],
+      ["update delayed_jobs set locked_by = $1 where id = $2", "25"]
+    ])
+  end
+
+  it "shows only the picked report's own fields, and doesn't send the others" do
+    visit "/reports"
+    expect(page).to have_select("Role")
+    expect(page).to have_no_field("Primary role")
+    expect(page).to have_no_field("Fingerprint ID")
+    expect(page).to have_no_select("Bucket")
+
+    choose "Replica utilization by job"
+    expect(page).to have_select("Primary role")
+    expect(page).to have_select("Replica role")
+    expect(page).to have_no_select("Role")
+
+    choose "Fingerprint time series"
+    expect(page).to have_field("Fingerprint ID")
+    expect(page).to have_select("Bucket")
+    expect(page).to have_select("Role")
+    expect(page).to have_no_select("Primary role")
+
+    choose "Outliers"
+    pick_source(project: "canvas", cluster: "7")
+    click_button "Run report"
+    expect(page).to have_css("h2.report-title", text: "Outliers")
+    expect(page).to have_current_path(/report=outliers/)
+    expect(page.current_url).not_to include("fingerprint_id", "bucket", "primary_role", "replica_role")
+  end
+
+  it "shows From and To only for a Custom range, pre-filled with the window in effect" do
+    visit "/reports"
+    pick_source(project: "canvas", cluster: "13")
+    run_report("Top queries by calls")
+
+    expect(page).to have_no_field("From (UTC)")
+    expect(page).to have_no_field("To (UTC)")
+    window = find(".report-window").text
+
+    select "Custom", from: "Time range"
+
+    from = find_field("From (UTC)").value
+    to = find_field("To (UTC)").value
+    expect(from).to match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}\z/)
+    from_time = Time.utc(*from.scan(/\d+/).map(&:to_i))
+    to_time = Time.utc(*to.scan(/\d+/).map(&:to_i))
+    expect(window).to include(from_time.strftime("%Y-%m-%d %H:%M"))
+    expect(to_time - from_time).to be_between(3.hours, 3.hours + 60)
+
+    click_button "Run report"
+    expect(page).to have_css(".report-window", text: "(custom range)")
+    expect(page).to have_no_css(".report-ignored")
+    expect(report_rows("calls")).to eq([["1,100"], ["100"], ["85"]])
+
+    select "Last hour", from: "Time range"
+    expect(page).to have_no_field("From (UTC)")
+    click_button "Run report"
+    expect(page).to have_css(".report-window", text: "(last hour)")
+    expect(page).to have_no_css(".report-ignored")
   end
 
   it "shows the top queries by total time for a source and range" do
     visit "/reports"
-    click_link "Top queries by total time"
     pick_source(project: "canvas", cluster: "13")
-    click_button "Run report"
+    run_report("Top queries by total time")
 
     expect(page).to have_css("table.report")
     expect(report_rows("example", "calls", "total_ms", "avg_ms_per_call")).to eq([
@@ -53,9 +169,9 @@ RSpec.describe "Reports", type: :system do
   end
 
   it "shows the top queries by calls and narrows them by role" do
-    visit "/reports/top_by_calls"
+    visit "/reports"
     pick_source(project: "canvas", cluster: "13")
-    click_button "Run report"
+    run_report("Top queries by calls")
 
     expect(report_rows("example", "calls")).to eq([
       ["select * from users where id = $1", "1,100"],
@@ -77,9 +193,9 @@ RSpec.describe "Reports", type: :system do
   end
 
   it "widens the range to include older windows" do
-    visit "/reports/top_by_total_time"
+    visit "/reports"
     pick_source(project: "canvas", cluster: "13", range: "Last 6 hours")
-    click_button "Run report"
+    run_report("Top queries by total time")
 
     expect(report_rows("example", "calls", "total_ms")).to eq([
       ["select * from courses where account_id = $1", "9,100", "90,300.00"],
@@ -89,9 +205,9 @@ RSpec.describe "Reports", type: :system do
   end
 
   it "sorts a report by a column header, both ways" do
-    visit "/reports/top_by_total_time"
+    visit "/reports"
     pick_source(project: "canvas", cluster: "13")
-    click_button "Run report"
+    run_report("Top queries by total time")
 
     within("table.report thead") { click_link "Calls" }
     expect(page).to have_css("th[data-column='calls'][aria-sort='descending']")
@@ -104,9 +220,9 @@ RSpec.describe "Reports", type: :system do
   end
 
   it "shows the outliers for a source" do
-    visit "/reports/outliers"
+    visit "/reports"
     pick_source(project: "canvas", cluster: "7")
-    click_button "Run report"
+    run_report("Outliers")
 
     expect(report_rows("role", "example", "calls", "total_ms", "avg_ms_per_call")).to eq([
       ["primary", "select * from submissions where assignment_id = $1", "20", "800.00", "40.00"]
@@ -114,9 +230,9 @@ RSpec.describe "Reports", type: :system do
   end
 
   it "shows replica utilization by job" do
-    visit "/reports/replica_utilization_by_job"
+    visit "/reports"
     pick_source(project: "canvas", cluster: "13")
-    click_button "Run report"
+    run_report("Replica utilization by job")
 
     expect(report_rows("job_tag", "primary_calls", "replica_calls", "primary_call_percent", "replica_call_percent")).to eq([
       ["Reindex", "30", "10", "75.00", "25.00"],
@@ -126,9 +242,9 @@ RSpec.describe "Reports", type: :system do
   end
 
   it "shows replica utilization by controller and action" do
-    visit "/reports/replica_utilization_by_controller_action"
+    visit "/reports"
     pick_source(project: "canvas", cluster: "13")
-    click_button "Run report"
+    run_report("Replica utilization by controller and action")
 
     expect(report_rows("controller_action", "primary_calls", "replica_calls")).to eq([
       ["users#show", "600", "0"],
@@ -143,16 +259,16 @@ RSpec.describe "Reports", type: :system do
   end
 
   it "follows a fingerprint through its detail page to its time series over a custom range" do
-    visit "/reports/top_by_calls"
+    visit "/reports"
     pick_source(project: "canvas", cluster: "13")
-    click_button "Run report"
+    run_report("Top queries by calls")
 
     users_id = @fixture.fingerprint_ids.fetch("users")
     within("table.report") { click_link users_id.to_s }
     expect(page).to have_css("h1", text: "Fingerprint #{users_id}")
     click_link "Time series as a table"
 
-    expect(page).to have_css("h1", text: "Fingerprint time series")
+    expect(page).to have_css("h2.report-title", text: "Fingerprint time series")
     expect(page).to have_field("Fingerprint ID", with: users_id.to_s)
     expect(page).to have_select("Cluster", selected: "13")
 
@@ -178,7 +294,7 @@ RSpec.describe "Reports", type: :system do
   end
 
   it "shows a friendly validation error for a source that doesn't exist" do
-    visit "/reports/top_by_calls?project=canvas&environment=production&cluster=99&range=3h"
+    visit "/reports?report=top_by_calls&project=canvas&environment=production&cluster=99&range=3h"
 
     expect(page).to have_text("No source matches that project, environment and cluster")
     expect(page).not_to have_css("table.report")
@@ -191,9 +307,9 @@ RSpec.describe "Reports", type: :system do
     allow(ReportSql).to receive(:read).and_call_original
     allow(ReportSql).to receive(:read).with("top_by_calls.sql").and_return(slow)
 
-    visit "/reports/top_by_calls"
+    visit "/reports"
     pick_source(project: "canvas", cluster: "13")
-    click_button "Run report"
+    run_report("Top queries by calls")
 
     expect(page).to have_css(".report-errors", text: "This report took longer than 0.1 seconds and was stopped")
     expect(page).not_to have_css("table.report")

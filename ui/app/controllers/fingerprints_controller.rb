@@ -49,7 +49,7 @@ class FingerprintsController < ApplicationController
   # parameter. The chart is always in time order, so sort and dir are
   # dropped rather than carried into links.
   def query_params
-    params.except(:fingerprint_id, :sort, :dir).merge(fingerprint_id: @fingerprint.id.to_s)
+    params.except(:fingerprint_id, :sort, :dir, :sort_report).merge(fingerprint_id: @fingerprint.id.to_s)
   end
 
   # Zooming in on a chart goes to this page with a custom range, and keeps

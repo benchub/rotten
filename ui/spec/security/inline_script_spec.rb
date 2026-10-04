@@ -4,7 +4,7 @@ require "rails_helper"
 # only script elements without src are importmap's, and they carry the CSP
 # nonce; nothing has an event handler or style attribute, and there's no
 # style element, so the page needs no unsafe-inline.
-RSpec.describe "No inline script or style on the fingerprint page", type: :request do
+RSpec.describe "No inline script or style on the fingerprint and report pages", type: :request do
   before do
     User.delete_all
     @fixture = ReportFixture.seed!
@@ -14,6 +14,29 @@ RSpec.describe "No inline script or style on the fingerprint page", type: :reque
 
   def nonce
     response.headers["Content-Security-Policy"][/script-src[^;]*'nonce-([^']+)'/, 1]
+  end
+
+  def expect_no_inline(doc)
+    inline = doc.css("script:not([src])")
+    expect(inline.map { |s| s["type"] }.sort).to eq(%w[importmap module])
+    expect(inline.map { |s| s["nonce"] }.uniq).to eq([nonce])
+    attributes = doc.css("*").flat_map { |node| node.attributes.keys }
+    expect(attributes.grep(/\Aon/i)).to be_empty
+    expect(attributes).not_to include("style")
+    expect(doc.css("style")).to be_empty
+  end
+
+  it "has no inline handlers or styles on the report workbench, before and after a run" do
+    base = { project: "canvas", environment: "production", cluster: "13", range: "3h" }
+    [{}, base.merge(report: "top_by_calls"), base.merge(report: "fingerprint_timeseries", fingerprint_id: "1")].each do |params|
+      get "/reports", params: params
+
+      expect(response).to have_http_status(:ok)
+      doc = Nokogiri::HTML5(response.body)
+      expect(doc.css("[data-controller~=report-chooser]")).not_to be_empty
+      expect(doc.css("[data-controller~=time-window]")).not_to be_empty
+      expect_no_inline(doc)
+    end
   end
 
   it "has only nonced importmap scripts and no inline handlers or styles, zoomed or not" do

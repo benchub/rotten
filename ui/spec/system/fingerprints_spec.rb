@@ -106,7 +106,8 @@ RSpec.describe "Fingerprint detail", type: :system do
 
     click_link "Time series as a table"
 
-    expect(page).to have_css("h1", text: "Fingerprint time series")
+    expect(page).to have_css("h2.report-title", text: "Fingerprint time series")
+    expect(page).to have_current_path(%r{\A/reports\?.*report=fingerprint_timeseries})
     expect(page).to have_field("Fingerprint ID", with: users_id.to_s)
     expect(page).to have_css("table.report tbody tr", count: 18)
   end
@@ -308,6 +309,25 @@ RSpec.describe "Fingerprint detail", type: :system do
     expect(page).to have_no_css("table.fingerprint-contexts")
   ensure
     Rails.configuration.x.report_timeout_ms = original
+  end
+
+  it "shows From and To only for a Custom range, pre-filled with the window in effect, and states the window" do
+    users_id = @fixture.fingerprint_ids.fetch("users")
+    visit "/fingerprints/#{users_id}?project=canvas&environment=production&cluster=13&range=6h&bucket=10m"
+
+    expect(page).to have_css(".report-window", text: "(last 6 hours)")
+    expect(page).to have_no_field("From (UTC)")
+    window = find(".report-window").text
+
+    select "Custom", from: "Time range"
+    from = Time.utc(*find_field("From (UTC)").value.scan(/\d+/).map(&:to_i))
+    to = Time.utc(*find_field("To (UTC)").value.scan(/\d+/).map(&:to_i))
+    expect(window).to include(from.strftime("%Y-%m-%d %H:%M"))
+    expect(to - from).to be_between(6.hours, 6.hours + 60)
+
+    click_button "Show"
+    expect(page).to have_css(".report-window", text: "(custom range)")
+    expect(page).to have_field("From (UTC)", with: from.strftime("%Y-%m-%dT%H:%M"))
   end
 
   it "shows the SQL and the source picker before a source is picked" do

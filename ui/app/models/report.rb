@@ -23,6 +23,9 @@ class Report
 
   def self.all = LISTED
 
+  # The report the workbench picks when none is asked for.
+  def self.default = LISTED.first
+
   def self.find(key) = LISTED.find { |report| report.key == key }
 
   # The queries the fingerprint detail page runs alongside the time series.
@@ -39,6 +42,15 @@ class Report
   def role_filter? = kind != :utilization
   def utilization? = kind == :utilization
   def timeseries? = kind == :timeseries
+
+  # The report's own fields, beyond the source and time window, which every
+  # report reads.
+  def own_fields
+    if utilization? then %i[primary_role replica_role]
+    elsif timeseries? then %i[role fingerprint_id bucket]
+    else %i[role]
+    end
+  end
 
   def sql = ReportSql.read(file)
 

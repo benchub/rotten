@@ -266,18 +266,42 @@ counts as ended, so everyone signs in again once after upgrading.
 
 ## Reports
 
-`/reports` lists the reports, and each one has a page at `/reports/<name>`.
-Any signed-in user, viewer or admin, can run them. Pick a project,
-environment and cluster, optionally a role, and a time range: a preset such
-as **Last 3 hours**, or **Custom** with **From** and **To** in UTC, at most
-31 days apart. The utilization reports pick a primary and a replica role
-instead of one role, and the time series takes a fingerprint ID and a bucket
-width. Fingerprint IDs in the other reports link to the fingerprint page.
-Click a column header to sort; the sort happens in Ruby on the rows the
-report returned, at most 50 for the top and outlier reports.
+`/reports` is the workbench, and any signed-in user, viewer or admin, can
+use it. One form holds the dataset and the report to run on it:
+
+- **Dataset:** a project, environment and cluster, optionally a role, and a
+  **Time range**: a preset such as **Last 3 hours**, or **Custom**.
+  **From** and **To** (UTC, at most 31 days apart) show only when Custom is
+  picked, and picking it fills them with the window the preset had, so it
+  can be nudged. Without JavaScript they stay visible, marked **Custom range
+  only**. From and To sent with a preset range are ignored, and the page
+  says so.
+- **Report:** a list of every report with its description. The fields only
+  some reports read show only for them: the utilization reports pick a
+  primary and a replica role instead of one role, and the time series takes
+  a fingerprint ID and a bucket width. Hidden fields are disabled, so they
+  aren't sent. Without JavaScript every field shows and the server ignores
+  the ones the picked report doesn't read. The role is part of the dataset: the
+  utilization reports don't filter by it, but keep it (hidden) so switching
+  back to another report doesn't widen the dataset.
+
+**Run report** loads `/reports?report=<name>&...`. Every run states the
+window it used, such as `2026-10-04 06:35 to 09:35 UTC (last 3 hours)`.
+Above the results, a tab for each report runs it on the same dataset, so
+switching metrics is one click; the time series tab asks for a fingerprint
+ID if there isn't one yet. An unknown report gets a 422. The old per-report
+pages, `/reports/<name>?...`, redirect (301) to the workbench with every
+parameter kept, so bookmarks still work.
+
+Fingerprint IDs in the reports link to the fingerprint page. Click a column
+header to sort. The form carries the sort with `sort_report`, the report
+it came from, so running a different report drops it. The sort happens in
+Ruby on the rows the report returned, at most 50 for the top and outlier
+reports.
 
 Each fingerprint has a page at `/fingerprints/<id>`. It shows the normalized
-SQL, and after you pick a source and time range: charts of calls and total
+SQL, and after you pick a source and time range (with the same time window
+behaviour as the workbench): charts of calls and total
 time for each bucket, the top 10 contexts (job tag, or controller and
 action), and stats for each logical source, including the per-call mean time
 history kept in `fingerprint_stats`. Below them, an **All sources** row

@@ -42,13 +42,19 @@ class ReportQuery
   DATETIME = /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?\z/
   MAX_VALUE_LENGTH = 1000
 
+  # Read whatever the report: the dataset (source, role and time window) and
+  # the sort. Each report's own fields (Report#own_fields) are read only for
+  # it, so a form that sends every report's fields runs any of them. Reports
+  # that don't filter by role keep a valid one for their links.
+  COMMON_FIELDS = %i[project environment cluster role range from to sort dir sort_report].freeze
+
   FIELDS = {
     project: "Project", environment: "Environment", cluster: "Cluster", role: "Role", range: "Time range",
     from: "From", to: "To", sort: "Sort", dir: "Direction", primary_role: "Primary role",
-    replica_role: "Replica role", fingerprint_id: "Fingerprint ID", bucket: "Bucket"
+    replica_role: "Replica role", fingerprint_id: "Fingerprint ID", bucket: "Bucket", sort_report: "Sort report"
   }.freeze
 
-  attr_reader :report, :catalog, *FIELDS.keys
+  attr_reader :report, :catalog, :now, *FIELDS.keys
 
   validate :values_are_plain_strings
   validate :source_exists
@@ -61,15 +67,25 @@ class ReportQuery
     @report = report
     @catalog = catalog
     @now = now.utc
-    @raw = FIELDS.keys.to_h { |field| [field, params[field]] }
+    read = COMMON_FIELDS + report.own_fields
+    @raw = FIELDS.keys.to_h { |field| [field, read.include?(field) ? params[field] : nil] }
     @raw.each { |field, value| instance_variable_set(:"@#{field}", value.is_a?(String) ? value.strip : nil) }
     @range = DEFAULT_RANGE if @range.blank? && @raw[:range].nil?
     @primary_role = DEFAULT_PRIMARY_ROLE if @primary_role.blank?
     @replica_role = DEFAULT_REPLICA_ROLE if @replica_role.blank?
+    # The form's sort carries the report it came from; on another report it's dropped.
+    @sort = @dir = nil if Report.find(@sort_report) && @sort_report != report.key
   end
 
   # The form has been sent. Until then the page shows the form only.
   def submitted? = !@raw[:project].nil?
+
+  # A time series opened without a fingerprint ID at all, as from a report
+  # tab, waits for one instead of failing. A blank one from the form fails.
+  def needs_fingerprint? = report.timeseries? && @raw[:fingerprint_id].nil?
+
+  # From or To came with a preset range, which ignores them.
+  def ignored_custom_range? = !custom? && (@raw[:from].present? || @raw[:to].present?)
 
   def human_attribute_name(field) = FIELDS.fetch(field)
   def self.human_attribute_name(field, _options = {}) = FIELDS.fetch(field.to_sym) { field.to_s.humanize }
@@ -110,7 +126,7 @@ class ReportQuery
   # The validated parameters, for links that keep the current choices.
   def link_params(**overrides)
     params = { project: project, environment: environment, cluster: cluster, range: range }
-    params[:role] = role if report.role_filter? && role.present?
+    params[:role] = role if role.present?
     params.merge!(from: from, to: to) if custom?
     params.merge!(primary_role: primary_role, replica_role: replica_role) if report.utilization?
     params.merge!(fingerprint_id: fingerprint_id, bucket: bucket.presence) if report.timeseries?
@@ -121,9 +137,16 @@ class ReportQuery
   # The source fields only, for links to another report.
   def source_params
     params = { project: project, environment: environment, cluster: cluster, range: range }
-    params[:role] = role if report.role_filter? && role.present?
+    params[:role] = role if role.present?
     params.merge!(from: from, to: to) if custom?
     params.compact_blank
+  end
+
+  # The source fields, and the fields of this report's own that the other
+  # report reads too, for a tab that switches to it. Sort stays behind.
+  def switch_params(other)
+    shared = (report.own_fields & other.own_fields) - %i[role]
+    link_params.slice(*shared).merge(source_params)
   end
 
   private
@@ -204,8 +227,9 @@ class ReportQuery
     matching = catalog.select { |row| row.first(3) == [project, environment, cluster] }
     if matching.empty?
       errors.add(:base, "No source matches that project, environment and cluster")
-    elsif report.role_filter? && role.present? && matching.none? { |row| row.last == role }
-      errors.add(:role, "is not a role of that source")
+    elsif role.present? && matching.none? { |row| row.last == role }
+      # A report that doesn't filter by role doesn't fail on it, but doesn't carry it either.
+      report.role_filter? ? errors.add(:role, "is not a role of that source") : @role = nil
     end
   end
 
@@ -226,6 +250,7 @@ class ReportQuery
   end
 
   def sort_is_a_column
+    errors.add(:sort_report, "is not one of the choices") if !sort_report.nil? && !Report.find(sort_report)
     errors.add(:sort, "is not a column of this report") if sort.present? && !sort_column&.sortable?
     errors.add(:dir, "must be asc or desc") if dir.present? && !DIRECTIONS.include?(dir)
   end

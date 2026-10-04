@@ -1,0 +1,20 @@
+<%# The fields only some reports read, beyond the role in _source_fields. %>
+<% utilization_roles = query.roles | [ReportQuery::DEFAULT_PRIMARY_ROLE, ReportQuery::DEFAULT_REPLICA_ROLE] %>
+<%= report_field(reports, :primary_role) do %>
+  <%= label_tag :primary_role, "Primary role" %>
+  <%= select_tag :primary_role, options_for_select(utilization_roles, query.primary_role) %>
+<% end %>
+<%= report_field(reports, :replica_role) do %>
+  <%= label_tag :replica_role, "Replica role" %>
+  <%= select_tag :replica_role, options_for_select(utilization_roles, query.replica_role) %>
+<% end %>
+<% if local_assigns.fetch(:fingerprint_field, true) %>
+  <%= report_field(reports, :fingerprint_id) do %>
+    <%= label_tag :fingerprint_id, "Fingerprint ID" %>
+    <%= text_field_tag :fingerprint_id, query.fingerprint_id, inputmode: "numeric" %>
+  <% end %>
+<% end %>
+<%= report_field(reports, :bucket) do %>
+  <%= label_tag :bucket, "Bucket" %>
+  <%= select_tag :bucket, options_for_select([["Auto", ""]] + ReportQuery::BUCKETS.map { |key, (label, _)| [label, key] }, query.bucket.to_s) %>
+<% end %>

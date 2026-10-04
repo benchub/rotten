@@ -36,7 +36,41 @@ module ReportsHelper
           else
             column.numeric? ? "desc" : "asc"
           end
-    link_to column.label, report_path(query.report.key, query.link_params(sort: column.key, dir: dir))
+    link_to column.label, reports_path({ report: query.report.key }.merge(query.link_params(sort: column.key, dir: dir)))
+  end
+
+  # A tab that runs report on query's dataset.
+  def report_tab_link(query, report)
+    link_to report.title, reports_path({ report: report.key }.merge(query.switch_params(report))),
+            class: "report-tab", aria: { current: ("page" if report == query.report) }
+  end
+
+  # The window a valid query runs over, as "2026-10-04 06:35 to 09:35 UTC
+  # (last 3 hours)". The end's date is left out when it's the start's.
+  def report_window(query)
+    from, to = query.window
+    to_format = from.to_date == to.to_date ? "%H:%M" : "%Y-%m-%d %H:%M"
+    name = query.custom? ? "custom range" : ReportQuery::RANGES.fetch(query.range).first.downcase
+    "#{from.strftime('%Y-%m-%d %H:%M')} to #{to.strftime(to_format)} UTC (#{name})"
+  end
+
+  # The window's options, each preset with its length for the Custom pre-fill.
+  def report_range_options(query)
+    choices = ReportQuery::RANGES.map do |key, (label, length)|
+      length ? [label, key, { data: { seconds: length.to_i } }] : [label, key]
+    end
+    options_for_select(choices, query.range)
+  end
+
+  # A wrapper for a field only some of reports read, naming them for the
+  # report-chooser controller. Nothing renders if none of them reads it.
+  # With keep, the field is hidden but still sent for the other reports,
+  # as for the dataset role.
+  def report_field(reports, field, keep: false, &block)
+    keys = reports.select { |report| report.own_fields.include?(field) }.map(&:key)
+    return if keys.empty?
+
+    tag.div(data: { report_chooser_target: "field", reports: keys.join(" "), report_chooser_keep: (true if keep) }, &block)
   end
 
   def report_aria_sort(query, column)

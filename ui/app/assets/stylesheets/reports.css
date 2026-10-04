@@ -31,3 +31,26 @@ table.report tr.all-sources.unavailable td { color: #555; font-weight: normal; f
 .timeseries-chart .chart-line { fill: none; stroke: #2563eb; stroke-width: 1.5; }
 .timeseries-chart .chart-point { fill: #2563eb; }
 .timeseries-chart .chart-label, .timeseries-chart .chart-empty { fill: #555; font-size: 11px; }
+.report-form fieldset { border: 1px solid #ccc; border-radius: 0.25rem; padding: 0.5rem 0.75rem 0.75rem; display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+.report-form legend { font-size: 0.85rem; font-weight: 600; padding: 0 0.25rem; }
+.report-form.workbench { flex-direction: column; align-items: stretch; }
+.report-form .time-window { display: contents; }
+.report-form .custom-range { display: flex; gap: 0.75rem; align-items: end; border-left: 2px solid #ddd; padding-left: 0.75rem; }
+.report-form .custom-range-note { font-size: 0.75rem; color: #555; align-self: center; }
+.report-form .report-options { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+.report-form fieldset.report-chooser { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); align-items: stretch; }
+.report-choice { display: flex; gap: 0.5rem; align-items: flex-start; border: 1px solid #ccc; border-radius: 0.25rem; padding: 0.4rem 0.6rem; }
+.report-choice:has(input:checked) { border-color: #2563eb; background: #eff6ff; }
+.report-choice input { margin-top: 0.2rem; }
+.report-choice label { cursor: pointer; font-size: 0.85rem; }
+.report-choice-title { display: block; font-weight: 600; }
+.report-choice-description { display: block; color: #555; }
+.report-tabs ul { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid #ccc; margin: 1.25rem 0 0; }
+.reports .report-tabs a { display: block; padding: 0.3rem 0.7rem; font-size: 0.85rem; text-decoration: none; border: 1px solid transparent; border-bottom: none; border-radius: 0.25rem 0.25rem 0 0; }
+.reports .report-tabs a:hover { background: #f3f4f6; }
+.reports .report-tabs a[aria-current="page"] { border-color: #ccc; background: #fff; font-weight: 600; margin-bottom: -1px; }
+.report-description { color: #555; }
+.report-window { font-size: 0.85rem; margin: 0.5rem 0; font-variant-numeric: tabular-nums; }
+.report-ignored, .report-needs-input { border: 1px solid #d97706; background: #fffbeb; padding: 0.4rem 0.75rem; margin: 0.5rem 0; font-size: 0.85rem; }
+/* Fields the report-chooser and time-window controllers hide, whatever their display. */
+.report-form [hidden] { display: none !important; }
