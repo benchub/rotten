@@ -1,7 +1,7 @@
 require "rails_helper"
 require "rake"
 
-RSpec.describe "users rake tasks" do
+RSpec.describe "users rake tasks", :api_keys do
   before(:all) do
     Rails.application.load_tasks unless Rake::Task.task_defined?("users:create")
   end
@@ -34,6 +34,14 @@ RSpec.describe "users rake tasks" do
     output[/^Password: (\S+)$/, 1]
   end
 
+  def audit_row_for(action, user)
+    rows = owner_audit_rows
+    expect(rows.size).to eq(1), rows.inspect
+    expect(rows.first).to include("actor_user_id" => nil, "actor_email" => "rake", "action" => action,
+                                  "target_type" => "user", "target_id" => user.id.to_s)
+    JSON.parse(rows.first["details"])
+  end
+
   describe "users:create" do
     it "creates an active password user and prints a one-time password that signs in" do
       status, out, err = run_task("users:create", " New.Viewer@Example.TEST ", "viewer")
@@ -48,6 +56,15 @@ RSpec.describe "users rake tasks" do
       expect(user.password_digest).to be_present
       expect(user.password_digest).not_to include(password)
       expect(user.authenticate(password)).to eq(user)
+    end
+
+    it "writes an audit row without the password" do
+      _status, out, = run_task("users:create", "audited@example.test", "admin")
+
+      user = User.sole
+      details = audit_row_for("user.create", user)
+      expect(details).to eq("email" => "audited@example.test", "role" => "admin", "provider" => User::PASSWORD_PROVIDER)
+      expect(owner_audit_rows.to_s).not_to include(printed_password(out))
     end
 
     it "creates an admin" do
@@ -73,6 +90,7 @@ RSpec.describe "users rake tasks" do
         expect(err).to include("role must be viewer or admin")
         expect(printed_password(out)).to be_nil
         expect(User.count).to eq(0)
+        expect(owner_audit_rows).to be_empty
       end
     end
 
@@ -145,6 +163,17 @@ RSpec.describe "users rake tasks" do
       expect(status).to eq(0), err
       expect(out).to include("Disabled leaving@example.test")
       expect(user.reload.active).to be(false)
+      expect(audit_row_for("user.disable", user)).to eq("email" => "leaving@example.test")
+    end
+
+    it "leaves the user enabled and writes no audit row if ending sessions fails" do
+      user = User.create!(email: "sticky@example.test", role: "viewer")
+      allow_any_instance_of(User).to receive(:revoke_sessions!).and_raise(ActiveRecord::StatementInvalid, "boom")
+
+      expect { run_task("users:disable", "sticky@example.test") }.to raise_error(ActiveRecord::StatementInvalid)
+
+      expect(user.reload.active).to be(true)
+      expect(owner_audit_rows).to be_empty
     end
 
     it "also works in oidc mode, as the kill switch for OIDC users" do
@@ -162,6 +191,7 @@ RSpec.describe "users rake tasks" do
 
       expect(status).not_to eq(0)
       expect(err).to include("No user with email nobody@example.test")
+      expect(owner_audit_rows).to be_empty
     end
   end
 
@@ -177,6 +207,7 @@ RSpec.describe "users rake tasks" do
       expect(user.reload.active).to be(true)
       expect(User.authenticate_password_login(email: "returning@example.test", password: "returning-password-1234"))
         .to eq(user)
+      expect(audit_row_for("user.enable", user)).to eq("email" => "returning@example.test")
     end
 
     it "succeeds and leaves an already-enabled user enabled, as users:disable does for a disabled one" do
@@ -237,6 +268,8 @@ RSpec.describe "users rake tasks" do
       user.reload
       expect(user.authenticate(password)).to eq(user)
       expect(user.authenticate("old-password-123456789")).to be(false)
+      expect(audit_row_for("user.reset_password", user)).to eq("email" => "forgetful@example.test")
+      expect(owner_audit_rows.to_s).not_to include(password)
     end
 
     it "leaves a disabled user disabled" do
@@ -265,6 +298,7 @@ RSpec.describe "users rake tasks" do
       expect(err).to include("doesn't sign in with a password")
       expect(printed_password(out)).to be_nil
       expect(sso.reload.password_digest).to be_nil
+      expect(owner_audit_rows).to be_empty
     end
 
     it "refuses to run in oidc mode" do
@@ -276,6 +310,49 @@ RSpec.describe "users rake tasks" do
       expect(err).to include("ROTTEN_UI_AUTH=password")
       expect(printed_password(out)).to be_nil
       expect(user.reload.authenticate("old-password-123456789")).to eq(user)
+    end
+  end
+
+  # The audit row and the change commit together, or neither does.
+  describe "when the audit row can't be written" do
+    before do
+      allow(UiAuditLog).to receive(:record!).and_raise(ActiveRecord::StatementInvalid, "audit failed")
+    end
+
+    def expect_audit_failure(*args)
+      expect { run_task(*args) }.to raise_error(ActiveRecord::StatementInvalid, /audit failed/)
+      expect(UiAuditLog).to have_received(:record!)
+    end
+
+    it "users:create creates nobody" do
+      expect_audit_failure("users:create", "unaudited@example.test", "admin")
+
+      expect(User.count).to eq(0)
+    end
+
+    it "users:disable leaves the user active, with their sessions" do
+      user = User.create!(email: "unaudited@example.test", role: "viewer")
+
+      expect { expect_audit_failure("users:disable", "unaudited@example.test") }
+        .not_to(change { user.reload.session_generation })
+      expect(user.active).to be(true)
+    end
+
+    it "users:enable leaves the user disabled" do
+      user = User.create!(email: "unaudited@example.test", role: "viewer", active: false)
+
+      expect_audit_failure("users:enable", "unaudited@example.test")
+
+      expect(user.reload.active).to be(false)
+    end
+
+    it "users:reset_password keeps the old password and the sessions" do
+      user = User.create!(email: "unaudited@example.test", role: "viewer", provider: User::PASSWORD_PROVIDER,
+                          password: "old-password-123456789")
+
+      expect { expect_audit_failure("users:reset_password", "unaudited@example.test") }
+        .not_to(change { user.reload.session_generation })
+      expect(user.authenticate("old-password-123456789")).to eq(user)
     end
   end
 end

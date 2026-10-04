@@ -1,0 +1,40 @@
+<% content_for :title, "Audit log" %>
+<div class="audit-logs">
+  <p><%= link_to "Home", root_path %> · <%= link_to "Admin", admin_path %></p>
+  <h1>Audit log</h1>
+  <p>Admin actions, newest first. The users:* tasks show as rake, and role changes from IdP groups at sign-in as oidc.</p>
+  <% if @entries.empty? %>
+    <p>No audit entries<%= " older than these" if @paged %>.</p>
+  <% else %>
+    <table class="audit-log">
+      <thead>
+        <tr>
+          <th scope="col">At</th>
+          <th scope="col">Actor</th>
+          <th scope="col">Action</th>
+          <th scope="col">Target</th>
+          <th scope="col">Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @entries.each do |entry| %>
+          <tr data-audit-id="<%= entry.id %>">
+            <td><%= entry.at.utc.strftime("%Y-%m-%d %H:%M:%S UTC") %></td>
+            <td><%= entry.actor_email %><%= " (user #{entry.actor_user_id})" if entry.actor_user_id %></td>
+            <td><%= entry.action %></td>
+            <td><%= [entry.target_type, entry.target_id].compact.join(" ") %></td>
+            <td><code><%= JSON.generate(entry.details) if entry.details.present? %></code></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% end %>
+  <p>
+    <% if @paged %>
+      <%= link_to "Newest", audit_logs_path %>
+    <% end %>
+    <% if @older_before %>
+      <%= link_to "Older", audit_logs_path(before: @older_before), rel: "next" %>
+    <% end %>
+  </p>
+</div>

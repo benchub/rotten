@@ -38,6 +38,17 @@ module ApiKeyHelpers
     end
   end
 
+  # An audit row written as rotten_owner, which may set at. Returns its id.
+  def owner_insert_audit_row(action:, actor_email: "admin@example.test", actor_user_id: nil, target_type: nil,
+                             target_id: nil, details: {}, at: Time.current)
+    ApiKeyHelpers.with_owner do |conn|
+      conn.exec_params(<<~SQL, [at.iso8601(6), actor_user_id, actor_email, action, target_type, target_id, details.to_json]).getvalue(0, 0).to_i
+        insert into rotten.ui_audit_log (at, actor_user_id, actor_email, action, target_type, target_id, details)
+        values ($1, $2, $3, $4, $5, $6, $7::jsonb) returning id
+      SQL
+    end
+  end
+
   # A key made the way the CLI makes one, as rotten_owner.
   def owner_create_api_key(name:, fqdn: "db.example.test", created_by: "cli")
     ApiKeyHelpers.with_owner do |conn|

@@ -15,7 +15,11 @@ class UserAdmin
     raise duplicate(email) if User.exists?(email: email)
 
     password = generate_password
-    user = User.create!(email: email, role: role, provider: User::PASSWORD_PROVIDER, password: password)
+    user = User.transaction do
+      created = User.create!(email: email, role: role, provider: User::PASSWORD_PROVIDER, password: password)
+      audit!("user.create", created, role: created.role, provider: created.provider)
+      created
+    end
     Created.new(user: user, password: password)
   rescue ActiveRecord::RecordNotUnique
     raise duplicate(email)
@@ -28,6 +32,7 @@ class UserAdmin
     User.transaction do
       user.update!(active: false)
       user.revoke_sessions!
+      audit!("user.disable", user)
     end
     user
   end
@@ -37,7 +42,10 @@ class UserAdmin
   # the disable stay ended.
   def self.enable(email)
     user = find!(email)
-    user.update!(active: true)
+    User.transaction do
+      user.update!(active: true)
+      audit!("user.enable", user)
+    end
     user
   end
 
@@ -52,8 +60,15 @@ class UserAdmin
     User.transaction do
       user.update!(password: password)
       user.revoke_sessions!
+      audit!("user.reset_password", user)
     end
     Created.new(user: user, password: password)
+  end
+
+  # Never pass the password in details.
+  def self.audit!(action, user, **details)
+    UiAuditLog.record!(actor: UiAuditLog::RAKE, action: action, target_type: User::AUDIT_TYPE, target_id: user.id,
+                       details: { email: user.email, **details })
   end
 
   def self.require_password_mode!
@@ -79,5 +94,5 @@ class UserAdmin
     SecureRandom.alphanumeric(PASSWORD_LENGTH)
   end
 
-  private_class_method :require_password_mode!, :find!, :normalize_email, :duplicate, :generate_password
+  private_class_method :audit!, :require_password_mode!, :find!, :normalize_email, :duplicate, :generate_password
 end

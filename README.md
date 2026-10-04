@@ -109,9 +109,6 @@ Known issues
   of 7 days or more can approach the 15-second report timeout.
 - **The report source picker doesn't narrow.** You can pick a project,
   environment, cluster and role combination that doesn't exist.
-- **No audit log viewer.** Key creates and revokes are recorded in
-  `ui_audit_log`, but only SQL can show them, and user admin actions aren't
-  recorded.
 - **Postgres 14 through 16** keep min and max times for each statement's
   whole lifetime, since they can't reset them on their own.
 - **The fingerprinter doesn't have the Postgres 18 parser yet.** It uses
@@ -128,7 +125,6 @@ From the backlog:
 - End sessions when OIDC group membership is lost.
 - Share login rate-limit counters across UI processes.
 - Narrow the report source picker as the user chooses.
-- Add an audit log viewer, and audit user admin actions.
 - Make replica utilization scale past 7 days on busy clusters.
 - Build the UI dev image natively on arm64.
 - Cover the dev-only fake OIDC login route in the CSRF spec.

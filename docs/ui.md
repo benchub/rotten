@@ -1,9 +1,9 @@
 # Deploying the UI
 
 The UI is a Rails 8.1 app in `ui/`. It shows the reports, a page for each
-fingerprint, and pass key admin. It connects to the rotten database as
-`rotten_ui` and never runs migrations; `rotten-server migrate` owns the
-schema, so run that first ([database.md](database.md)).
+fingerprint, pass key admin and the audit log. It connects to the rotten
+database as `rotten_ui` and never runs migrations; `rotten-server migrate`
+owns the schema, so run that first ([database.md](database.md)).
 
 This page is the reference for deploying it and for every environment
 variable it reads. `ui/README.md` describes how login, reports and key admin
@@ -122,6 +122,11 @@ passwords need at least 12 characters and at most 72 bytes. See
 
 `users:disable` and `users:reset_password` end every session the user has,
 and `users:enable` doesn't bring any of them back. See [Sessions](#sessions).
+
+Each task that changes a user writes a row to `ui_audit_log`, with actor
+`rake`. So do OIDC logins that change a user's role or first refuse them for
+lost group access, with actor `oidc`. Admins read the log at `/admin/audit`; see
+`ui/README.md`.
 
 ### Development only
 

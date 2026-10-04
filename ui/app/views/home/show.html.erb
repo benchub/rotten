@@ -6,6 +6,7 @@
 <p><%= link_to "Reports", reports_path %></p>
 <% if current_user.admin? %>
   <p><%= link_to "Pass keys", api_keys_path %></p>
+  <p><%= link_to "Audit log", audit_logs_path %></p>
 <% end %>
 <% if Rails.configuration.x.auth_mode == "password" && current_user.password_login? %>
   <p><%= link_to "Change password", edit_password_path %></p>

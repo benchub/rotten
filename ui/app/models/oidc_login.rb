@@ -10,9 +10,12 @@
 # - A user matched on (provider, sub) has name, email, groups and role resynced
 #   on every login, even one that is then refused, so a user who leaves the
 #   groups loses admin. A refusal for lost group access also bumps their
-#   session_generation, ending the sessions they already have, even when the
-#   resync itself is refused as a conflict. A refused login never creates,
-#   links or changes any other row, and never gets a session.
+#   session_generation, ending the sessions they already have. When the
+#   resync is refused as a conflict (the new email is taken), it's redone
+#   without the email. A refused login never creates, links or changes any
+#   other row, and never gets a session.
+# - Role changes and newly lost access are written to ui_audit_log, with
+#   oidc as the actor.
 # - Role comes from groups and fails closed: admin needs the admin group;
 #   otherwise viewer, if the viewer group is unset or the user is in it.
 class OidcLogin
@@ -53,9 +56,9 @@ class OidcLogin
       # again once, which finds the other login's row by (provider, sub); a
       # second collision is a real conflict.
       retry if attempts < 2
-      # The rollback undid any bump resync made, so a known subject who lost
-      # group access is revoked here, outside the transaction.
-      revoke_known_subject(claims[:sub]) if role.nil?
+      # The rollback undid resync, so a known subject who lost group access
+      # is resynced again here without the email, and their sessions end.
+      resync_known_subject_without_email(claims) if role.nil?
       deny(:conflict)
     end
   end
@@ -64,10 +67,36 @@ class OidcLogin
 
   attr_reader :config, :provider
 
-  def revoke_known_subject(sub)
-    User.find_by(provider: provider, provider_uid: sub)&.revoke_sessions!
+  def resync_known_subject_without_email(claims)
+    user = User.find_by(provider: provider, provider_uid: claims[:sub])
+    return unless user
+
+    User.transaction { apply_resync(user, attributes(claims, "viewer").except(:email), nil) }
   rescue ActiveRecord::RecordNotFound
     nil
+  end
+
+  # Updates user and audits any role change. A user refused for lost group
+  # access has every session ended, and the loss is audited only if it's
+  # new: they were active, and their stored groups still gave them a role.
+  # The row lock keeps concurrent refusals from both seeing access.
+  def apply_resync(user, attributes, role)
+    user.lock!
+    from = user.role
+    had_access = user.active? && !role_for(Array(user.groups)).nil?
+    user.update!(attributes)
+    audit!("user.role_change", user, from: from, to: user.role) if user.role != from
+    return unless role.nil?
+
+    user.revoke_sessions!
+    audit!("user.access_lost", user) if had_access
+  end
+
+  # Role changes and lost access come from the IdP's groups, so the actor is
+  # OIDC, not the user signing in.
+  def audit!(action, user, **details)
+    UiAuditLog.record!(actor: UiAuditLog::OIDC, action: action, target_type: User::AUDIT_TYPE, target_id: user.id,
+                       details: { email: user.email, **details })
   end
 
   def provision(claims, role)
@@ -103,11 +132,8 @@ class OidcLogin
   def resync(user, claims, role)
     attributes = attributes(claims, role || "viewer")
     attributes.delete(:email) unless claims[:email_verified]
-    user.update!(attributes)
-    if role.nil?
-      user.revoke_sessions!
-      return deny(:not_authorized)
-    end
+    apply_resync(user, attributes, role)
+    return deny(:not_authorized) if role.nil?
     return deny(:inactive) unless user.active?
 
     user.update!(last_login_at: Time.current)
@@ -120,7 +146,7 @@ class OidcLogin
       provider_uid: claims[:sub],
       email: claims[:email],
       name: claims[:name],
-      groups: claims[:groups].first(MAX_GROUPS),
+      groups: claims[:groups],
       role: role
     }
   end
@@ -163,7 +189,8 @@ class OidcLogin
   end
 
   # The claim may be missing, a single string, or an array. Anything else, and
-  # any element that isn't a usable string, counts as no group.
+  # any element that isn't a usable string, counts as no group. Only the
+  # first MAX_GROUPS usable groups are kept, for the role and for storage.
   def groups_from(value)
     values = case value
     when String then [value]
@@ -171,7 +198,7 @@ class OidcLogin
     else []
     end
 
-    values.filter_map { |group| clean_string(group, MAX_GROUP_LENGTH, strip: false) }.uniq
+    values.filter_map { |group| clean_string(group, MAX_GROUP_LENGTH, strip: false) }.uniq.first(MAX_GROUPS)
   end
 
   # A usable claim string: text that converts to valid UTF-8 (Postgres

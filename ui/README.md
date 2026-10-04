@@ -85,8 +85,9 @@ from booting, with an error that names the bad entry.
 - **Groups claim.** It may be missing, a single string, or an array. Anything
   else counts as no groups, as do array elements that aren't strings, are
   empty or very long, or contain NUL bytes, control characters, or text that
-  isn't valid UTF-8. A missing claim therefore gives a viewer at most, never
-  an admin.
+  isn't valid UTF-8. Only the first 500 usable groups count, for the role
+  and in `users.groups`, so an allowed group listed after them is ignored.
+  A missing claim gives a viewer at most, never an admin.
 - **Odd claim values.** The `sub`, email and name get the same treatment: a
   value that isn't usable text counts as missing. Emails also may not contain
   spaces, control characters or any invisible format character (Unicode
@@ -108,6 +109,9 @@ from booting, with an error that names the bad entry.
   this issuer and `sub`, the resync still happens, so someone removed from the
   groups loses admin in the database straight away. That refusal also bumps
   their `session_generation`, which ends every session they already have.
+  If the resync is refused because the new verified email belongs to another
+  user, it's redone without the email, so the groups, role and session bump
+  still apply.
 - **Sessions.** The session is reset before the user ID is stored, which
   prevents session fixation. It expires after
   `ROTTEN_UI_SESSION_LIFETIME_HOURS` (12 by default), and signing in again
@@ -175,6 +179,11 @@ with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
 
 - **Passwords** are printed once and stored only as a bcrypt digest. Pass them
   on securely. There's no forced change at first login.
+- **Audit log.** Each task that changes a user adds a row to `ui_audit_log`
+  in the same transaction as the change: `user.create`, `user.disable`,
+  `user.enable` or `user.reset_password`, with actor `rake` (no user id),
+  the user's id, and their email (plus role and provider for `user.create`).
+  Never a password. See [Audit log](#audit-log).
 - **Changing your own password.** A signed-in password user can change their
   password at `/password`, linked from the home page as **Change password**.
   It asks for the current password, the new one and a confirmation. OIDC
@@ -364,7 +373,8 @@ go to the login page.
 - **Audit log.** Each create and revoke adds a row to `ui_audit_log`, with
   the admin's user id and email, the action (`api_key.create` or
   `api_key.revoke`), the key id, the time, and the key's name and FQDN.
-  `rotten_ui` can only insert into and read that table.
+  `rotten_ui` can only insert into and read that table. Admins read it at
+  `/admin/audit`; see [Audit log](#audit-log).
 
 `rotten_ui` can insert only `name`, `secret_hash`, `fqdn` and `created_by`
 into `api_keys`, and update only `revoked_at` and `revoked_by`, so the models
@@ -373,6 +383,39 @@ those same files as `rotten_ui` against the server's authenticator, and
 `spec/fixtures/pass_key_vectors.json` holds known secrets with their hashes
 and keys, checked by both the Go and Ruby tests. The `rotten-server keys`
 CLI still works alongside the UI.
+
+## Audit log
+
+`rotten.ui_audit_log` records admin actions. The database stamps each row's
+id and time, and `rotten_ui` can only insert and read, never change or delete.
+Rows come from:
+
+| Action | Actor | When |
+| --- | --- | --- |
+| `api_key.create`, `api_key.revoke` | The admin, by user id and email | An admin creates or revokes a pass key. |
+| `user.create`, `user.disable`, `user.enable`, `user.reset_password` | `rake` | A `users:*` task changes a user. |
+| `user.role_change` | `oidc` | An OIDC login changes a known user's role from their groups. Details hold `from` and `to`. |
+| `user.access_lost` | `oidc` | A known user loses access: an OIDC login is refused because they're no longer in an allowed group, while they were active and their stored groups still gave them a role. See below. |
+
+Creating a user at their first OIDC login, and a user changing their own
+password, aren't recorded. `rotten-server keys` writes nothing here.
+
+`user.access_lost` records the transition, not each refusal. The refused
+login stores the new groups, so later refusals find the user already without
+access and add nothing; a row is written again only after a login restores
+access. Every refusal still ends the user's sessions. A user disabled with
+`users:disable` had no access already, so losing their groups afterwards
+records only any role change. Whether the stored groups gave a role is judged
+by the current `ROTTEN_UI_VIEWER_GROUP` and `ROTTEN_UI_ADMIN_GROUP`, so
+renaming a group in the config can hide a loss.
+
+Admins read the log at `/admin/audit`, linked from the home and admin pages.
+Viewers get a 403 and signed-out users go to the login page. It shows 50
+entries a page, newest first by id, with each entry's time in UTC, actor,
+action, target and details as JSON, all HTML-escaped, since details can hold
+strings users chose. **Older** pages back with `?before=<id>`, keyset style on
+the primary key; a `before` that isn't a positive integer of at most 18 digits
+gets a 400.
 
 ## Production settings
 

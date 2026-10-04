@@ -14,6 +14,7 @@ Rails.application.routes.draw do
     resources :api_keys, path: "keys", only: %i[index new create], constraints: { id: /[1-9][0-9]*/ } do
       post :revoke, on: :member
     end
+    get "audit" => "audit_logs#index", as: :audit_logs
   end
   get "reports" => "reports#index", as: :reports, format: false
   get "reports/:id" => "reports#show", as: :report, format: false

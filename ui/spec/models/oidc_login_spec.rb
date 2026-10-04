@@ -96,6 +96,159 @@ RSpec.describe OidcLogin do
     expect(result.user.groups).to eq(["ok"])
   end
 
+  describe "auditing", :api_keys do
+    let(:config) do
+      RottenUi::OidcConfig.new(issuer: "https://idp.example.test", client_id: "c", client_secret: "s", groups_claim: "groups",
+                               viewer_group: "rotten-viewers", admin_group: "rotten-admins", redirect_uri: nil)
+    end
+
+    def login(groups:, uid: "sub-audit", email: "audit@example.test")
+      described_class.new(config: config, provider: provider).call(auth(uid: uid, email: email, groups: groups))
+    end
+
+    def known(role, active: true)
+      groups = role == "admin" ? ["rotten-admins"] : ["rotten-viewers"]
+      User.create!(email: "audit@example.test", provider: provider, provider_uid: "sub-audit", role: role, groups: groups,
+                   active: active)
+    end
+
+    def audit_rows
+      owner_audit_rows.map do |row|
+        row.slice("actor_user_id", "actor_email", "action", "target_type", "target_id")
+           .merge("details" => JSON.parse(row["details"]))
+      end
+    end
+
+    def row(action, user, **details)
+      { "actor_user_id" => nil, "actor_email" => "oidc", "action" => action, "target_type" => "user",
+        "target_id" => user.id.to_s, "details" => { "email" => user.email, **details.transform_keys(&:to_s) } }
+    end
+
+    it "records a role change made by the IdP's groups" do
+      user = known("viewer")
+
+      expect(login(groups: ["rotten-admins"]).user).to eq(user)
+
+      expect(audit_rows).to eq([row("user.role_change", user, from: "viewer", to: "admin")])
+    end
+
+    it "records nothing when the role stays the same, or for a new user" do
+      user = known("admin")
+      login(groups: ["rotten-admins"])
+      login(groups: ["rotten-viewers"], uid: "sub-new", email: "new@example.test")
+
+      expect(user.reload.role).to eq("admin")
+      expect(User.count).to eq(2)
+      expect(audit_rows).to be_empty
+    end
+
+    it "records an admin who lost every group losing admin and access" do
+      user = known("admin")
+
+      expect(login(groups: []).error).to eq(:not_authorized)
+
+      expect(audit_rows).to eq([row("user.role_change", user, from: "admin", to: "viewer"),
+                                row("user.access_lost", user)])
+    end
+
+    it "records lost access once, however many refused logins follow" do
+      user = known("viewer")
+
+      2.times { expect(login(groups: ["someone-else"]).error).to eq(:not_authorized) }
+
+      expect(audit_rows).to eq([row("user.access_lost", user)])
+    end
+
+    it "records lost access again only after access came back" do
+      user = known("viewer")
+
+      login(groups: [])
+      expect(login(groups: ["rotten-viewers"]).user).to eq(user)
+      login(groups: [])
+
+      expect(audit_rows).to eq([row("user.access_lost", user), row("user.access_lost", user)])
+    end
+
+    it "records no lost access for a user disabled before they lost their groups, but still ends sessions" do
+      user = known("admin", active: false)
+
+      expect { expect(login(groups: []).error).to eq(:not_authorized) }.to change { user.reload.session_generation }.by(1)
+
+      expect(audit_rows).to eq([row("user.role_change", user, from: "admin", to: "viewer")])
+    end
+
+    it "records no lost access for a disabled user who is still in their groups" do
+      known("viewer", active: false)
+
+      expect(login(groups: ["rotten-viewers"]).error).to eq(:inactive)
+
+      expect(audit_rows).to be_empty
+    end
+
+    it "decides the role from the groups it stores, so a group past the cap counts for nothing" do
+      fillers = Array.new(OidcLogin::MAX_GROUPS) { |i| "filler-#{i}" }
+      user = known("viewer")
+
+      expect(login(groups: fillers + ["rotten-viewers"]).error).to eq(:not_authorized)
+      expect(login(groups: fillers + ["rotten-viewers"]).error).to eq(:not_authorized)
+
+      expect(user.reload.groups).to eq(fillers)
+      expect(audit_rows).to eq([row("user.access_lost", user)])
+    end
+
+    it "locks the user row before deciding whether access was lost" do
+      user = known("viewer")
+      locked = []
+      allow_any_instance_of(User).to receive(:lock!).and_wrap_original do |original, *args|
+        locked << original.receiver.id
+        original.call(*args)
+      end
+      allow(UiAuditLog).to receive(:record!).and_wrap_original do |original, **kwargs|
+        expect(locked).to eq([user.id])
+        original.call(**kwargs)
+      end
+
+      login(groups: [])
+
+      expect(UiAuditLog).to have_received(:record!).once
+    end
+
+    it "on a conflict, resyncs all but the email and records the role change and lost access, once" do
+      user = known("admin")
+      User.create!(email: "taken@example.test", role: "viewer")
+
+      2.times { expect(login(groups: [], email: "taken@example.test").error).to eq(:conflict) }
+
+      expect(user.reload).to have_attributes(role: "viewer", groups: [], email: "audit@example.test")
+      expect(audit_rows).to eq([row("user.role_change", user, from: "admin", to: "viewer"),
+                                row("user.access_lost", user)])
+    end
+
+    describe "when the audit row can't be written" do
+      before do
+        allow(UiAuditLog).to receive(:record!).and_raise(ActiveRecord::StatementInvalid, "audit failed")
+      end
+
+      it "rolls back the role change" do
+        user = known("viewer")
+
+        expect { login(groups: ["rotten-admins"]) }.to raise_error(ActiveRecord::StatementInvalid, /audit failed/)
+
+        expect(UiAuditLog).to have_received(:record!)
+        expect(user.reload).to have_attributes(role: "viewer", groups: ["rotten-viewers"])
+      end
+
+      it "rolls back the resync of a user who lost access" do
+        user = known("viewer")
+
+        expect { login(groups: []) }.to raise_error(ActiveRecord::StatementInvalid, /audit failed/)
+
+        expect(UiAuditLog).to have_received(:record!)
+        expect(user.reload).to have_attributes(role: "viewer", groups: ["rotten-viewers"], session_generation: 0)
+      end
+    end
+  end
+
   describe "email characters" do
     def login_with(email)
       described_class.new(config: config, provider: provider).call(auth(uid: "sub-#{email.hash}", email: email))
