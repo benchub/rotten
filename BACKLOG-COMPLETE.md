@@ -1007,3 +1007,24 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Numbers:** in `docs/perf.md`.
   - **Review:** two Opus rounds.
   - **Follow-up:** 20261003-190000-1.
+
+### 20261001-103222-54: Rewrite the README and write operator docs.
+- **Do:** Cover:
+  - The architecture.
+  - Observer grants for each version.
+  - Server setup and TLS.
+  - Issuing, rotating, and revoking keys.
+  - Worker config.
+  - UI setup, including a full env reference for both auth modes and how to point OIDC at Okta without org values in this repo.
+  - The database roles and what each one may do.
+  - The pg_partman permissions retention needs: the `pg_partman_bgw` role must be able to drop `rotten_owner`'s partitions.
+
+  Update the Known Issues and TODO sections.
+- **Red test:** A docs smoke check that every config key in `conf`, the server config, and every `ENV` the UI reads appears in the docs. A small Go test can do this.
+- **Done when:** Passes, and someone who isn't the author can follow the setup.
+- **Needs:** -41, -50.
+- **Completed:** 2026-10-03, 7db4c56.
+  - **Layout:** README is now an overview and quick start. Operator docs are in `docs/server.md`, `worker.md`, `ui.md`, `database.md`, `keys.md`, `observed.md` and `building.md`. `docs/ui.md` is the canonical UI env reference.
+  - **Smoke test:** `internal/docscheck` checks each key set against its own doc: server keys in `docs/server.md`, worker keys in `docs/worker.md`, and UI env in `docs/ui.md`.
+  - **Review:** two Opus rounds.
+  - **Follow-ups:** 20261003-200000-1 through -5.
