@@ -352,8 +352,8 @@ go to the login page.
 - **Revoke.** The **Revoke** button asks for confirmation. Revoking sets
   `revoked_at` and `revoked_by`. Revoking a key that's already revoked
   changes nothing and says so. The server caches pass key checks, so a
-  revoked key keeps working for up to the server's TTL, 30 seconds by
-  default.
+  revoked key keeps working for up to the server's fixed TTL of 30
+  seconds.
 - **Audit log.** Each create and revoke adds a row to `ui_audit_log`, with
   the admin's user id and email, the action (`api_key.create` or
   `api_key.revoke`), the key id, the time, and the key's name and FQDN.

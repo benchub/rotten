@@ -7,7 +7,7 @@
   <% end %>
   <p>
     Workers send a pass key to the server. Each key is pinned to one worker host.
-    A revoked key is refused within the server's auth cache TTL, 30 seconds by default.
+    A revoked key is refused within the server's auth cache TTL of 30 seconds.
   </p>
   <p><%= link_to "New pass key", new_api_key_path %></p>
   <% if @api_keys.empty? %>

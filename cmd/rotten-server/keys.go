@@ -28,7 +28,7 @@ key without a pinned fqdn, so every worker key needs --fqdn. HOST must be a
 host name such as db1.example.com, checked as the UI checks it; it's stored
 lowercased, without a trailing dot.
 list never shows secrets. revoke takes effect within the server's key cache
-TTL (30 seconds by default).
+TTL of 30 seconds.
 `
 
 func runKeys(args []string, stdout, stderr io.Writer) int {

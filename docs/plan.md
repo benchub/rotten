@@ -163,7 +163,7 @@ Stored text must be valid UTF-8 and NUL-free, matching PostgreSQL `text`.
 - Format: `rotten_<key id>_<random secret>` with 32 or more bytes of entropy.
 - The server stores only `sha256(secret)`, which is safe for high-entropy random secrets, and compares in constant time.
 - The `api_keys` table has `name`, `created_at`, `last_used_at`, `revoked_at`, and an optional pinned `fqdn`.
-- Revocation takes effect within a configurable cache TTL (default 30 seconds).
+- Revocation takes effect within the server's key cache TTL, a fixed 30 seconds.
 - Admins manage keys through a `rotten-server keys` CLI, which uses the `rotten_owner` connection, or through the UI's `/admin/keys` pages, which use `rotten_ui`'s narrow column grants.
   - The UI requires an `fqdn` and fills in `created_by` and `revoked_by` from the signed-in admin. The secret appears once, in the create response with `Cache-Control: no-store`, and never in the flash, the session or a log.
   - Each UI create and revoke adds a row to `ui_audit_log`: actor id and email, an action such as `api_key.create`, the target type and id, and JSON details. The table is append-only for `rotten_ui`, which can insert and select but not update or delete, and the database stamps `id` and `at`. It has no foreign keys, so entries outlive the users and keys they name.
