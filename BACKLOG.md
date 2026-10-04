@@ -74,4 +74,23 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - The existing dev topology tests cover the new service's network isolation.
   - A real-Postgres test that a slow episode raises the fingerprint's mean exec time well above the fast baseline.
 
+### 20261004-143600-1: Dev stack replica with its own worker, and a primary/replica traffic split.
+- **Needs:** 20261004-142000-1.
+- **Why (user, 2026-10-04):** The dev stack has one observed Postgres and one worker, so the role filter, per-role stats and the replica utilization reports have nothing to compare.
+- **Do:**
+  - **Replica:** add `observed-replica`, a Postgres 18 streaming replica of `observed-postgres` with `pg_stat_statements` preloaded.
+  - **Second worker:** give the replica its own worker (`worker-replica`) with `Role: "replica"`, its own FQDN, pass key and state volume, and the same project, environment and cluster. Each worker stays on `observed` + `edge` only, as today.
+  - **Worker sanity check:** use a recovery check that fits each worker, e.g. `select pg_is_in_recovery()` on the replica and `select not pg_is_in_recovery()` on the primary, so a mis-pointed worker exits.
+  - **Traffic split:** extend the traffic generator with a distribution pattern:
+    - writes, and some reads, run only on the primary;
+    - some reporting or heavy reads run only on the replica;
+    - some query shapes run on both with a set ratio (e.g. 70/30). Make the ratio vary by controller or job, so the replica utilization reports show a spread from 0% to 100%.
+    - Marginalia comments stay the same on both sides.
+  - **Stats function:** `pg_stat_statements` and the minmax reset function reach the replica through replication. Check that the replica worker's reset path works on a standby, or document why it doesn't need to.
+  - **Docs:** `dev/README.md` and the dev section of the root `README.md`.
+- **Red test:**
+  - Extend the dev topology tests: the new services are on the right networks, and the replica worker reaches the server only through `edge`.
+  - A generator unit test that the routing table sends each query shape to the intended targets in the intended ratios.
+  - A real-Postgres test that the replica is in recovery and replays from the primary.
+
 ## Phase F: Docs.
