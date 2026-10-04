@@ -1293,3 +1293,25 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Cause:** the form doesn't use Turbo, so submitting loads a whole new page. `have_text` could read the old page's `<html>` node after it went stale, and chromedriver's `UnknownError` isn't retried.
   - **Fix:** specs now wait for something only the new page has (an element or a new URL parameter) before reading text. The same fix was applied in `reports_spec`, `fingerprints_spec` and `oidc_login_spec`.
   - **Result:** 10 out of 10 runs passed. Review: one Opus round, clean.
+
+### 20261004-093600-1: One page to pick the dataset and the report.
+- **Why (user, 2026-10-04):** People often look at several metrics for the same population. Today you pick a report first, then fill in the filters on that report's page, and switching reports means starting over. It's also unclear how From/To relate to Time range.
+- **Do:**
+  - `/reports` becomes the workbench. A single GET form holds the dataset: project, environment, cluster, role, and time window. It also holds the report choice, shown as a visible list or segmented control with each report's title and description, not a bare dropdown. Submitting runs the chosen report (`report=<key>`).
+  - Report-specific fields appear only for the reports that use them: role filter vs. primary/replica roles for utilization, and fingerprint ID and bucket for the time series. Stimulus shows and hides them and disables the hidden ones so they aren't submitted. Without JS, all fields render and the server ignores the ones that don't apply.
+  - Above the results, show every report as a tab or link that keeps the current dataset params (`source_params`), so switching metrics is one click and doesn't touch the filters.
+  - `/reports/:id?...` keeps working, for old bookmarks and the sort links. Either redirect it to `/reports?report=:id&...` with params preserved, or render the same page. Pick one and test it.
+  - **Time window:** Time range is the primary control, with presets plus Custom. From/To show only when Custom is picked (Stimulus). Without JS they stay visible, labeled "Custom range only". Picking Custom pre-fills From/To with the window currently in effect. Every run states the resolved window, e.g. "2026-10-04 06:35 to 09:35 UTC (last 3 hours)". If From/To are sent with a preset range, the server ignores them, as it does today, and the page says so. Remove the old `report-hint` line.
+  - The fingerprint page shares `_source_fields`, so it gets the same time-window behaviour.
+  - Update the UI docs (`ui/README.md`, `docs/ui.md`) where they describe the report flow.
+- **Red test:**
+  - A system spec: pick a dataset and run report A, switch to report B via the tab, and see the same dataset still applied with B's results.
+  - A system spec: From/To are hidden until Custom is picked, then pre-filled.
+  - A request spec for the `/reports/:id` compatibility behaviour.
+  - A request spec that the resolved window text matches the bound window.
+- **Completed:** 2026-10-04, a7e7d00.
+  - **Workbench:** `/reports` has one GET form with the dataset and a radio-card report chooser. Tabs above the results keep the dataset, and `/reports/:id` 301-redirects to `/reports?report=:id&...`.
+  - **Role:** part of the dataset for every report. Utilization ignores it in SQL but keeps it in its tabs and form.
+  - **Sort:** a hidden `sort_report` marker drops a sort carried over from another report without JS.
+  - **Time window:** From/To show only for Custom, pre-filled with the current window. Each run states its resolved window, and the page notes when From/To were ignored.
+  - **Review:** two rounds plus a final fix. Round 1 found the role being dropped by utilization tabs and stale no-JS sorts. Round 2 found a system spec that passed without submitting.

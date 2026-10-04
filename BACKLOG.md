@@ -55,4 +55,21 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
+### 20261004-093600-2: Visual refresh of the UI.
+- **Needs:** 20261004-093600-1.
+- **Why (user, 2026-10-04):** The pages are bland. No animations needed, but they should look like a polished internal tool.
+- **Do:**
+  - A shared layout with a top bar: app name "rotten", nav (Reports, Admin for admins), the signed-in user, and logout. Fix the `<title>` default ("Ui").
+  - A small design system, either in plain CSS with custom properties (colors, spacing, radius, type scale) or in Tailwind if it's already wired into the asset build. Check that first, and don't add a Node build.
+  - Card panels for the filter form and the results. Styled selects, inputs and buttons with visible focus states. A primary "Run" button.
+  - Tables: sticky header, zebra rows, hover, right-aligned tabular numbers, monospace truncated query text with the full text available, and clear sort indicators.
+  - Error and empty states that look intentional. Badges for roles.
+  - Charts: colors match the palette.
+  - Apply all this across every page: home, login, password, reports, fingerprint, admin, API keys and audit log.
+  - Must keep working under the strict CSP: no inline styles or scripts. Must meet WCAG AA contrast. No animations.
+- **Red test:**
+  - A system spec that the layout nav appears on every authenticated page and shows Admin only to admins.
+  - A security spec that the CSP still holds: no inline `style=` attributes in rendered pages.
+  - Existing system specs stay green.
+
 ## Phase F: Docs.
