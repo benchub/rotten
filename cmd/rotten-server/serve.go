@@ -218,16 +218,16 @@ func loadServeConfig(args []string, stderr io.Writer) (serveConfig, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configFile := fs.String("config", defaultServeConfigFilename, "JSON config file")
-	dsn := fs.String("dsn", "", "rotten_ingest DSN (default config DSN, then $ROTTEN_SERVER_DSN)")
-	listen := fs.String("listen", "", "HTTPS listen address (default config Listen, then $ROTTEN_SERVER_LISTEN, else :8443)")
-	certFile := fs.String("tls-cert", "", "PEM certificate chain file (default config TLSCert, then $ROTTEN_SERVER_TLS_CERT)")
-	keyFile := fs.String("tls-key", "", "PEM private key file (default config TLSKey, then $ROTTEN_SERVER_TLS_KEY)")
-	shutdownTimeout := fs.Uint("shutdown-timeout", 0, "graceful shutdown timeout in seconds (default config ShutdownTimeout, then $ROTTEN_SERVER_SHUTDOWN_TIMEOUT, else 10)")
-	healthTimeout := fs.Uint("health-timeout", 0, "health database ping timeout in seconds (default config HealthTimeout, then $ROTTEN_SERVER_HEALTH_TIMEOUT, else 1)")
-	failedAuthBurst := fs.Uint("failed-auth-burst", 0, "failed auth lookup burst per client (default config FailedAuthBurst, then $ROTTEN_SERVER_FAILED_AUTH_BURST, else 5)")
-	failedAuthRefill := fs.Uint("failed-auth-refill", 0, "failed auth token refill in seconds (default config FailedAuthRefill, then $ROTTEN_SERVER_FAILED_AUTH_REFILL, else 10)")
-	globalFailedAuthBurst := fs.Uint("global-failed-auth-burst", 0, "global failed auth lookup burst (default config GlobalFailedAuthBurst, then $ROTTEN_SERVER_GLOBAL_FAILED_AUTH_BURST, else 50)")
-	globalFailedAuthRefill := fs.Uint("global-failed-auth-refill", 0, "global failed auth token refill in seconds (default config GlobalFailedAuthRefill, then $ROTTEN_SERVER_GLOBAL_FAILED_AUTH_REFILL, else 1)")
+	dsn := fs.String("dsn", "", serveFlagHelp("rotten_ingest DSN", "ROTTEN_SERVER_DSN", "DSN", ""))
+	listen := fs.String("listen", "", serveFlagHelp("HTTPS listen address", "ROTTEN_SERVER_LISTEN", "Listen", defaultServeListen))
+	certFile := fs.String("tls-cert", "", serveFlagHelp("PEM certificate chain file", "ROTTEN_SERVER_TLS_CERT", "TLSCert", ""))
+	keyFile := fs.String("tls-key", "", serveFlagHelp("PEM private key file", "ROTTEN_SERVER_TLS_KEY", "TLSKey", ""))
+	shutdownTimeout := fs.Uint("shutdown-timeout", 0, serveFlagHelp("graceful shutdown timeout in seconds", "ROTTEN_SERVER_SHUTDOWN_TIMEOUT", "ShutdownTimeout", wholeSeconds(defaultShutdownTimeout)))
+	healthTimeout := fs.Uint("health-timeout", 0, serveFlagHelp("health database ping timeout in seconds", "ROTTEN_SERVER_HEALTH_TIMEOUT", "HealthTimeout", wholeSeconds(defaultHealthCheckTimeout)))
+	failedAuthBurst := fs.Uint("failed-auth-burst", 0, serveFlagHelp("failed auth lookup burst per client", "ROTTEN_SERVER_FAILED_AUTH_BURST", "FailedAuthBurst", strconv.Itoa(auth.DefaultFailedAuthBurst)))
+	failedAuthRefill := fs.Uint("failed-auth-refill", 0, serveFlagHelp("failed auth token refill in seconds", "ROTTEN_SERVER_FAILED_AUTH_REFILL", "FailedAuthRefill", wholeSeconds(auth.DefaultFailedAuthRefill)))
+	globalFailedAuthBurst := fs.Uint("global-failed-auth-burst", 0, serveFlagHelp("global failed auth lookup burst", "ROTTEN_SERVER_GLOBAL_FAILED_AUTH_BURST", "GlobalFailedAuthBurst", strconv.Itoa(auth.DefaultGlobalFailedAuthBurst)))
+	globalFailedAuthRefill := fs.Uint("global-failed-auth-refill", 0, serveFlagHelp("global failed auth token refill in seconds", "ROTTEN_SERVER_GLOBAL_FAILED_AUTH_REFILL", "GlobalFailedAuthRefill", wholeSeconds(auth.DefaultGlobalFailedAuthRefill)))
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
@@ -364,6 +364,20 @@ func loadServeConfig(args []string, stderr io.Writer) (serveConfig, error) {
 		cfg.GlobalFailedAuthRefill = auth.DefaultGlobalFailedAuthRefill
 	}
 	return cfg, nil
+}
+
+// serveFlagHelp states the order loadServeConfig applies: an explicit flag,
+// then the environment variable, then the config file key, then the default.
+func serveFlagHelp(desc, env, key, def string) string {
+	s := desc + " (default $" + env + ", then config " + key
+	if def != "" {
+		s += ", else " + def
+	}
+	return s + ")"
+}
+
+func wholeSeconds(d time.Duration) string {
+	return strconv.FormatInt(int64(d/time.Second), 10)
 }
 
 func secondsDuration(seconds uint32) time.Duration {

@@ -135,6 +135,63 @@ func TestServeConfigFileEnvAndFlagPrecedence(t *testing.T) {
 	}
 }
 
+// serveFlagUsages runs `serve -h` and returns each flag's help text.
+func serveFlagUsages(t *testing.T) map[string]string {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if code := run([]string{"serve", "-h"}, &out, &errb); code != 2 {
+		t.Fatalf("serve -h: code %d, stderr %q", code, errb.String())
+	}
+	usages := make(map[string]string)
+	var name string
+	for _, line := range strings.Split(errb.String(), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "  -"):
+			name = strings.Fields(strings.TrimPrefix(trimmed, "-"))[0]
+			usages[name] = ""
+		case name != "" && trimmed != "":
+			usages[name] = strings.TrimSpace(usages[name] + " " + trimmed)
+		}
+	}
+	return usages
+}
+
+func TestServeHelpStatesPrecedence(t *testing.T) {
+	usages := serveFlagUsages(t)
+	for _, tc := range []struct{ flag, env, key, def string }{
+		{"dsn", "ROTTEN_SERVER_DSN", "DSN", ""},
+		{"listen", "ROTTEN_SERVER_LISTEN", "Listen", ":8443"},
+		{"tls-cert", "ROTTEN_SERVER_TLS_CERT", "TLSCert", ""},
+		{"tls-key", "ROTTEN_SERVER_TLS_KEY", "TLSKey", ""},
+		{"shutdown-timeout", "ROTTEN_SERVER_SHUTDOWN_TIMEOUT", "ShutdownTimeout", "10"},
+		{"health-timeout", "ROTTEN_SERVER_HEALTH_TIMEOUT", "HealthTimeout", "1"},
+		{"failed-auth-burst", "ROTTEN_SERVER_FAILED_AUTH_BURST", "FailedAuthBurst", "5"},
+		{"failed-auth-refill", "ROTTEN_SERVER_FAILED_AUTH_REFILL", "FailedAuthRefill", "10"},
+		{"global-failed-auth-burst", "ROTTEN_SERVER_GLOBAL_FAILED_AUTH_BURST", "GlobalFailedAuthBurst", "50"},
+		{"global-failed-auth-refill", "ROTTEN_SERVER_GLOBAL_FAILED_AUTH_REFILL", "GlobalFailedAuthRefill", "1"},
+	} {
+		usage, ok := usages[tc.flag]
+		if !ok {
+			t.Errorf("-%s missing from serve -h output", tc.flag)
+			continue
+		}
+		want := "(default $" + tc.env + ", then config " + tc.key
+		if tc.def != "" {
+			want += ", else " + tc.def
+		}
+		want += ")"
+		if !strings.HasSuffix(usage, want) {
+			t.Errorf("-%s help %q; want it to end with %q (flag, then env, then config file, then default)", tc.flag, usage, want)
+		}
+		delete(usages, tc.flag)
+	}
+	delete(usages, "config")
+	for flag, usage := range usages {
+		t.Errorf("-%s help %q not checked for precedence", flag, usage)
+	}
+}
+
 // The test binary is also the CLI subprocess, so signals exercise the actual
 // entry point without installing or building another binary.
 func TestServeProcess(t *testing.T) {
