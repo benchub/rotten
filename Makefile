@@ -33,7 +33,12 @@ WORKER_AMD64_IMAGE ?= rotten-worker:local-amd64
 WORKER_ARM64_IMAGE ?= rotten-worker:local-arm64
 SERVER_AMD64_IMAGE ?= rotten-server:local-amd64
 SERVER_ARM64_IMAGE ?= rotten-server:local-arm64
-UI_IMAGE ?= rotten-ui-dev
+# The UI dev image is built and run for the Docker daemon's native platform,
+# so Chromium and RSpec don't run under emulation on arm64 hosts. Set
+# UI_PLATFORM (e.g. linux/amd64) to override. The tag includes the platform,
+# so switching platforms builds a new image instead of reusing the other one.
+UI_PLATFORM ?= linux/$(shell docker version -f '{{.Server.Arch}}' 2>/dev/null)
+UI_IMAGE ?= rotten-ui-dev:$(subst /,-,$(UI_PLATFORM))
 
 DOCKER_RUN := docker run --rm -t \
 	-v "$(CURDIR)":/src -w /src \
@@ -48,7 +53,7 @@ DOCKER_SOCK := \
 
 GO_TEST_ARGS ?=
 
-.PHONY: test test-unit test-ui test-perf test-all test-release golden shell image ui-image proto tools build build-native build-linux build-linux-smoke build-smoke build-images release-images
+.PHONY: test test-unit test-ui test-perf test-all test-release golden shell image ui-image ui-image-check proto tools build build-native build-linux build-linux-smoke build-smoke build-images release-images
 
 # buf is pinned at BUF_VERSION and stays out of go.mod (its dependency tree
 # is large). `make tools` installs it into ./bin with GOBIN, and `make proto`
@@ -92,7 +97,17 @@ image:
 
 ## ui-image: the Rails development/test image with Chromium for system specs.
 ui-image:
-	docker build --pull=false --platform linux/amd64 -q -f ui/dev.Dockerfile -t $(UI_IMAGE) ui >/dev/null
+	docker build --pull=false --platform $(UI_PLATFORM) -q -f ui/dev.Dockerfile -t $(UI_IMAGE) ui >/dev/null
+	@$(MAKE) --no-print-directory ui-image-check
+
+## ui-image-check: fail unless $(UI_IMAGE) was built for $(UI_PLATFORM).
+ui-image-check:
+	@want="$(word 2,$(subst /, ,$(UI_PLATFORM)))"; \
+	got="$$(docker image inspect -f '{{.Architecture}}' $(UI_IMAGE))"; \
+	if [ -z "$$want" ] || [ "$$got" != "$$want" ]; then \
+		echo "ui-image: $(UI_IMAGE) is $$got, want $$want ($(UI_PLATFORM))" >&2; \
+		exit 1; \
+	fi
 
 ## build: native binaries, Linux amd64/arm64 binaries, and local production images.
 build: build-native build-linux build-images
@@ -183,7 +198,7 @@ test-ui: image ui-image
 		exit 1; \
 	fi; \
 	$(DOCKER_RUN) --network "$$net" $(IMAGE) go run ./cmd/rotten-server migrate -dsn "postgres://rotten_owner:rotten_owner@$$db:5432/rotten?sslmode=disable"; \
-	docker run --rm -t --network "$$net" -v "$(CURDIR)/ui":/app -v "$(CURDIR)/reports":/reports:ro -w /app -e RAILS_ENV=test -e DATABASE_URL="postgres://rotten_ui:rotten_ui@$$db:5432/rotten?sslmode=disable" -e ROTTEN_UI_TEST_SEED_DATABASE_URL="postgres://rotten_owner:rotten_owner@$$db:5432/rotten?sslmode=disable" -e SECRET_KEY_BASE=test -e ROTTEN_UI_AUTH=password $(UI_IMAGE) bundle exec rspec $(UI_SPEC_ARGS)
+	docker run --rm -t --platform $(UI_PLATFORM) --network "$$net" -v "$(CURDIR)/ui":/app -v "$(CURDIR)/reports":/reports:ro -w /app -e RAILS_ENV=test -e DATABASE_URL="postgres://rotten_ui:rotten_ui@$$db:5432/rotten?sslmode=disable" -e ROTTEN_UI_TEST_SEED_DATABASE_URL="postgres://rotten_owner:rotten_owner@$$db:5432/rotten?sslmode=disable" -e SECRET_KEY_BASE=test -e ROTTEN_UI_AUTH=password $(UI_IMAGE) bundle exec rspec $(UI_SPEC_ARGS)
 
 ## test-all: Go and UI test suites.
 test-all: test test-ui

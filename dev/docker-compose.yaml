@@ -197,8 +197,10 @@ services:
     build:
       context: ../ui
       dockerfile: dev.Dockerfile
-    image: rotten-dev-ui:3.4
-    platform: linux/amd64
+    # No platform pin: built for the Docker host's native platform, so arm64
+    # hosts run Chromium without emulation. The tag changed from
+    # rotten-dev-ui:3.4 (formerly amd64-only) so an old image isn't reused.
+    image: rotten-dev-ui:3.4-native
     working_dir: /app
     command:
       - bin/rails

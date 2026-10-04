@@ -10,6 +10,13 @@ specs. The report specs seed the Go report fixture through
 `ROTTEN_UI_TEST_SEED_DATABASE_URL`, a `rotten_owner` connection that
 `make test-ui` sets, because `rotten_ui` can only read the event tables.
 
+The dev image (`ui/dev.Dockerfile`, with Chromium for system specs) is built
+for the Docker host's native platform, so it runs without emulation on arm64.
+`make ui-image` tags it `rotten-ui-dev:linux-<arch>` and checks the built
+architecture. To build and test another platform, set `UI_PLATFORM`, e.g.
+`make test-ui UI_PLATFORM=linux/amd64`; its base image must already be pulled
+for that platform.
+
 ## Authentication
 
 `ROTTEN_UI_AUTH` picks the mode, `oidc` or `password`. The app refuses to boot

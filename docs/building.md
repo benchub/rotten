@@ -72,7 +72,7 @@ See [ui.md](ui.md) for running it.
 | --- | --- |
 | `make test-unit` | Go tests in `-short` mode, natively. Tests that need Docker are skipped. |
 | `make test` | Every Go test in Docker, with the race detector, against real Postgres 14 through 18 in containers. |
-| `make test-ui` | The Rails specs in Docker. |
+| `make test-ui` | The Rails specs in Docker, in a dev image built for the host's native platform (`UI_PLATFORM` overrides). |
 | `make test-all` | `make test` and `make test-ui`. |
 | `make test-perf` | The report performance suite. It seeds about 10 million events and takes several minutes. |
 | `make test-release` | Builds the release artifacts and smoke-tests them. |
