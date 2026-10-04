@@ -66,10 +66,12 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - Make up controllers, actions and job tags. The same query shapes should run under several contexts. Context IDs are random per request or job. Hostnames and pids come from a small pool.
   - Find out how the worker actually attributes contexts. `pg_stat_statements` keeps one text per queryid, so check whether several contexts per fingerprint can show up, and design the load so the UI shows several contexts per fingerprint where the pipeline allows it. Write down the finding.
   - Prefer a small Go program under `dev/cmd/`, as with the existing dev tools.
+  - **Outliers (user, 2026-10-04):** a few query shapes are usually fast but have occasional slow episodes on the same fingerprint, so the outliers report has something to show. Use slow row consumption on a large result, plus another realistic cause such as lock waits. Make sure the slowness shows up in `pg_stat_statements` exec time. Document how long the stack must run before outliers can appear.
   - Document it in `dev/README.md` and the dev section of the root `README.md`.
 - **Red test:**
   - A Go test that every generated statement's comment matches the `dev/worker.json` context regexes and gives the intended controller, action or job.
   - A real-Postgres test (`internal/testdb`) that a short generator run produces several fingerprints in `pg_stat_statements`, with comments the worker extracts.
   - The existing dev topology tests cover the new service's network isolation.
+  - A real-Postgres test that a slow episode raises the fingerprint's mean exec time well above the fast baseline.
 
 ## Phase F: Docs.
