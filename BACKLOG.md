@@ -57,12 +57,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ## Phase F: Docs.
 
-### 20261003-160000-1: Narrow the report source picker as the user chooses.
-- **Do:** Project, environment, cluster and role are independent dropdowns, so the user can pick a combination that doesn't exist. They only find out when they run the report. Add a small Stimulus controller, or a server-rendered cascade, that narrows each dropdown to existing combinations. Keep it CSP-compliant.
-- **Red test:** A system spec where picking a project limits the environment options to that project's environments.
-- **Done when:** Passes.
-- **Needs:** none.
-
 ### 20261003-170000-1: Run the fingerprint page's queries under one timeout.
 - **Do:** `/fingerprints/:id` runs three report queries: the time series, the contexts and the sources. Each runs in its own read-only transaction with its own `statement_timeout`, so the worst case is about 3 × `ROTTEN_UI_REPORT_TIMEOUT`. Run them in one transaction with a single deadline, or set a page-level budget.
 - **Red test:** With a tiny timeout and a slow query, the page fails within about one timeout, not three.
@@ -102,21 +96,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** `docs/plan.md` around line 161 says revocation takes effect "within a configurable cache TTL". The server's key cache TTL is a fixed 30s. Either make it configurable (a server config key plus env var, documented in `docs/server.md`) or correct plan.md. This is a small decision; default to correcting the doc unless there's a reason to change the code.
 - **Red test:** If code changes: a config test. If docs only: the docs smoke test still passes.
 - **Done when:** Passes.
-- **Needs:** none.
-
-### 20261004-020000-1: Test flake where testdb connects to a recycled host port under heavy Docker load.
-- **Do:** In the 130000-1 gate run, two `make test-all` runs were going at once. Two tests failed in `testdb: connect` after their containers were reported ready:
-  - `ingest`'s `TestSubmitHarvestValidationRejectsBadInputBeforeWriting/context_string_longer_than_512_bytes` failed with `failed to receive message: unexpected EOF`, then `dial ... network is unreachable` over IPv6.
-  - `reports`' `TestOutliersSkipsZeroDeviationAndMissingSourceHistory` failed with `password authentication failed for user "postgres"` on a host port. That suggests the port had been reused by another container.
-
-  Both passed on re-run.
-
-  **Update (2026-10-04):** It also happened in a *single* gate run, with no concurrent Docker load, while landing 060000-1, 140000-2 and 150000-2. The failures were `ingest` `TestSubmitHarvestRejectsDuplicateFingerprints`, with `SASL authentication failed` on a host port, and `reports` `TestFingerprintTimeseriesRejectsMonthWidth`, with `password authentication failed`. The two failures were on adjacent host ports, 57963 and 57962, within the same second. So it isn't limited to concurrent gates, and this is now medium priority. Investigate:
-  - whether the DSN retry treats EOF and auth failures as retryable;
-  - whether testdb should re-read the mapped port before each connect attempt;
-  - whether testdb should verify it reached the right container, for example with a per-container password or `application_name` check.
-- **Red test:** A unit test of the connect-retry classification, and/or a check that testdb reached its own container.
-- **Done when:** Passes. Documenting this alone is no longer enough, because it happens in single gate runs too.
 - **Needs:** none.
 
 ### 20261004-060000-2: The `ingest` test package can exceed Go's 10-minute timeout under heavy Docker load.

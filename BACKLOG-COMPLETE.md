@@ -1187,3 +1187,23 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Parsing** matches observer.sql's `::int[]` cast: "2" is 2.0, "1.11.1" is accepted as 1.11, and non-numeric or signed parts are rejected.
   - **2.x:** `ExtVersion` still rejects majors other than 1 (the columns are unknown, and `selectSQL` and `col` key on the 1.x minor). It now says "unsupported major version" instead of the misleading "older than 1.9", and a comment explains why.
   - **Review:** two Opus rounds plus a final fix.
+
+### 20261004-020000-1: Test flake where testdb connects to a recycled host port under heavy Docker load.
+- **Do:** testdb connects failed with SASL or password auth errors, EOF, or IPv6 unreachable after a container was reported ready. It happened under concurrent gates, and later in a single gate run. Make connecting to the wrong container detectable and retry with a time limit.
+- **Red test:** A unit test of the connect-retry classification, and/or a check that testdb reached its own container.
+- **Completed:** 2026-10-04, f53c98f.
+  - **Passwords:** each container with a host port gets a random secret from `crypto/rand`. The superuser gets a random password, and every role uses `DB.RolePassword(role)` (`role_<secret>`). A connection that lands on the wrong container now fails authentication instead of silently succeeding.
+  - **Connecting:** `start()` and `Restart` connect for real, re-reading the mapped port and retrying for up to 30 seconds. Retryable errors are 28P01, 08P01, startup or shutdown errors, EOF and network errors. `Connect`, `ConnectAs` and `StartRotten`'s `migrate.Up` share `connectRerouted`, which re-checks the route once and retries once.
+  - **Topology containers** have no host port, so they keep role-name passwords.
+  - **Not done:** about 50 direct `pgx.Connect(DSNAs(...))` callers don't retry. They're protected by the check at start and by the unique passwords.
+  - **Review:** two Opus rounds. Round 1 extended the fix from the superuser to every role.
+
+### 20261003-160000-1: Narrow the report source picker as the user chooses.
+- **Do:** Project, environment, cluster and role are independent dropdowns. Narrow each to combinations that exist, CSP-compliant.
+- **Red test:** A system spec where picking a project limits the environment options.
+- **Completed:** 2026-10-04, c4591ca.
+  - **Controller:** `source_picker_controller.js` narrows project → environment → cluster → role. It reads the existing `LogicalSource.catalog`, passed as a JSON data attribute in `_source_fields.html.erb`, so there's no new query or grant.
+  - **Safety:** options are built with `new Option`, and there's no inline script or style.
+  - **Where it applies:** the report and fingerprint pages. Without JavaScript the full lists still render.
+  - **Invalid selections:** an invalid source from the URL stays selected on load, so it still matches the server's 422 error. Changing an upstream field narrows the fields below it.
+  - **Review:** two Opus rounds. Round 1 fixed invalid URL selections being silently replaced.
