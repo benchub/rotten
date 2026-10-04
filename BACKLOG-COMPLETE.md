@@ -1226,3 +1226,20 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Lowering the cap:** `state.Open` trims the oldest batches at startup, counts them in `dropped_cap`, and the worker logs them.
   - **Docs:** `docs/worker.md`, `docs/plan.md`, and the README's known-issues list.
   - **Review:** two Opus rounds. Round 1 moved the trim from the next enqueue to startup, because a baseline harvest never enqueues.
+
+### 20261003-170000-2: Show an all-sources row in the fingerprint stats table.
+- **Do:** Add an "all sources" row to the fingerprint stats table so operators see the fingerprint's overall footprint.
+- **Red test:** A system spec on the fixture shows the all-sources totals.
+- **Completed:** 2026-10-04, e0cea30.
+  - **Query:** new `reports/fingerprint_all_sources.sql`. Calls, total ms and average ms are summed across every source for the same time range and window rules. The history columns come from the lifetime record in `fingerprint_stats` (logical source 0, seeded as all/all/all/all). It uses the `events_fingerprint_window` index and is cheaper than the per-source query in the perf suite.
+  - **Page:** the row renders in a `<tfoot>` and runs under the page's shared `ReportRunner` budget. If it times out, or less than 100ms of budget is left, the row shows "Timed out" with a note and the rest of the page still returns 200. A timeout in the first three queries still gives a 503.
+  - **README:** stale known-issue and TODO lines removed.
+  - **Review:** two Opus rounds. Round 1 fixed an all-sources timeout discarding the page, and added a test for a window straddling the end of the range.
+
+### 20261003-200000-5: Correct plan.md's claim that the key cache TTL is configurable.
+- **Do:** plan.md said the key cache TTL is configurable; it's a fixed 30s.
+- **Red test:** The docs smoke test passes.
+- **Completed:** 2026-10-04, 8adaa66.
+  - **Wording:** "by default" removed from plan.md, the `keys` CLI help, `ui/README.md` and the API keys page.
+  - **Test:** `internal/docscheck/keycache_test.go` ties six docs to `auth.DefaultTTL`, and fails if any non-test Go file outside `internal/auth` sets `.TTL` or `TTL:`.
+  - **Review:** one Opus round plus a final fix that broadened the TTL scan.

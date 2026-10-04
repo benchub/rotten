@@ -57,12 +57,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ## Phase F: Docs.
 
-### 20261003-170000-2: Show an all-sources row in the fingerprint stats table.
-- **Do:** The stats table covers only the selected project, environment, cluster and role. Add an "all sources" row, using the lifetime `fingerprint_stats` data or an aggregate across all sources, so operators see the fingerprint's overall footprint.
-- **Red test:** A system spec on the fixture shows the all-sources totals.
-- **Done when:** Passes.
-- **Needs:** none.
-
 ### 20261003-180000-1: Add an audit log viewer, and audit user admin actions.
 - **Do:** -52 added `ui_audit_log`, which `rotten_ui` can insert into and read but not change. Do two things:
   - Add an admin-only, paginated page for reading it.
@@ -77,12 +71,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 ### 20261003-190000-1: Make replica utilization scale past 7 days on busy clusters.
 - **Do:** After the -53 rewrite, `replica_utilization_by_controller_action` takes about 5.5s at 7d on the 10M-event perf seed (by_job about 3.2s). Cost grows linearly with the cluster's events in the range, so a busier cluster or a custom range up to 21 days could hit the 15s UI timeout. Consider a structural fix, such as storing each event's context total at ingest (a goose migration plus an ingest change), so the report doesn't recount all `event_context` rows.
 - **Red test:** A `make test-perf` case at 21d, or at 7d with a heavier seed, that stays within the UI timeout.
-- **Done when:** Passes.
-- **Needs:** none.
-
-### 20261003-200000-5: Correct plan.md's claim that the key cache TTL is configurable.
-- **Do:** `docs/plan.md` around line 161 says revocation takes effect "within a configurable cache TTL". The server's key cache TTL is a fixed 30s. Either make it configurable (a server config key plus env var, documented in `docs/server.md`) or correct plan.md. This is a small decision; default to correcting the doc unless there's a reason to change the code.
-- **Red test:** If code changes: a config test. If docs only: the docs smoke test still passes.
 - **Done when:** Passes.
 - **Needs:** none.
 
