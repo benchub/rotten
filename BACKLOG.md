@@ -68,30 +68,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes.
 - **Needs:** none.
 
-### 20261003-150000-1: Make logout and expiry revoke stolen session cookies, and pick up lost OIDC group access.
-- **Do:** With the cookie session store, a copy of the cookie taken before logout still works afterwards. Sessions also have no expiry. Two `pending` specs in `ui/spec/security/session_fixation_spec.rb` lock in this gap. 20261003-130000-3 (a demotion or group removal only takes effect at next login) was merged into this task.
-
-  Build the 2026-10-04 decision:
-  - A goose migration adds `users.session_generation bigint not null default 0`, with grants so `rotten_ui` can update it.
-  - Store the generation in the session at login. Check it on every request, and reset the session and redirect to login when it doesn't match.
-  - Bump the generation, which ends all of that user's sessions, on:
-    - logout;
-    - a password change or reset;
-    - `users:disable`;
-    - an OIDC login that denies a known user because they've lost group access.
-
-    Where the password fingerprint check already does this, keep one mechanism or keep both, but explain the choice.
-  - Stamp an absolute expiry in the session at login. The lifetime is 12h by default; read it from a `ROTTEN_UI_SESSION_LIFETIME_HOURS` env var (or similar), documented in `docs/ui.md`. When it has passed, reset the session and require a new login. That re-checks OIDC group membership.
-- **Red test:**
-  - Un-pend the two specs.
-  - Add an expiry spec.
-  - Add specs that each bump trigger revokes a copied cookie.
-  - Add a spec that an OIDC user losing their group at re-login revokes their other sessions.
-  - Un-pend the `users:disable` → `users:enable` cookie-replay spec added by 20261003-140000-1. Disable must bump the generation, so that enable doesn't revive old sessions. Remove the interim docs caveat about this from `docs/ui.md` and `ui/README.md`.
-  - Add a Go migrate test for the column.
-- **Done when:** Passes.
-- **Needs:** none.
-
 ### 20261003-150000-2: Cover the dev-only fake OIDC login route in the CSRF spec.
 - **Do:** `ui/spec/security/csrf_spec.rb` enumerates routes from the test environment, so the `OMNIAUTH_FAKE=1` dev route isn't covered. Add a spec that boots with the fake enabled, or assert that the route can't exist in production.
 - **Red test:** A fake route that skips CSRF fails the spec.
@@ -139,12 +115,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes.
 - **Needs:** none.
 
-### 20261003-200000-4: Check the pg_stat_statements extension version in `observer.sql` on PG17+.
-- **Do:** On PG17 and later, `schema/observer.sql` wraps the 4-argument `pg_stat_statements_reset`, which needs extension version ≥ 1.11. After a `pg_upgrade`, the extension can still be at 1.10, and the script fails with an unclear error. Add a precondition that raises a clear "run `ALTER EXTENSION pg_stat_statements UPDATE`" message. Alternatively, gate on `extversion` rather than `server_version_num`.
-- **Red test:** On PG17 with the extension at 1.10, if testdb can install that version, the script fails with the clear message. Otherwise, unit-test the gating logic.
-- **Done when:** Passes.
-- **Needs:** none.
-
 ### 20261003-200000-5: Correct plan.md's claim that the key cache TTL is configurable.
 - **Do:** `docs/plan.md` around line 161 says revocation takes effect "within a configurable cache TTL". The server's key cache TTL is a fixed 30s. Either make it configurable (a server config key plus env var, documented in `docs/server.md`) or correct plan.md. This is a small decision; default to correcting the doc unless there's a reason to change the code.
 - **Red test:** If code changes: a config test. If docs only: the docs smoke test still passes.
@@ -162,4 +132,25 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - whether testdb should verify it reached the right container, for example with a per-container password or `application_name` check.
 - **Red test:** A unit test of the connect-retry classification. Or document why concurrent full gates are unsupported.
 - **Done when:** Passes, or the limitation is documented in `docs/building.md`.
+- **Needs:** none.
+
+### 20261004-060000-1: Make `HasMinmaxReset` compare the major version.
+- **Do:** `internal/pgss/reader.go` around line 117 checks only the minor version (`v[1] >= 11`), so a future pg_stat_statements 2.0 would skip the minmax reset. Since 200000-4, `schema/observer.sql` compares the whole version as an int array and would accept 2.0. Make the Go side agree, using `v[0] > 1 || (v[0] == 1 && v[1] >= 11)`, and handle a version with no minor part.
+- **Red test:** A table test that `2.0` and `2` count as having it, `1.11` and `1.12` do, and `1.10` and `1.9` don't.
+- **Done when:** Passes.
+- **Needs:** none.
+
+### 20261004-060000-2: The `ingest` test package can exceed Go's 10-minute timeout under heavy Docker load.
+- **Do:** One gate run happened while a builder was running the full UI suite. testcontainers port-inspect timeouts (the 130000-1 retry path) stalled `internal/ingest`, which normally takes about 3 minutes, past `go test`'s default 10-minute timeout, and it panicked. Options:
+  - share one container per package through `TestMain`;
+  - set an explicit `-timeout` in `make test`;
+  - cap container starts with a semaphore.
+- **Red test:** A smoke check that `make test` passes an explicit `-timeout`, or that `ingest` starts at most N containers.
+- **Done when:** Passes.
+- **Needs:** none. Related: 20261004-020000-1.
+
+### 20261004-060000-3: Flaky system spec `spec/system/api_keys_spec.rb:107`.
+- **Do:** It failed once during the 150000-1 build with a Selenium "Node with given id does not belong to the document" error (a stale element after a Turbo re-render), then passed on re-run. Make the spec wait on a stable selector after the action, rather than holding an element reference across a re-render.
+- **Red test:** Hard to reproduce. Run the spec in a loop with `UI_SPEC_ARGS`, or show that the fixed spec no longer holds element handles across navigation.
+- **Done when:** Passes 10 times in a row.
 - **Needs:** none.

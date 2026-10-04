@@ -1120,3 +1120,40 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Shared rules:** `ui/spec/fixtures/fqdn_vectors.json` is read by both the Go test and an RSpec, so the two sides can't drift. Writing it showed the UI accepted the Kelvin sign, because Unicode downcase turned it into `k`. The UI now uses `downcase(:ascii)`.
   - **Existing keys:** `AllowsFQDN` already normalizes both sides at lookup, so keys created before this change still match.
   - **Review:** one Opus round, clean.
+
+### 20261003-200000-4: Check the pg_stat_statements extension version in `observer.sql` on PG17+.
+- **Do:** On PG17 and later, `schema/observer.sql` wraps the 4-argument `pg_stat_statements_reset`, which needs extension version ≥ 1.11. After a `pg_upgrade`, the extension can still be at 1.10, and the script fails with an unclear error. Add a precondition that raises a clear "run `ALTER EXTENSION pg_stat_statements UPDATE`" message. Alternatively, gate on `extversion` rather than `server_version_num`.
+- **Red test:** On PG17 with the extension at 1.10, if testdb can install that version, the script fails with the clear message. Otherwise, unit-test the gating logic.
+- **Done when:** Passes.
+- **Needs:** none.
+- **Completed:** 2026-10-04, 0fadecd.
+  - **Check:** on PG17 and later, a precondition compares `string_to_array(extversion,'.')::int[] < '{1,11}'` before making any change. If the extension is too old, it raises SQLSTATE 55000 with the installed version and tells you to run `ALTER EXTENSION pg_stat_statements UPDATE`.
+  - **Why not gate on extversion:** that would let the script succeed silently without the wrapper. The worker already gates on `HasMinmaxReset`.
+  - **Test:** `TestObserverOldExtension` installs 1.10 on PG17 and PG18 for real. It asserts the clear error and that nothing was created, then that the script works after the update.
+  - **Default versions:** PG14 has 1.9, PG15 and PG16 have 1.10, PG17 has 1.11, and PG18 has 1.12.
+  - **Review:** one Opus round, clean.
+  - **Follow-up:** 20261004-060000-1.
+
+### 20261003-150000-1: Make logout and expiry revoke stolen session cookies, and pick up lost OIDC group access.
+- **Do:** With the cookie session store, a copy of the cookie taken before logout still works afterwards. Sessions also have no expiry. Two `pending` specs locked in this gap. 20261003-130000-3 was merged in. The work followed the user's decision of 2026-10-04: a generation counter plus a 12h absolute expiry.
+- **Red test:**
+  - Un-pend the specs.
+  - Add specs for expiry, for each bump trigger, for an OIDC user losing their groups, and for disable followed by enable.
+  - Add a Go migrate test.
+- **Done when:** Passes.
+- **Needs:** none.
+- **Completed:** 2026-10-04, 7d6b370.
+  - **Migration 0010:** adds `users.session_generation bigint not null default 0`. The existing table-level grant covers it. The 0009 migrate test was made robust to later migrations.
+  - **Session check:** `start_session` resets the session, then stores the generation and an absolute `expires_at`. Every request compares both against the user row it already loads, so there's no extra query.
+  - **What counts as invalid:** a missing or non-integer generation counts as revoked. A missing `expires_at` counts as expired. Users sign in once more after the upgrade.
+  - **Bumps:** each is one atomic `UPDATE … RETURNING`. They happen on:
+    - logout (ends all of that user's sessions);
+    - a password change or reset (the current session then stores the new generation);
+    - `users:disable`;
+    - an OIDC login that refuses a known user who has lost their groups, including on the email-conflict path, outside the rolled-back transaction.
+  - **Fingerprint:** the password fingerprint is kept as a backstop.
+  - **Lifetime:** `ROTTEN_UI_SESSION_LIFETIME_HOURS` sets the session lifetime: 12 by default, 0.01 to 8760 allowed, and a bad value stops boot. It's documented in `docs/ui.md`.
+  - **Specs:** all previously pending session specs are un-pended. The suite now has 0 pending.
+  - **Review:** one Opus round. Its low finding (no bump on the lost-groups email-conflict path) was fixed in the final round.
+  - **Follow-ups:** 20261004-060000-2 (ingest package timeout under load) and 20261004-060000-3 (flaky api_keys system spec).
+- **20261003-130000-3:** resolved by this task.
