@@ -44,21 +44,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ## Phase F: Docs.
 
-### 20261003-120000-1: Build the UI dev image natively on arm64 if possible.
-- **Do:** `make ui-image` and the compose `ui` service force `--platform linux/amd64`, so on Apple Silicon the RSpec and Chromium image runs under emulation. Find out why it was pinned (Chromium and chromedriver availability on Debian arm64?). If a native build works, use the native platform; if not, document why the pin stays.
-- **Red test:** A smoke check that `make test-ui` passes with the image built for the native platform. Or, if the pin stays, a comment in the Makefile and compose file explaining it.
-- **Done when:** `make test-all` passes on this arm64 host without emulation, or the pin is justified.
-- **Needs:** none.
-
-### 20261003-130000-1: Test flake where testcontainers times out inspecting the mapped port.
-- **Do:** In the -105250-2 gate run, `TestWorkerDiffingOutbox/pg18` failed in `testdb` startup with `wait until ready: mapped port: retries: 30, port: "invalid port", last err: inspect ... context deadline exceeded`. Docker was too slow to answer `inspect` while the whole test suite was running in parallel. It passed when re-run. -132234-1 added `ForListeningPort` and a DSN retry, but this failure is earlier, in testcontainers' own wait strategy. Consider:
-  - a longer startup timeout in `internal/testdb`;
-  - retrying the whole container start once when the error is a Docker API timeout;
-  - capping parallel container starts across packages with a semaphore or `-p`.
-- **Red test:** It's hard to reproduce. A unit test that simulates a start error on the first try and checks that `testdb` retries once, plus a log line.
-- **Done when:** Passes, and three back-to-back `make test` runs pass.
-- **Needs:** none.
-
 ### 20261003-130000-2: Add a unique index on `users(provider, provider_uid)`.
 - **Do:** OIDC matches users on (provider, provider_uid), but nothing in the DB enforces that pair is unique. Add a goose migration with a partial unique index where `provider_uid IS NOT NULL`. Handle `RecordNotUnique` in OidcLogin's create path, which is already retried.
 - **Red test:** A Go migrate test that a duplicate (provider, provider_uid) is rejected, plus a Rails spec that a concurrent duplicate create is retried and doesn't become a 500.
@@ -169,4 +154,17 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** `docs/plan.md` around line 161 says revocation takes effect "within a configurable cache TTL". The server's key cache TTL is a fixed 30s. Either make it configurable (a server config key plus env var, documented in `docs/server.md`) or correct plan.md. This is a small decision; default to correcting the doc unless there's a reason to change the code.
 - **Red test:** If code changes: a config test. If docs only: the docs smoke test still passes.
 - **Done when:** Passes.
+- **Needs:** none.
+
+### 20261004-020000-1: Test flake where testdb connects to a recycled host port under heavy Docker load.
+- **Do:** In the 130000-1 gate run, two `make test-all` runs were going at once. Two tests failed in `testdb: connect` after their containers were reported ready:
+  - `ingest`'s `TestSubmitHarvestValidationRejectsBadInputBeforeWriting/context_string_longer_than_512_bytes` failed with `failed to receive message: unexpected EOF`, then `dial ... network is unreachable` over IPv6.
+  - `reports`' `TestOutliersSkipsZeroDeviationAndMissingSourceHistory` failed with `password authentication failed for user "postgres"` on a host port. That suggests the port had been reused by another container.
+
+  Both passed on re-run, and a single gate run is clean, so this is low priority. Investigate:
+  - whether the DSN retry treats EOF and auth failures as retryable;
+  - whether testdb should re-read the mapped port before each connect attempt;
+  - whether testdb should verify it reached the right container, for example with a per-container password or `application_name` check.
+- **Red test:** A unit test of the connect-retry classification. Or document why concurrent full gates are unsupported.
+- **Done when:** Passes, or the limitation is documented in `docs/building.md`.
 - **Needs:** none.

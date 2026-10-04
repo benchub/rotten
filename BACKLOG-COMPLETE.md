@@ -1028,3 +1028,33 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Smoke test:** `internal/docscheck` checks each key set against its own doc: server keys in `docs/server.md`, worker keys in `docs/worker.md`, and UI env in `docs/ui.md`.
   - **Review:** two Opus rounds.
   - **Follow-ups:** 20261003-200000-1 through -5.
+
+### 20261003-120000-1: Build the UI dev image natively on arm64 if possible.
+- **Do:** `make ui-image` and the compose `ui` service force `--platform linux/amd64`, so on Apple Silicon the RSpec and Chromium image runs under emulation. Find out why it was pinned (Chromium and chromedriver availability on Debian arm64?). If a native build works, use the native platform; if not, document why the pin stays.
+- **Red test:** A smoke check that `make test-ui` passes with the image built for the native platform. Or, if the pin stays, a comment in the Makefile and compose file explaining it.
+- **Done when:** `make test-all` passes on this arm64 host without emulation, or the pin is justified.
+- **Needs:** none.
+- **Completed:** 2026-10-04, 73f5eeb.
+  - **Why it was pinned:** nothing records a reason, and nothing about arm64 required it. Debian arm64 has matching chromium and chromium-driver packages, and `Gemfile.lock` already lists `aarch64-linux`.
+  - **Change:**
+    - `UI_PLATFORM ?= linux/<docker daemon arch>`, which can be overridden.
+    - The tag now includes the platform: `rotten-ui-dev:linux-<arch>`.
+    - `ui-image-check` asserts the built image's architecture.
+    - `test-ui` runs with `--platform`.
+    - Compose no longer pins a platform; its tag is now `rotten-dev-ui:3.4-native`.
+  - **Note:** the compose `ui` service hasn't been built under the new tag yet. It uses the same Dockerfile.
+  - **Review:** one Opus round, clean.
+
+### 20261003-130000-1: Test flake where testcontainers times out inspecting the mapped port.
+- **Do:** In the -105250-2 gate run, `TestWorkerDiffingOutbox/pg18` failed in `testdb` startup with `wait until ready: mapped port: retries: 30, port: "invalid port", last err: inspect ... context deadline exceeded`. Docker was too slow to answer `inspect` while the whole test suite was running in parallel. It passed when re-run. -132234-1 added `ForListeningPort` and a DSN retry, but this failure is earlier, in testcontainers' own wait strategy. Consider:
+  - a longer startup timeout in `internal/testdb`;
+  - retrying the whole container start once when the error is a Docker API timeout;
+  - capping parallel container starts across packages with a semaphore or `-p`.
+- **Red test:** It's hard to reproduce. A unit test that simulates a start error on the first try and checks that `testdb` retries once, plus a log line.
+- **Done when:** Passes, and three back-to-back `make test` runs pass.
+- **Needs:** none.
+- **Completed:** 2026-10-04, 3e31c58.
+  - **Change:** `internal/testdb/retry.go` retries a container start once, with a log line, when the error is a timeout whose message contains `mapped port:` or `detect internal port:`. Each attempt's container is registered for cleanup, and a failed first container is terminated.
+  - **Not retried:** plain startup-wait deadlines, where Postgres never becomes ready. Retrying those would double a failure to about 6 minutes and risk Go's 10-minute timeout per package.
+  - **Review:** one Opus round. Its one optional note, narrowing the retry, was fixed.
+  - **Follow-up:** 20261004-020000-1.
