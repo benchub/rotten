@@ -44,7 +44,7 @@ RSpec.describe "Reports", type: :system do
     expect(page).to have_checked_field("Top queries by total time")
   end
 
-  it "runs one report on a dataset, then switches to another with one click, keeping the dataset" do
+  it "runs one report on a dataset, then switches to another from the report chooser, keeping the dataset" do
     visit "/reports"
     pick_source(project: "canvas", cluster: "13", role: "replica", range: "Last 6 hours")
     run_report("Top queries by calls")
@@ -54,10 +54,14 @@ RSpec.describe "Reports", type: :system do
       ["update delayed_jobs set locked_by = $1 where id = $2", "25"]
     ])
 
-    within("nav.report-tabs") { click_link "Top queries by total time" }
+    expect(page).to have_no_css("nav.report-tabs")
+    choose "Top queries by total time"
+    click_button "Run report"
+    expect(page).to have_current_path(/[?&]report=top_by_total_time(&|\z)/)
 
     expect(page).to have_css("h2.report-title", text: "Top queries by total time")
-    expect(page).to have_css("nav.report-tabs a[aria-current='page']", text: "Top queries by total time")
+    expect(page).to have_current_path(/[?&]role=replica(&|\z)/)
+    expect(page).to have_current_path(/[?&]range=6h(&|\z)/)
     expect(page).to have_select("Project", selected: "canvas")
     expect(page).to have_select("Cluster", selected: "13")
     expect(page).to have_select("Role", selected: "replica")
@@ -75,21 +79,23 @@ RSpec.describe "Reports", type: :system do
     pick_source(project: "canvas", cluster: "13", role: "replica")
     run_report("Top queries by calls")
 
-    within("nav.report-tabs") { click_link "Replica utilization by job" }
-    expect(page).to have_css("h2.report-title", text: "Replica utilization by job")
+    # The role is hidden for the utilization report but still sent. The
+    # new report in the URL shows the new page loaded.
+    choose "Replica utilization by job"
     expect(page).to have_no_select("Role")
-
-    # Rerun it from the form, where the role is hidden but still sent. Only
-    # the form sends the utilization roles, so they show the new page loaded.
-    expect(page).to have_no_current_path(/primary_role=/)
     click_button "Run report"
+    expect(page).to have_current_path(/[?&]report=replica_utilization_by_job(&|\z)/)
+    expect(page).to have_css("h2.report-title", text: "Replica utilization by job")
     expect(page).to have_current_path(/[?&]primary_role=primary(&|\z)/)
     expect(page).to have_current_path(/[?&]replica_role=replica(&|\z)/)
-    expect(page).to have_current_path(/[?&]report=replica_utilization_by_job(&|\z)/)
     expect(page).to have_current_path(/[?&]role=replica(&|\z)/)
+    expect(page).to have_no_select("Role")
 
-    within("nav.report-tabs") { click_link "Top queries by calls" }
+    choose "Top queries by calls"
+    click_button "Run report"
+    expect(page).to have_current_path(/[?&]report=top_by_calls(&|\z)/)
     expect(page).to have_css("h2.report-title", text: "Top queries by calls")
+    expect(page).to have_current_path(/[?&]role=replica(&|\z)/)
     expect(page).to have_select("Role", selected: "replica")
     expect(report_rows("example", "calls")).to eq([
       ["select * from users where id = $1", "200"],

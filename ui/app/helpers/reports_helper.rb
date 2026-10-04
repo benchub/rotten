@@ -47,12 +47,6 @@ module ReportsHelper
     link_to column.label, reports_path({ report: query.report.key }.merge(query.link_params(sort: column.key, dir: dir)))
   end
 
-  # A tab that runs report on query's dataset.
-  def report_tab_link(query, report)
-    link_to report.title, reports_path({ report: report.key }.merge(query.switch_params(report))),
-            class: "report-tab", aria: { current: ("page" if report == query.report) }
-  end
-
   # The window a valid query runs over, as "2026-10-04 06:35 to 09:35 UTC
   # (last 3 hours)". The end's date is left out when it's the start's.
   def report_window(query)

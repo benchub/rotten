@@ -21,7 +21,7 @@ Node). The sources are in `app/assets/tailwind/`:
 - `base.css` sets element defaults, link styles and the focus outline.
 - `components.css` and `reports.css` hold the recurring components, built with
   `@apply` in `@layer components`: cards, buttons, inputs, tables, badges,
-  alerts, tabs, the report chooser and the charts.
+  alerts, the report chooser and the charts.
 
 Views use utilities for one-off layout and the component classes for the rest.
 There are no animations or transitions, and no inline styles, because the CSP
@@ -317,9 +317,10 @@ use it. One form holds the dataset and the report to run on it:
 
 **Run report** loads `/reports?report=<name>&...`. Every run states the
 window it used, such as `2026-10-04 06:35 to 09:35 UTC (last 3 hours)`.
-Above the results, a tab for each report runs it on the same dataset, so
-switching metrics is one click; the time series tab asks for a fingerprint
-ID if there isn't one yet. An unknown report gets a 422. The old per-report
+To switch reports, pick another one in the form and press **Run report**
+again: the dataset stays as it was. The time series opened without a
+fingerprint ID, as from an old bookmark, asks for one instead of failing.
+An unknown report gets a 422. The old per-report
 pages, `/reports/<name>?...`, redirect (301) to the workbench with every
 parameter kept, so bookmarks still work.
 

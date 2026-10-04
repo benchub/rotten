@@ -34,18 +34,10 @@
   .report-choice-title { @apply block font-semibold text-ink; }
   .report-choice-description { @apply mt-0.5 block text-xs text-ink-muted; }
 
-  /* Results: a card with the report tabs along its top. */
+  /* Results: a card under the form. */
   .results { @apply p-0; }
   .results-body { @apply px-6 py-4; }
   .results-body > :last-child { @apply mb-0; }
-  .report-tabs { @apply rounded-t-lg border-b border-line bg-surface-muted; }
-  .report-tabs ul { @apply m-0 flex list-none flex-wrap gap-x-1 px-3 py-0; }
-  .report-tabs a {
-    @apply -mb-px block border-b-3 border-transparent px-3 pt-3 pb-[calc(0.75rem-3px)];
-    @apply text-sm font-semibold text-ink-muted no-underline;
-    @apply hover:border-line-strong hover:text-ink;
-  }
-  .report-tabs a[aria-current="page"] { @apply border-primary font-semibold text-primary; }
   .report-title { @apply mb-1 text-xl; }
   .report-window {
     @apply mb-4 inline-flex flex-wrap items-baseline gap-2 rounded-full border border-line bg-surface-muted px-3 py-1;

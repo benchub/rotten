@@ -223,39 +223,23 @@ RSpec.describe "Reports", type: :request do
     end
   end
 
-  describe "the report tabs" do
-    it "links every report with the current dataset, and marks the current one" do
+  describe "switching reports" do
+    it "has no report tabs above the results: the form's report chooser is the only switch" do
       sign_in
 
       get "/reports", params: source_params.merge(report: "top_by_calls", role: "replica", sort: "calls", dir: "asc")
 
-      tabs = doc.css("nav.report-tabs a")
-      expect(tabs.map(&:text)).to eq(Report.all.map(&:title))
-      tabs.zip(Report.all).each do |tab, report|
-        uri = URI(tab["href"])
-        expect(uri.path).to eq("/reports")
-        expect(Rack::Utils.parse_query(uri.query)).to eq(
-          "report" => report.key, "project" => "canvas", "environment" => "production", "cluster" => "13",
-          "range" => "3h", "role" => "replica"
-        )
-      end
-      expect(doc.css("nav.report-tabs a[aria-current=page]").map(&:text)).to eq(["Top queries by calls"])
+      expect(response).to have_http_status(:ok)
+      results = doc.at_css("section.results")
+      expect(results).not_to be_nil
+      expect(doc.css("nav.report-tabs, .report-tab")).to be_empty
+      expect(doc.css("nav[aria-label='Reports on this dataset']")).to be_empty
+      report_links = results.css("a[href]").select { |a| URI(a["href"]).path == "/reports" }
+      expect(report_links.map { |a| Rack::Utils.parse_query(URI(a["href"]).query)["report"] }.uniq).to eq(["top_by_calls"])
+      expect(doc.css("form.report-form input[type=radio][name=report]").map { |r| r["value"] }).to eq(Report.all.map(&:key))
     end
 
-    it "keeps a custom range, and the time series' fingerprint and bucket on its own tab" do
-      sign_in
-
-      get "/reports", params: source_params.merge(report: "fingerprint_timeseries", fingerprint_id: "1", bucket: "10m",
-                                                  range: "custom", from: "2026-10-03T22:15", to: "2026-10-04T01:05")
-
-      hrefs = doc.css("nav.report-tabs a").to_h { |a| [a.text, Rack::Utils.parse_query(URI(a["href"]).query)] }
-      expect(hrefs["Fingerprint time series"]).to include("fingerprint_id" => "1", "bucket" => "10m",
-                                                         "range" => "custom", "from" => "2026-10-03T22:15", "to" => "2026-10-04T01:05")
-      expect(hrefs["Outliers"]).to include("range" => "custom", "from" => "2026-10-03T22:15", "to" => "2026-10-04T01:05")
-      expect(hrefs["Outliers"].keys).not_to include("fingerprint_id", "bucket")
-    end
-
-    it "asks for a fingerprint ID rather than failing when the time series tab is opened without one" do
+    it "asks for a fingerprint ID rather than failing when the time series is opened without one, as from an old bookmark" do
       sign_in
       expect(ReportRunner).not_to receive(:new)
 
@@ -265,27 +249,15 @@ RSpec.describe "Reports", type: :request do
       expect(doc.at_css(".report-needs-input").text).to include("Enter a fingerprint ID")
       expect(doc.css(".report-errors")).to be_empty
     end
-
-    it "isn't shown before a run or when the parameters are invalid" do
-      sign_in
-
-      get "/reports"
-      expect(doc.css("nav.report-tabs")).to be_empty
-
-      get "/reports", params: source_params.merge(report: "top_by_calls", range: "forever")
-      expect(doc.css("nav.report-tabs")).to be_empty
-    end
   end
 
   describe "the dataset role on reports that don't filter by it" do
-    it "keeps a valid role in the utilization report's tabs, so switching back doesn't widen the dataset" do
+    it "keeps a valid role in the utilization report's form, so switching back doesn't widen the dataset" do
       sign_in
 
       get "/reports", params: source_params.merge(report: "replica_utilization_by_job", role: "replica")
 
       expect(response).to have_http_status(:ok)
-      hrefs = doc.css("nav.report-tabs a").to_h { |a| [a.text, Rack::Utils.parse_query(URI(a["href"]).query)] }
-      expect(hrefs.values).to all(include("role" => "replica"))
       expect(doc.at_css("select[name=role] option[selected]")["value"]).to eq("replica")
     end
 
@@ -295,7 +267,8 @@ RSpec.describe "Reports", type: :request do
       get "/reports", params: source_params.merge(report: "replica_utilization_by_job", role: "nope")
 
       expect(response).to have_http_status(:ok)
-      doc.css("nav.report-tabs a").each { |a| expect(Rack::Utils.parse_query(URI(a["href"]).query)).not_to have_key("role") }
+      expect(doc.css(".report-errors")).to be_empty
+      expect(doc.css("select[name=role] option[selected]").map { |o| o["value"] }).to eq([""])
     end
 
     it "keeps the role field sent while hidden for the reports that don't filter by it" do

@@ -45,7 +45,7 @@ class ReportQuery
   # Read whatever the report: the dataset (source, role and time window) and
   # the sort. Each report's own fields (Report#own_fields) are read only for
   # it, so a form that sends every report's fields runs any of them. Reports
-  # that don't filter by role keep a valid one for their links.
+  # that don't filter by role keep a valid one, so the form carries it on.
   COMMON_FIELDS = %i[project environment cluster role range from to sort dir sort_report].freeze
 
   FIELDS = {
@@ -80,8 +80,8 @@ class ReportQuery
   # The form has been sent. Until then the page shows the form only.
   def submitted? = !@raw[:project].nil?
 
-  # A time series opened without a fingerprint ID at all, as from a report
-  # tab, waits for one instead of failing. A blank one from the form fails.
+  # A time series opened without a fingerprint ID at all, as from an old
+  # /reports/:id bookmark, waits for one instead of failing. A blank one from the form fails.
   def needs_fingerprint? = report.timeseries? && @raw[:fingerprint_id].nil?
 
   # From or To came with a preset range, which ignores them.
@@ -140,13 +140,6 @@ class ReportQuery
     params[:role] = role if role.present?
     params.merge!(from: from, to: to) if custom?
     params.compact_blank
-  end
-
-  # The source fields, and the fields of this report's own that the other
-  # report reads too, for a tab that switches to it. Sort stays behind.
-  def switch_params(other)
-    shared = (report.own_fields & other.own_fields) - %i[role]
-    link_params.slice(*shared).merge(source_params)
   end
 
   private

@@ -1,6 +1,6 @@
 # /reports is the workbench: one form for the dataset (source and time
-# window) and the report to run on it, and tabs that run another report on
-# the same dataset. /reports/:id is the old page for one report; it redirects
+# window) and the report to run on it; the form keeps the dataset when
+# another report is picked. /reports/:id is the old page for one report; it redirects
 # to the workbench with every parameter kept, for bookmarks.
 class ReportsController < ApplicationController
   def index
@@ -13,7 +13,7 @@ class ReportsController < ApplicationController
     end
     return unless @query.submitted?
     @query.valid?
-    # Opened from a tab without a fingerprint ID: the form asks for one.
+    # Opened without a fingerprint ID, as from an old bookmark: the form asks for one.
     @query.errors.delete(:fingerprint_id) if @query.needs_fingerprint?
     return render :index, status: :unprocessable_content if @query.errors.any?
     return if @query.needs_fingerprint?
