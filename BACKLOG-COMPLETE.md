@@ -1338,3 +1338,18 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Dev stack:** the `ui` service builds CSS before `rails server`, and a new `ui-css` service runs `tailwindcss:watch[always]`. `make test-ui` builds Tailwind first. `stylesheet_spec` recompiles and requires a byte-for-byte match with the built CSS.
   - **Query text:** long query text opens through a `<details>` disclosure that works from the keyboard.
   - **Review:** two rounds plus a final fix. Round 1 found the truncated query text unreachable from the keyboard. Round 2 found the stale-CSS check ignored view, helper and JS changes.
+
+### 20261004-144000-1: Drop the report tabs above the results.
+- **Why (user, 2026-10-04):** The report chips above "Run report" and the report tabs above the results do the same job. Keep the chips, drop the tabs.
+- **Do:**
+  - Remove the tabs and their helper code, CSS and Stimulus pieces if any. Keep the chooser chips as the only way to switch reports.
+  - The chips keep the dataset, as they already do through the form.
+  - Remove code that only the tabs used. For example, the logic that carried utilization roles or the fingerprint ID in tab links goes, but only where nothing else needs it.
+  - Update `ui/README.md` and `docs/ui.md`.
+- **Red test:**
+  - The specs that click a tab change to picking a chip and pressing Run report. Assert that the dataset survives the switch (role included, as in the role round-trip spec).
+  - A request spec that the results page has no report tabs.
+- **Completed:** 2026-10-04, 73e53d9.
+  - **Removed:** `report_tab_link`, `ReportQuery#switch_params` and the `.report-tabs` CSS. Sort links, fingerprint links, the `/reports/:id` redirect and `sort_report` are unchanged.
+  - **Specs:** the tab-click specs now switch reports with the chips and check that role and range survive. Two tab-only request specs were dropped.
+  - **Review:** one round, clean.

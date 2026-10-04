@@ -93,17 +93,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - A generator unit test that the routing table sends each query shape to the intended targets in the intended ratios.
   - A real-Postgres test that the replica is in recovery and replays from the primary.
 
-### 20261004-144000-1: Drop the report tabs above the results.
-- **Why (user, 2026-10-04):** The report chips above "Run report" and the report tabs above the results do the same job. Keep the chips, drop the tabs.
-- **Do:**
-  - Remove the tabs and their helper code, CSS and Stimulus pieces if any. Keep the chooser chips as the only way to switch reports.
-  - The chips keep the dataset, as they already do through the form.
-  - Remove code that only the tabs used. For example, the logic that carried utilization roles or the fingerprint ID in tab links goes, but only where nothing else needs it.
-  - Update `ui/README.md` and `docs/ui.md`.
-- **Red test:**
-  - The specs that click a tab change to picking a chip and pressing Run report. Assert that the dataset survives the switch (role included, as in the role round-trip spec).
-  - A request spec that the results page has no report tabs.
-
 ### 20261004-144200-1: Regex filter for report results, with highlighted matches.
 - **Why (user, 2026-10-04):** People need to narrow results to queries matching a pattern, and see where the pattern matched.
 - **Decisions (user, 2026-10-04):**
