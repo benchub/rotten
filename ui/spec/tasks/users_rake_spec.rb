@@ -165,6 +165,63 @@ RSpec.describe "users rake tasks" do
     end
   end
 
+  describe "users:enable" do
+    it "sets active back to true, and the user can sign in again" do
+      user = User.create!(email: "returning@example.test", role: "viewer", provider: User::PASSWORD_PROVIDER,
+                          password: "returning-password-1234", active: false)
+
+      status, out, err = run_task("users:enable", " Returning@Example.test ")
+
+      expect(status).to eq(0), err
+      expect(out).to include("Enabled returning@example.test")
+      expect(user.reload.active).to be(true)
+      expect(User.authenticate_password_login(email: "returning@example.test", password: "returning-password-1234"))
+        .to eq(user)
+    end
+
+    it "succeeds and leaves an already-enabled user enabled, as users:disable does for a disabled one" do
+      user = User.create!(email: "here@example.test", role: "admin", provider: User::PASSWORD_PROVIDER,
+                          password: "here-password-1234")
+
+      status, out, err = run_task("users:enable", "here@example.test")
+
+      expect(status).to eq(0), err
+      expect(out).to include("Enabled here@example.test")
+      expect(user.reload).to have_attributes(active: true, role: "admin")
+    end
+
+    it "undoes users:disable" do
+      user = User.create!(email: "flip@example.test", role: "viewer", provider: User::PASSWORD_PROVIDER,
+                          password: "flip-password-1234")
+
+      run_task("users:disable", "flip@example.test")
+      expect(user.reload.active).to be(false)
+      status, _out, err = run_task("users:enable", "flip@example.test")
+
+      expect(status).to eq(0), err
+      expect(user.reload.active).to be(true)
+    end
+
+    it "also works in oidc mode, for OIDC users" do
+      use_oidc_mode
+      user = User.create!(email: "sso@example.test", role: "viewer", provider: oidc_provider, provider_uid: "sub-sso",
+                          active: false)
+
+      status, _out, err = run_task("users:enable", "sso@example.test")
+
+      expect(status).to eq(0), err
+      expect(user.reload.active).to be(true)
+    end
+
+    it "fails clearly for an unknown email" do
+      status, _out, err = run_task("users:enable", "nobody@example.test")
+
+      expect(status).not_to eq(0)
+      expect(err).to include("No user with email nobody@example.test")
+      expect(User.count).to eq(0)
+    end
+  end
+
   describe "users:reset_password" do
     let!(:user) do
       User.create!(email: "forgetful@example.test", role: "viewer", provider: User::PASSWORD_PROVIDER,

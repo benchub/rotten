@@ -1,0 +1,29 @@
+<h1>Change password</h1>
+<p>Signed in as <%= current_user.email %>. Changing your password signs you out everywhere else.</p>
+<% if alert.present? %>
+  <p role="alert"><%= alert %></p>
+<% end %>
+<% if @errors.present? %>
+  <ul role="alert">
+    <% @errors.each do |message| %>
+      <li><%= message %></li>
+    <% end %>
+  </ul>
+<% end %>
+<%= form_with url: password_path, method: :patch do |form| %>
+  <p>
+    <%= form.label :current_password, "Current password" %>
+    <%= form.password_field :current_password, required: true, autofocus: true, autocomplete: "current-password" %>
+  </p>
+  <p>
+    <%= form.label :password, "New password" %>
+    <%= form.password_field :password, required: true, autocomplete: "new-password" %>
+    At least <%= User::MIN_PASSWORD_LENGTH %> characters.
+  </p>
+  <p>
+    <%= form.label :password_confirmation, "Confirm new password" %>
+    <%= form.password_field :password_confirmation, required: true, autocomplete: "new-password" %>
+  </p>
+  <%= form.submit "Change password" %>
+<% end %>
+<p><%= link_to "Back", root_path %></p>

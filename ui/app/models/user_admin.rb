@@ -28,6 +28,14 @@ class UserAdmin
     user
   end
 
+  # The inverse of disable, and like it works in both modes. An OIDC user
+  # still needs to be in an allowed group to sign in.
+  def self.enable(email)
+    user = find!(email)
+    user.update!(active: true)
+    user
+  end
+
   # Leaves active alone, so a disabled user stays disabled.
   def self.reset_password(email)
     require_password_mode!

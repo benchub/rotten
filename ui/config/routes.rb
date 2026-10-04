@@ -6,6 +6,9 @@ Rails.application.routes.draw do
   # 404s unless ROTTEN_UI_AUTH=password.
   post "login" => "sessions#create"
   delete "logout" => "sessions#destroy"
+  # 404 unless ROTTEN_UI_AUTH=password and the user signs in with a password.
+  get "password" => "passwords#edit", as: :edit_password
+  patch "password" => "passwords#update", as: :password
   get "admin" => "admin#show"
   scope "admin", format: false do
     resources :api_keys, path: "keys", only: %i[index new create], constraints: { id: /[1-9][0-9]*/ } do

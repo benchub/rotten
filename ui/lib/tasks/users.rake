@@ -23,6 +23,14 @@ namespace :users do
     fail_with.call(task.name, e)
   end
 
+  desc "Enable a disabled user, in either auth mode"
+  task :enable, %i[email] => :environment do |task, args|
+    user = UserAdmin.enable(args[:email])
+    puts "Enabled #{user.email}. They can sign in again."
+  rescue UserAdmin::Error => e
+    fail_with.call(task.name, e)
+  end
+
   desc "Set and print a new password for a password user"
   task :reset_password, %i[email] => :environment do |task, args|
     reset = UserAdmin.reset_password(args[:email])

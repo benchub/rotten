@@ -105,12 +105,21 @@ tasks, run in the app's container with the same environment:
 bin/rails "users:create[alice@example.com,viewer]"
 bin/rails "users:reset_password[alice@example.com]"
 bin/rails "users:disable[alice@example.com]"
+bin/rails "users:enable[alice@example.com]"
 ```
 
 `users:create` takes `viewer` or `admin` and prints a random password once.
 `users:reset_password` prints a new one. `users:disable` locks a user out in
-either mode, so it's also the kill switch for OIDC users. See `ui/README.md`
-for the details.
+either mode, so it's also the kill switch for OIDC users, and `users:enable`
+lets them back in. Signed-in password users can change their own password
+at `/password`, linked from the home page, by giving their current one. New
+passwords need at least 12 characters and at most 72 bytes. See
+`ui/README.md` for the details.
+
+`users:enable` also brings back any session from before the disable,
+including a copied cookie, because sessions aren't revoked yet. When
+re-enabling a password user after a compromise, also run
+`users:reset_password`, which ends their old sessions.
 
 ### Development only
 

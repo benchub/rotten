@@ -167,17 +167,39 @@ with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
 | --- | --- |
 | `bin/rails "users:create[alice@example.com,viewer]"` | Creates an active user with role `viewer` or `admin`, and prints a random 24-character password. |
 | `bin/rails "users:disable[alice@example.com]"` | Sets `active` to false. The user's sessions end on their next request. |
+| `bin/rails "users:enable[alice@example.com]"` | Sets `active` back to true, undoing `users:disable`. An already-enabled user stays enabled and the task still succeeds. Sessions from before the disable work again; see below. |
 | `bin/rails "users:reset_password[alice@example.com]"` | Sets and prints a new random password. The old one stops working, and the user's existing sessions end on their next request. A disabled user stays disabled. |
 
 - **Passwords** are printed once and stored only as a bcrypt digest. Pass them
-  on securely. There's no page yet for users to change their own password, and
-  no forced change at first login.
+  on securely. There's no forced change at first login.
+- **Re-enabling restores old sessions.** `users:disable` doesn't revoke
+  sessions, it only refuses them while the user is disabled, and session
+  cookies never expire. So `users:enable` makes any session from before the
+  disable work again, including a copied cookie, for OIDC and password users
+  alike. Until session revocation lands, when re-enabling a password user
+  after a compromise, also run `users:reset_password`, which ends their old
+  sessions.
+- **Changing your own password.** A signed-in password user can change their
+  password at `/password`, linked from the home page as **Change password**.
+  It asks for the current password, the new one and a confirmation. OIDC
+  users, and everyone in `oidc` mode, get a 404 and no link. Every password,
+  generated or chosen, must be at least 12 characters and at most 72 bytes;
+  the rule lives in the
+  `User` model. A wrong, missing or malformed current password gets one
+  generic message and costs one bcrypt hash, like a failed login, and the
+  new password is only checked after the current one. On success the session
+  is reset, for a new session ID, and restarted with the new password's
+  fingerprint, so this browser stays signed in and every other session,
+  including a copy of this one's old cookie, ends on its next request.
+  `PATCH /password` is rate limited like `POST /login`: 10 attempts per IP
+  address and 5 per user in any 3 minutes, counted separately from login.
+  Changes aren't written to `ui_audit_log`, which records admin actions.
 - **Errors** exit non-zero with a message on stderr: a role other than
   `viewer` or `admin`, an invalid email, an email that already exists (in any
   case, OIDC users included), or an unknown user.
 - **Modes.** `users:create` and `users:reset_password` refuse to run unless
-  `ROTTEN_UI_AUTH=password`. `users:disable` works in both modes, so it's also
-  the kill switch for OIDC users.
+  `ROTTEN_UI_AUTH=password`. `users:disable` and `users:enable` work in both
+  modes, so `users:disable` is also the kill switch for OIDC users.
 - **Which users can sign in.** Only users with `provider` set to `password`,
   which `users:create` sets, and `active` true. OIDC users never sign in by
   password. Emails are stored lowercased and matched without regard to case.

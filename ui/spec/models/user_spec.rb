@@ -41,6 +41,72 @@ RSpec.describe User, type: :model do
     expect(user.errors[:password]).to be_present
   end
 
+  it "rejects a new password shorter than the minimum" do
+    user = User.new(email: "short@example.test", role: "viewer", provider: User::PASSWORD_PROVIDER,
+                    password: "a" * (User::MIN_PASSWORD_LENGTH - 1))
+
+    expect(user).not_to be_valid
+    expect(user.errors.of_kind?(:password, :too_short)).to be(true)
+  end
+
+  it "accepts a password of exactly the minimum length" do
+    user = User.new(email: "min@example.test", role: "viewer", provider: User::PASSWORD_PROVIDER,
+                    password: "a" * User::MIN_PASSWORD_LENGTH)
+
+    expect(user).to be_valid
+  end
+
+  it "accepts the passwords users:create generates" do
+    expect(UserAdmin::PASSWORD_LENGTH).to be >= User::MIN_PASSWORD_LENGTH
+  end
+
+  it "rejects a confirmation that doesn't match, when one is given" do
+    user = User.new(email: "confirm@example.test", role: "viewer", provider: User::PASSWORD_PROVIDER,
+                    password: "long-enough-password", password_confirmation: "long-enough-passwore")
+
+    expect(user).not_to be_valid
+    expect(user.errors.of_kind?(:password_confirmation, :confirmation)).to be(true)
+  end
+
+  describe "#change_password" do
+    let(:user) do
+      User.create!(email: "changer@example.test", role: "viewer", provider: User::PASSWORD_PROVIDER,
+                   password: "original-password-1")
+    end
+
+    it "saves a new password that meets the policy" do
+      expect(user.change_password("brand-new-password-2", "brand-new-password-2")).to be(true)
+
+      expect(user.reload.authenticate("brand-new-password-2")).to eq(user)
+      expect(user.authenticate("original-password-1")).to be(false)
+    end
+
+    [
+      ["a blank password", "", ""],
+      ["a nil password", nil, nil],
+      ["a non-string password", ["brand-new-password-2"], ["brand-new-password-2"]],
+      ["a too-short password", "short", "short"],
+      ["a too-long password", "a" * 73, "a" * 73],
+      ["a mismatched confirmation", "brand-new-password-2", "brand-new-password-3"],
+      ["a missing confirmation", "brand-new-password-2", nil]
+    ].each do |label, password, confirmation|
+      it "refuses #{label}, with an error, and keeps the old password" do
+        expect(user.change_password(password, confirmation)).to be(false)
+
+        expect(user.errors).not_to be_empty
+        expect(user.reload.authenticate("original-password-1")).to eq(user)
+      end
+    end
+
+    it "refuses an OIDC user" do
+      sso = User.create!(email: "sso-change@example.test", role: "viewer", provider: "openid_connect:https://idp",
+                         provider_uid: "sub")
+
+      expect(sso.change_password("brand-new-password-2", "brand-new-password-2")).to be(false)
+      expect(sso.reload.password_digest).to be_nil
+    end
+  end
+
   it "rejects a duplicate email that differs only in case at the database" do
     User.create!(email: "alice@x.com", role: "viewer")
 

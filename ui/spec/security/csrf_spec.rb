@@ -64,6 +64,8 @@ RSpec.describe "CSRF protection on every state-changing route", type: :request d
     case route.label
     when "POST /login" then { email: attacker.email, password: password }
     when "POST /__test/sign_in" then { user_id: attacker.id }
+    when "PATCH /password"
+      { current_password: password, password: "forged-new-password-1", password_confirmation: "forged-new-password-1" }
     else {}
     end
   end
@@ -105,7 +107,7 @@ RSpec.describe "CSRF protection on every state-changing route", type: :request d
 
   it "finds the app's state-changing routes" do
     expect(routes.map(&:label)).to include("POST /login", "DELETE /logout", "POST /__test/sign_in",
-                                           "POST /admin/keys", "POST /admin/keys/:id/revoke")
+                                           "POST /admin/keys", "POST /admin/keys/:id/revoke", "PATCH /password")
   end
 
   routes.each do |route|
