@@ -20,9 +20,77 @@ import (
 )
 
 func TestStateSettings(t *testing.T) {
-	dir, age := stateSettings(&Configuration{StateDir: "/var/lib/rotten-worker", MaxSnapshotAge: 60})
-	if dir != "/var/lib/rotten-worker" || age != time.Minute {
-		t.Errorf("settings = %q, %v; want /var/lib/rotten-worker, 1m", dir, age)
+	dir, opts := stateSettings(&Configuration{StateDir: "/var/lib/rotten-worker", MaxSnapshotAge: 60})
+	if dir != "/var/lib/rotten-worker" || opts.MaxSnapshotAge != time.Minute || opts.OutboxCap != state.DefaultOutboxCap {
+		t.Errorf("settings = %q, %+v; want /var/lib/rotten-worker, 1m, default outbox cap", dir, opts)
+	}
+	_, opts = stateSettings(&Configuration{StateDir: "s", MaxSnapshotAge: 60, OutboxCap: 7})
+	if opts.OutboxCap != 7 {
+		t.Errorf("OutboxCap = %d, want 7", opts.OutboxCap)
+	}
+}
+
+func TestOutboxCapDefaultsWhenOmitted(t *testing.T) {
+	c, err := loadConfiguration(writeConfig(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.OutboxCap != 0 {
+		t.Fatalf("OutboxCap = %d, want 0 (unset)", c.OutboxCap)
+	}
+	if _, opts := stateSettings(c); opts.OutboxCap != 288 {
+		t.Fatalf("state OutboxCap = %d, want 288", opts.OutboxCap)
+	}
+}
+
+func TestOutboxCapPassesThroughToStateOpen(t *testing.T) {
+	c, err := loadConfiguration(writeConfig(t, map[string]string{"OutboxCap": `2`}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, opts := stateSettings(c)
+	store, err := state.Open(t.TempDir(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ctx := context.Background()
+	for i := 1; i <= 3; i++ {
+		msg := configBatch(7, 42, i)
+		if _, err := store.EnqueueHarvest(ctx, msg, msg.GetWindowStart().AsTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts, err := store.OutboxCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Queued != 2 || counts.DroppedCap != 1 {
+		t.Fatalf("counts = %+v, want queued=2 dropped_cap=1", counts)
+	}
+}
+
+func TestOutboxCapAcceptsBounds(t *testing.T) {
+	for _, v := range []string{"1", fmt.Sprint(maxOutboxCap)} {
+		c, err := loadConfiguration(writeConfig(t, map[string]string{"OutboxCap": v}))
+		if err != nil {
+			t.Fatalf("OutboxCap %s: %v", v, err)
+		}
+		if fmt.Sprint(c.OutboxCap) != v {
+			t.Fatalf("OutboxCap = %d, want %s", c.OutboxCap, v)
+		}
+	}
+}
+
+func TestOutboxCapRejectsInvalid(t *testing.T) {
+	for _, v := range []string{"0", "-1", fmt.Sprint(maxOutboxCap + 1), `"288"`, "1.5", "null", "true"} {
+		t.Run(v, func(t *testing.T) {
+			_, err := loadConfiguration(writeConfig(t, map[string]string{"OutboxCap": v}))
+			want := fmt.Sprintf("OutboxCap must be an integer from 1 to %d", maxOutboxCap)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("loadConfiguration err = %v, want %q", err, want)
+			}
+		})
 	}
 }
 

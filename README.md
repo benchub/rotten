@@ -118,7 +118,6 @@ Known issues
   whole lifetime, since they can't reset them on their own.
 - **The fingerprinter doesn't have the Postgres 18 parser yet.** It uses
   `pg_query_go`'s Postgres 17 parser until a release with 18 ships.
-- **The outbox size isn't configurable.** It holds 288 harvests.
 - **A test flake:** testcontainers sometimes times out inspecting a port when
   the whole suite runs in parallel.
 

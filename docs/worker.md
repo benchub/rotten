@@ -72,6 +72,7 @@ then a `sslrootcert` from a service in the service file (`PGSERVICE` and
 | `ObservationInterval` | yes | Seconds between harvests. This is the finest granularity reports can show. A shorter interval stores more rows. |
 | `StatusInterval` | yes | Seconds between status lines in the log, and between watchdog checks with `-noIdleHands`. |
 | `MaxSnapshotAge` | yes | Seconds. If the saved snapshot is older than this, for example after the worker was down, the next harvest is a baseline that records nothing, instead of one huge window. Three times `ObservationInterval` is a good start. |
+| `OutboxCap` | no, default `288` | The most harvests the outbox holds while the server is unreachable. An integer from 1 to 2016. See [State and the outbox](#state-and-the-outbox). |
 
 ### Identity
 
@@ -142,8 +143,18 @@ stops at startup and says so.
 `StateDir` holds the snapshot from the last harvest and the outbox. If the
 state is lost, the next harvest is a baseline and reporting resumes one
 window later. If the state file is corrupt, the worker moves it aside, logs
-where it went, and starts fresh. The outbox holds at most 288 harvests, a day at a 5-minute
-interval. When it's full the oldest harvest is dropped. Harvests the server
+where it went, and starts fresh. The outbox holds at most `OutboxCap`
+harvests, 288 by default, which is a day at a 5-minute interval. The time it
+covers is `OutboxCap` times `ObservationInterval`. When it's full the oldest
+harvest is dropped. If you lower `OutboxCap` below what's queued, the worker
+drops the oldest harvests down to the new cap when it starts, logs
+`worker outbox cap dropped oldest batches at startup`, and counts them in
+`dropped_cap`.
+
+The upper bound of 2016 is a week at a 5-minute interval. A harvest is
+usually tens of kilobytes, but the server accepts up to 32 MiB, so a full
+outbox of the biggest possible harvests could take tens of gigabytes. Past a
+week, a longer outage is better fixed than buffered. Harvests the server
 refuses as invalid are dropped and logged; authentication failures keep them
 queued.
 

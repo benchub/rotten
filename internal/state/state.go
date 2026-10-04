@@ -153,6 +153,9 @@ type Store struct {
 	lock *os.File
 	// MovedAside is where Open moved a corrupt file, or "" if it didn't.
 	MovedAside string
+	// DroppedCapAtOpen is how many queued batches Open dropped because the
+	// outbox held more than OutboxCap, say after the cap was lowered.
+	DroppedCapAtOpen int
 }
 
 // Tx is a store transaction, for writing the snapshot together with other
@@ -212,6 +215,15 @@ func Open(dir string, opts Options) (*Store, error) {
 	if err := s.openOrRecover(); err != nil {
 		lock.Close()
 		return nil, fmt.Errorf("state store %s: %w", s.path, err)
+	}
+	ctx := context.Background()
+	if err := s.Tx(ctx, func(tx Tx) error {
+		res, err := s.enforceOutboxCap(ctx, tx)
+		s.DroppedCapAtOpen = res.DroppedCap
+		return err
+	}); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("state store %s: enforce outbox cap: %w", s.path, err)
 	}
 	return s, nil
 }

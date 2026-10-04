@@ -72,11 +72,20 @@ type Configuration struct {
 	// MinmaxResetSchema is optional. It's the schema schema/observer.sql
 	// put the 17+ min/max reset wrapper in. Leaving it out means "rotten".
 	MinmaxResetSchema string
+	// OutboxCap is optional. Leaving it out means state.DefaultOutboxCap.
+	OutboxCap int
 }
 
-// stateSettings returns the state dir and max snapshot age for c.
-func stateSettings(c *Configuration) (dir string, maxAge time.Duration) {
-	return c.StateDir, time.Duration(c.MaxSnapshotAge) * time.Second
+// maxOutboxCap is one week of five-minute harvest windows.
+const maxOutboxCap = 2016
+
+// stateSettings returns the state dir and store options for c.
+func stateSettings(c *Configuration) (dir string, opts state.Options) {
+	opts = state.Options{MaxSnapshotAge: time.Duration(c.MaxSnapshotAge) * time.Second, OutboxCap: c.OutboxCap}
+	if opts.OutboxCap == 0 {
+		opts.OutboxCap = state.DefaultOutboxCap
+	}
+	return c.StateDir, opts
 }
 
 func remakeSSLCertConfigFromTLS(base *tls.Config, sslrootcert string, host string) (*tls.Config, bool) {
@@ -441,6 +450,14 @@ func loadConfiguration(path string) (*Configuration, error) {
 		}
 	}
 	var c Configuration
+	for key, value := range raw {
+		if strings.EqualFold(key, "OutboxCap") {
+			var n *int
+			if err := json.Unmarshal(value, &n); err != nil || n == nil || *n < 1 || *n > maxOutboxCap {
+				return nil, fmt.Errorf("OutboxCap must be an integer from 1 to %d, got %s", maxOutboxCap, value)
+			}
+		}
+	}
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("decode config file: %w", err)
 	}
@@ -907,14 +924,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	stateDir, maxAge := stateSettings(configuration)
-	store, err := state.Open(stateDir, state.Options{MaxSnapshotAge: maxAge})
+	stateDir, stateOpts := stateSettings(configuration)
+	store, err := state.Open(stateDir, stateOpts)
 	if err != nil {
 		log.Println("couldn't open the state store:", err)
 		os.Exit(1)
 	}
 	if store.MovedAside != "" {
 		log.Println("the state store was corrupt; moved it to", store.MovedAside, "and started fresh")
+	}
+	if store.DroppedCapAtOpen > 0 {
+		log.Println("worker outbox cap dropped oldest batches at startup:", store.DroppedCapAtOpen)
 	}
 	cfg.State = store
 	cfg.ServerOutbox = store

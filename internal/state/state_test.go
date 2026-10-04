@@ -391,6 +391,70 @@ func TestOutboxCapDropsOldestAndCounts(t *testing.T) {
 	}
 }
 
+func TestLoweredOutboxCapTrimsOldestAtOpen(t *testing.T) {
+	now := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := Open(dir, Options{Now: func() time.Time { return now }, OutboxCap: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"42:1:2", "42:2:3", "42:3:4", "42:4:5"} {
+		if _, err := s.EnqueueHarvest(ctx, sampleHarvestBatch(id), now); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir, Options{Now: func() time.Time { return now }, OutboxCap: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if s.DroppedCapAtOpen != 2 {
+		t.Fatalf("DroppedCapAtOpen = %d, want 2", s.DroppedCapAtOpen)
+	}
+	counts, err := s.OutboxCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Queued != 2 || counts.DroppedCap != 2 {
+		t.Fatalf("after reopen counts = %+v, want queued=2 dropped_cap=2", counts)
+	}
+	first, err := s.NextOutboxBatch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || first.BatchID != "42:3:4" {
+		t.Fatalf("oldest remaining batch = %+v, want 42:3:4", first)
+	}
+	res, err := s.EnqueueHarvest(ctx, sampleHarvestBatch("42:5:6"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DroppedCap != 1 {
+		t.Fatalf("DroppedCap = %d, want 1", res.DroppedCap)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir, Options{Now: func() time.Time { return now }, OutboxCap: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.DroppedCapAtOpen != 0 {
+		t.Fatalf("DroppedCapAtOpen within cap = %d, want 0", s.DroppedCapAtOpen)
+	}
+	counts, err = s.OutboxCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Queued != 2 || counts.DroppedCap != 3 {
+		t.Fatalf("counts = %+v, want queued=2 dropped_cap=3", counts)
+	}
+}
+
 func TestOutboxStoresDeterministicProtoBytes(t *testing.T) {
 	now := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 	ctx := context.Background()
