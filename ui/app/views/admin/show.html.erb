@@ -1,3 +1,15 @@
-<h1>Admin</h1>
-<p><%= link_to "Pass keys", api_keys_path %></p>
-<p><%= link_to "Audit log", audit_logs_path %></p>
+<% content_for :title, "Admin" %>
+<div class="page-header">
+  <h1>Admin</h1>
+  <p class="lede">Manage worker access and review admin actions.</p>
+</div>
+<ul class="link-cards">
+  <li class="card link-card">
+    <h2><%= link_to "Pass keys", api_keys_path %></h2>
+    <p>Create and revoke the keys workers use to send stats.</p>
+  </li>
+  <li class="card link-card">
+    <h2><%= link_to "Audit log", audit_logs_path %></h2>
+    <p>Who did what in admin, newest first.</p>
+  </li>
+</ul>

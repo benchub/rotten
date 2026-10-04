@@ -1,32 +1,40 @@
-<h1>Rotten sign in</h1>
-<% if notice.present? %>
-  <p><%= notice %></p>
-<% end %>
-<p>Authentication mode: <%= Rails.configuration.x.auth_mode %></p>
-<% if alert.present? %>
-  <p role="alert"><%= alert %></p>
-<% end %>
-<% if Rails.configuration.x.auth_mode == "password" %>
-  <%= form_with url: login_path, method: :post do |form| %>
-    <p>
-      <%= form.label :email, "Email" %>
-      <%= form.email_field :email, value: @email, required: true, autofocus: true, autocomplete: "username" %>
-    </p>
-    <p>
-      <%= form.label :password, "Password" %>
-      <%= form.password_field :password, required: true, autocomplete: "current-password" %>
-    </p>
-    <%= form.submit "Sign in" %>
+<% content_for :title, "Sign in" %>
+<div class="auth-panel card">
+  <h1>Sign in to Rotten</h1>
+  <% if notice.present? %>
+    <p class="alert alert-success" role="status"><%= notice %></p>
   <% end %>
-<% end %>
-<% if Rails.configuration.x.auth_mode == "oidc" %>
-  <% if Rails.configuration.x.oidc_strategy %>
-    <%# OmniAuth only starts a login from a POST with a CSRF token, and Turbo can't follow the cross-origin redirect. %>
-    <%= button_to "Sign in", "/auth/openid_connect", form: { data: { turbo: false } } %>
+  <% if alert.present? %>
+    <p class="alert alert-error" role="alert"><%= alert %></p>
   <% end %>
-  <% if Rails.configuration.x.fake_login %>
-    <p>Development fake login (OMNIAUTH_FAKE=1):</p>
-    <%= button_to "Sign in as fake viewer", fake_login_path(persona: "viewer") %>
-    <%= button_to "Sign in as fake admin", fake_login_path(persona: "admin") %>
+  <% if Rails.configuration.x.auth_mode == "password" %>
+    <%= form_with url: login_path, method: :post, class: "stack" do |form| %>
+      <div class="field">
+        <%= form.label :email, "Email" %>
+        <%= form.email_field :email, value: @email, required: true, autofocus: true, autocomplete: "username" %>
+      </div>
+      <div class="field">
+        <%= form.label :password, "Password" %>
+        <%= form.password_field :password, required: true, autocomplete: "current-password" %>
+      </div>
+      <%= form.submit "Sign in", class: "btn btn-primary btn-block" %>
+    <% end %>
   <% end %>
-<% end %>
+  <% if Rails.configuration.x.auth_mode == "oidc" %>
+    <% if Rails.configuration.x.oidc_strategy %>
+      <%# OmniAuth only starts a login from a POST with a CSRF token, and Turbo can't follow the cross-origin redirect. %>
+      <%= button_to "Sign in", "/auth/openid_connect", class: "btn btn-primary btn-block", form: { data: { turbo: false } } %>
+    <% end %>
+    <% if Rails.configuration.x.fake_login %>
+      <section class="dev-login" aria-labelledby="dev-login-heading">
+        <h2 id="dev-login-heading">Development fake login</h2>
+        <p class="hint">OMNIAUTH_FAKE=1 is set. Pick a persona:</p>
+        <div class="flex flex-col gap-2">
+          <%= button_to "Sign in as fake viewer", fake_login_path(persona: "viewer"), class: "btn btn-block" %>
+          <%= button_to "Sign in as fake admin", fake_login_path(persona: "admin"), class: "btn btn-block" %>
+        </div>
+      </section>
+    <% end %>
+  <% end %>
+  <p class="mt-4 mb-0 text-xs text-ink-muted">Authentication mode: <%= Rails.configuration.x.auth_mode %></p>
+</div>

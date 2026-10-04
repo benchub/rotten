@@ -1,26 +1,30 @@
 <% content_for :title, @report && @query.submitted? ? "#{@report.title} - Reports" : "Reports" %>
 <% ran = @report && @query.submitted? && @query.errors.empty? %>
+<% results = (@report && @query.submitted?) || @query.errors.any? || @timeout_seconds %>
 <div class="reports">
-  <p><%= link_to "Home", root_path %></p>
-  <h1>Reports</h1>
-  <p>Pick a dataset and a report to run on it. Times are UTC.</p>
+  <div class="page-header">
+    <h1>Reports</h1>
+    <p class="lede">Pick a dataset and a report to run on it. Times are UTC.</p>
+  </div>
 
-  <%= form_with url: reports_path, method: :get, class: "report-form workbench", data: { turbo: false, controller: "report-chooser" } do %>
+  <%= form_with url: reports_path, method: :get, class: "report-form workbench card", data: { turbo: false, controller: "report-chooser" } do %>
     <fieldset class="report-dataset">
       <legend>Dataset</legend>
       <%= render "reports/source_fields", query: @query, reports: Report.all %>
     </fieldset>
     <fieldset class="report-chooser">
       <legend>Report</legend>
-      <% Report.all.each do |report| %>
-        <div class="report-choice">
-          <%= radio_button_tag :report, report.key, report == @query.report, data: { report_chooser_target: "choice", action: "report-chooser#update" } %>
-          <%= label_tag "report_#{report.key}" do %>
-            <span class="report-choice-title"><%= report.title %></span>
-            <span class="report-choice-description"><%= report.description %></span>
-          <% end %>
-        </div>
-      <% end %>
+      <div class="report-choices">
+        <% Report.all.each do |report| %>
+          <div class="report-choice">
+            <%= radio_button_tag :report, report.key, report == @query.report, data: { report_chooser_target: "choice", action: "report-chooser#update" } %>
+            <%= label_tag "report_#{report.key}" do %>
+              <span class="report-choice-title"><%= report.title %></span>
+              <span class="report-choice-description"><%= report.description %></span>
+            <% end %>
+          </div>
+        <% end %>
+      </div>
     </fieldset>
     <div class="report-options">
       <%= render "reports/report_fields", query: @query, reports: Report.all %>
@@ -32,59 +36,71 @@
           <%= hidden_field_tag :sort_report, @query.report.key %>
         <% end %>
       <% end %>
-      <div>
-        <%= submit_tag "Run report", name: nil %>
+      <div class="form-actions">
+        <%= submit_tag "Run report", name: nil, class: "btn btn-primary" %>
       </div>
     </div>
   <% end %>
 
-  <% if ran %>
-    <nav class="report-tabs" aria-label="Reports on this dataset">
-      <ul>
-        <% Report.all.each do |report| %>
-          <li><%= report_tab_link(@query, report) %></li>
-        <% end %>
-      </ul>
-    </nav>
-  <% end %>
-
-  <% if @report && @query.submitted? %>
-    <h2 class="report-title"><%= @report.title %></h2>
-    <p class="report-description"><%= @report.description %></p>
-  <% end %>
-  <% if ran && !@query.needs_fingerprint? %>
-    <%= render "reports/window", query: @query %>
-  <% end %>
-
-  <%= render "reports/messages", query: @query, timeout_seconds: @timeout_seconds %>
-
-  <% if ran && @query.needs_fingerprint? %>
-    <p class="report-needs-input">Enter a fingerprint ID, then run the report.</p>
-  <% end %>
-
-  <% if @rows %>
-    <% if @rows.empty? %>
-      <p>No rows for this source and time range.</p>
-    <% else %>
-      <table class="report">
-        <thead>
-          <tr>
-            <% @report.columns.each do |column| %>
-              <%= tag.th(column.sortable? ? report_sort_link(@query, column) : column.label,
-                         scope: "col", data: { column: column.key }, aria: { sort: report_aria_sort(@query, column) }) %>
+  <% if results %>
+    <section class="card results" aria-label="Results">
+      <% if ran %>
+        <nav class="report-tabs" aria-label="Reports on this dataset">
+          <ul>
+            <% Report.all.each do |report| %>
+              <li><%= report_tab_link(@query, report) %></li>
             <% end %>
-          </tr>
-        </thead>
-        <tbody>
-          <% @rows.each do |row| %>
-            <tr>
-              <% @report.columns.each do |column| %>
-                <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, row[column.key]) %></td>
-              <% end %>
-            </tr>
+          </ul>
+        </nav>
+      <% end %>
+
+      <div class="results-body">
+        <% if @report && @query.submitted? %>
+          <h2 class="report-title"><%= @report.title %></h2>
+          <p class="report-description mb-3 text-ink-muted"><%= @report.description %></p>
+        <% end %>
+        <% if ran && !@query.needs_fingerprint? %>
+          <%= render "reports/window", query: @query %>
+        <% end %>
+
+        <%= render "reports/messages", query: @query, timeout_seconds: @timeout_seconds %>
+
+        <% if ran && @query.needs_fingerprint? %>
+          <p class="report-needs-input alert alert-warning">Enter a fingerprint ID, then run the report.</p>
+        <% end %>
+
+        <% if @rows %>
+          <% if @rows.empty? %>
+            <div class="empty-state">
+              <p class="empty-state-title">No rows for this source and time range.</p>
+              <p>Try a longer time range, another role, or another source.</p>
+            </div>
+          <% else %>
+            <div class="table-wrap">
+              <table class="report">
+                <thead>
+                  <tr>
+                    <% @report.columns.each do |column| %>
+                      <%= tag.th(column.sortable? ? report_sort_link(@query, column) : column.label,
+                                 scope: "col", class: ("numeric" if column.numeric?), data: { column: column.key },
+                                 aria: { sort: report_aria_sort(@query, column) }) %>
+                    <% end %>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% @rows.each do |row| %>
+                    <tr>
+                      <% @report.columns.each do |column| %>
+                        <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, row[column.key]) %></td>
+                      <% end %>
+                    </tr>
+                  <% end %>
+                </tbody>
+              </table>
+            </div>
           <% end %>
-        </tbody>
-      </table>
-    <% end %>
+        <% end %>
+      </div>
+    </section>
   <% end %>
 </div>

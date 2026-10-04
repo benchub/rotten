@@ -202,12 +202,14 @@ services:
     # rotten-dev-ui:3.4 (formerly amd64-only) so an old image isn't reused.
     image: rotten-dev-ui:3.4-native
     working_dir: /app
+    # Build app/assets/builds/tailwind.css (gitignored) before serving, so the
+    # first page load has CSS. exec keeps rails server as PID 1's process.
+    # The ui-css service rebuilds it on every change.
     command:
-      - bin/rails
-      - server
-      - -b
-      - 0.0.0.0
-    environment:
+      - bash
+      - -c
+      - bin/rails tailwindcss:build && exec bin/rails server -b 0.0.0.0
+    environment: &ui-env
       DATABASE_URL: postgres://rotten_ui:rotten_ui@rotten-db:5432/rotten?sslmode=disable
       SECRET_KEY_BASE: development-secret-key-base
       # Offline OIDC: /login offers fake viewer and admin personas. Development only.
@@ -231,6 +233,29 @@ services:
       ui-public:
         aliases:
           - rotten-ui
+
+  # Tailwind watcher: rebuilds app/assets/builds/tailwind.css when a view,
+  # helper, JS controller or app/assets/tailwind/*.css changes, so a browser
+  # refresh shows the new CSS. [always] keeps it running without a TTY.
+  ui-css:
+    build:
+      context: ../ui
+      dockerfile: dev.Dockerfile
+    image: rotten-dev-ui:3.4-native
+    working_dir: /app
+    command:
+      - bin/rails
+      - tailwindcss:watch[always]
+    # Booting Rails for the task needs the app's env and the report SQL, but
+    # not the database, so the watcher gets no network at all.
+    environment: *ui-env
+    volumes:
+      - ../ui:/app
+      - ../reports:/reports:ro
+    network_mode: none
+    depends_on:
+      ui:
+        condition: service_started
 
 networks:
   observed:

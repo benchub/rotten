@@ -1,9 +1,9 @@
 # Server-drawn SVG charts for the fingerprint page. Everything goes through
-# tag helpers, so text is escaped, and styling is by class (see reports.css),
-# so the strict CSP needs no inline styles. Each point carries its bucket
-# start, end and value in data attributes, which the chart Stimulus
-# controller (app/javascript/controllers/chart_controller.js) reads for its
-# hover and focus tooltip and its drag-to-zoom.
+# tag helpers, so text is escaped, and styling is by class (see
+# app/assets/tailwind/reports.css), so the strict CSP needs no inline styles.
+# Each point carries its bucket start, end and value in data attributes, which
+# the chart Stimulus controller (app/javascript/controllers/chart_controller.js)
+# reads for its hover and focus tooltip and its drag-to-zoom.
 module FingerprintsHelper
   CHART_WIDTH = 720
   CHART_HEIGHT = 200

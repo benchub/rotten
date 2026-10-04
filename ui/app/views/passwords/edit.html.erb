@@ -1,29 +1,36 @@
-<h1>Change password</h1>
-<p>Signed in as <%= current_user.email %>. Changing your password signs you out everywhere else.</p>
-<% if alert.present? %>
-  <p role="alert"><%= alert %></p>
-<% end %>
-<% if @errors.present? %>
-  <ul role="alert">
-    <% @errors.each do |message| %>
-      <li><%= message %></li>
-    <% end %>
-  </ul>
-<% end %>
-<%= form_with url: password_path, method: :patch do |form| %>
-  <p>
-    <%= form.label :current_password, "Current password" %>
-    <%= form.password_field :current_password, required: true, autofocus: true, autocomplete: "current-password" %>
-  </p>
-  <p>
-    <%= form.label :password, "New password" %>
-    <%= form.password_field :password, required: true, autocomplete: "new-password" %>
-    At least <%= User::MIN_PASSWORD_LENGTH %> characters.
-  </p>
-  <p>
-    <%= form.label :password_confirmation, "Confirm new password" %>
-    <%= form.password_field :password_confirmation, required: true, autocomplete: "new-password" %>
-  </p>
-  <%= form.submit "Change password" %>
-<% end %>
-<p><%= link_to "Back", root_path %></p>
+<% content_for :title, "Change password" %>
+<div class="page-header">
+  <h1>Change password</h1>
+  <p class="lede">Signed in as <%= current_user.email %>. Changing your password signs you out everywhere else.</p>
+</div>
+<div class="card form-card">
+  <% if alert.present? %>
+    <p class="alert alert-error" role="alert"><%= alert %></p>
+  <% end %>
+  <% if @errors.present? %>
+    <ul class="alert alert-error" role="alert">
+      <% @errors.each do |message| %>
+        <li><%= message %></li>
+      <% end %>
+    </ul>
+  <% end %>
+  <%= form_with url: password_path, method: :patch, class: "stack" do |form| %>
+    <div class="field">
+      <%= form.label :current_password, "Current password" %>
+      <%= form.password_field :current_password, required: true, autofocus: true, autocomplete: "current-password" %>
+    </div>
+    <div class="field">
+      <%= form.label :password, "New password" %>
+      <%= form.password_field :password, required: true, autocomplete: "new-password", aria: { describedby: "password-hint" } %>
+      <p class="hint" id="password-hint">At least <%= User::MIN_PASSWORD_LENGTH %> characters.</p>
+    </div>
+    <div class="field">
+      <%= form.label :password_confirmation, "Confirm new password" %>
+      <%= form.password_field :password_confirmation, required: true, autocomplete: "new-password" %>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <%= form.submit "Change password", class: "btn btn-primary" %>
+      <%= link_to "Cancel", root_path, class: "btn btn-quiet" %>
+    </div>
+  <% end %>
+</div>

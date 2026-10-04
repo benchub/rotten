@@ -1,14 +1,14 @@
 <%# The source picker and time window shared by the report workbench and the fingerprint page. reports are the reports the form can run; a field only some of them read is tagged with them. %>
 <%= tag.div class: "source-picker", data: { controller: "source-picker", source_picker_catalog_value: query.catalog.to_json } do %>
-  <div>
+  <div class="field">
     <%= label_tag :project, "Project" %>
     <%= select_tag :project, options_for_select(query.projects, query.project), data: { source_picker_target: "project", action: "source-picker#narrow" } %>
   </div>
-  <div>
+  <div class="field">
     <%= label_tag :environment, "Environment" %>
     <%= select_tag :environment, options_for_select(query.environments, query.environment), data: { source_picker_target: "environment", action: "source-picker#narrow" } %>
   </div>
-  <div>
+  <div class="field">
     <%= label_tag :cluster, "Cluster" %>
     <%= select_tag :cluster, options_for_select(query.clusters, query.cluster), data: { source_picker_target: "cluster", action: "source-picker#narrow" } %>
   </div>
@@ -18,17 +18,17 @@
   <% end %>
 <% end %>
 <%= tag.div class: "time-window", data: { controller: "time-window", time_window_now_value: query.now.iso8601 } do %>
-  <div>
+  <div class="field">
     <%= label_tag :range, "Time range" %>
     <%= select_tag :range, report_range_options(query), data: { time_window_target: "range", action: "time-window#change" } %>
   </div>
   <div class="custom-range" data-time-window-target="custom">
-    <p class="custom-range-note">Custom range only</p>
-    <div>
+    <p class="m-0 w-full text-xs font-semibold text-ink-muted">Custom range only</p>
+    <div class="field">
       <%= label_tag :from, "From (UTC)" %>
       <%= datetime_local_field_tag :from, query.from, data: { time_window_target: "from" } %>
     </div>
-    <div>
+    <div class="field">
       <%= label_tag :to, "To (UTC)" %>
       <%= datetime_local_field_tag :to, query.to, data: { time_window_target: "to" } %>
     </div>

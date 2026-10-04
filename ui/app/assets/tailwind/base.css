@@ -1,0 +1,29 @@
+/* Element defaults on top of Tailwind's preflight. */
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.5;
+  }
+  h1, h2, h3 { margin: 0 0 --spacing(2); line-height: 1.25; color: var(--color-ink); }
+  h1 { font-size: var(--text-2xl); font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: var(--text-lg); font-weight: 650; }
+  h3 { font-size: var(--text-base); font-weight: 650; }
+  p { margin: 0 0 --spacing(3); }
+  /* Preflight strips list bullets; content lists keep them. Navigation
+     lists opt out in their component. */
+  ul, ol { margin: 0 0 --spacing(3); padding-left: --spacing(6); }
+  ul { list-style: disc; }
+  ol { list-style: decimal; }
+  a { color: var(--color-primary); text-decoration: underline; text-underline-offset: 2px; }
+  a:hover { color: var(--color-primary-hover); }
+  code, pre, kbd, samp { font-family: var(--font-mono); font-size: 0.92em; }
+  pre { margin: 0 0 --spacing(3); }
+  strong { font-weight: 650; }
+  ::placeholder { color: var(--color-placeholder); }
+
+  :focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+}

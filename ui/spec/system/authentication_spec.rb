@@ -9,7 +9,7 @@ RSpec.describe "Authentication", type: :system do
     visit "/"
 
     expect(page).to have_current_path("/login")
-    expect(page).to have_text("Rotten sign in")
+    expect(page).to have_css("h1", text: "Sign in to Rotten")
     expect(page).to have_text("password")
   end
 

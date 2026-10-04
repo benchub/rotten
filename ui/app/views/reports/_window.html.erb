@@ -1,5 +1,5 @@
 <%# The window a run used, and a note when From and To were sent but not used. %>
-<p class="report-window">Window: <%= report_window(query) %></p>
+<p class="report-window"><span class="report-window-label">Window:</span> <%= report_window(query) %></p>
 <% if query.ignored_custom_range? %>
-  <p class="report-ignored">From and To were ignored: they apply only when Time range is Custom.</p>
+  <p class="report-ignored alert alert-warning">From and To were ignored: they apply only when Time range is Custom.</p>
 <% end %>

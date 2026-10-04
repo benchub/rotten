@@ -56,6 +56,11 @@ docker compose -f dev/docker-compose.yaml up
 
 - The UI is at http://localhost:3000. Sign in as the fake viewer or fake
   admin; no identity provider is needed.
+- `ui/` is bind-mounted, so edits show up after a browser refresh. The `ui`
+  service builds the Tailwind CSS before it starts, and the `ui-css` service
+  rebuilds it whenever a view or stylesheet changes. After a change to
+  `ui/Gemfile.lock` or `ui/dev.Dockerfile`, rebuild the image with
+  `docker compose -f dev/docker-compose.yaml up --build`.
 - The server is at https://localhost:8443. Check it with:
 
   ```sh

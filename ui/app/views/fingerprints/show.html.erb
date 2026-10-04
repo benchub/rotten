@@ -1,16 +1,20 @@
 <% content_for :title, "Fingerprint #{@fingerprint.id}" %>
 <div class="reports fingerprint">
-  <p><%= link_to "All reports", reports_path %></p>
-  <h1>Fingerprint <%= @fingerprint.id %></h1>
+  <%= render "shared/breadcrumbs", trail: [["All reports", reports_path]], current: "Fingerprint #{@fingerprint.id}" %>
+  <div class="page-header">
+    <h1>Fingerprint <%= @fingerprint.id %></h1>
+  </div>
 
-  <h2>Normalized SQL</h2>
-  <pre class="fingerprint-sql"><%= @fingerprint.normalized %></pre>
+  <section class="card" aria-labelledby="fingerprint-sql-heading">
+    <h2 id="fingerprint-sql-heading" class="card-title">Normalized SQL</h2>
+    <pre class="fingerprint-sql"><%= @fingerprint.normalized %></pre>
+  </section>
 
-  <%= form_with url: fingerprint_path(@fingerprint.id), method: :get, class: "report-form", data: { turbo: false } do %>
+  <%= form_with url: fingerprint_path(@fingerprint.id), method: :get, class: "report-form card", data: { turbo: false } do %>
     <%= render "reports/source_fields", query: @query, reports: [@query.report] %>
     <%= render "reports/report_fields", query: @query, reports: [@query.report], fingerprint_field: false %>
-    <div>
-      <%= submit_tag "Show", name: nil %>
+    <div class="form-actions">
+      <%= submit_tag "Show", name: nil, class: "btn btn-primary" %>
     </div>
   <% end %>
 
@@ -20,84 +24,105 @@
   <%= render "reports/messages", query: @query, timeout_seconds: @timeout_seconds %>
 
   <% if @series %>
-    <p class="report-hint">
-      Hover over or tab to a point for its value. Drag across a chart to zoom in.
-      <% if @reset_zoom_params %><%= link_to "Reset zoom", fingerprint_path(@fingerprint.id, @reset_zoom_params), class: "chart-reset" %><% end %>
-    </p>
-    <h2>Calls</h2>
-    <%= timeseries_chart(@series, value_key: "calls", label: "Calls", zoom_url: @zoom_url) %>
-    <h2>Total ms</h2>
-    <%= timeseries_chart(@series, value_key: "total_ms", label: "Total ms", zoom_url: @zoom_url) %>
-    <p><%= link_to "Time series as a table", reports_path({ report: "fingerprint_timeseries" }.merge(@query.link_params)) %></p>
+    <section class="card" aria-labelledby="fingerprint-time-heading">
+      <h2 id="fingerprint-time-heading" class="card-title">Over time</h2>
+      <p class="text-sm text-ink-muted">
+        Hover over or tab to a point for its value. Drag across a chart to zoom in.
+        <% if @reset_zoom_params %><%= link_to "Reset zoom", fingerprint_path(@fingerprint.id, @reset_zoom_params), class: "chart-reset btn btn-sm ml-2" %><% end %>
+      </p>
+      <div class="chart-grid">
+        <div class="chart-panel">
+          <h3>Calls</h3>
+          <%= timeseries_chart(@series, value_key: "calls", label: "Calls", zoom_url: @zoom_url) %>
+        </div>
+        <div class="chart-panel">
+          <h3>Total ms</h3>
+          <%= timeseries_chart(@series, value_key: "total_ms", label: "Total ms", zoom_url: @zoom_url) %>
+        </div>
+      </div>
+      <p><%= link_to "Time series as a table", reports_path({ report: "fingerprint_timeseries" }.merge(@query.link_params)) %></p>
+    </section>
 
-    <h2>Top contexts</h2>
-    <% if @contexts.empty? %>
-      <p>No contexts for this source and time range.</p>
-    <% else %>
-      <table class="report fingerprint-contexts">
-        <thead>
-          <tr>
-            <th scope="col">Context</th>
-            <th scope="col">Calls</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% @contexts.each do |context| %>
-            <tr>
-              <td><%= report_context_name(context) %></td>
-              <td class="numeric"><%= number_with_delimiter(context["times"].to_i) %></td>
-            </tr>
-          <% end %>
-        </tbody>
-      </table>
-    <% end %>
-
-    <h2>Stats for each source</h2>
-    <p class="report-hint">History is the per-call mean time kept for each source over its whole life, not just this time range. All sources sums calls and time over every project, environment, cluster and role in the same time range, with the history kept for all of them together.</p>
-    <% if @sources.empty? %>
-      <p>No stats for this source and time range.</p>
-    <% end %>
-    <% if @sources.any? || @all_sources || @all_sources_unavailable %>
-      <% columns = Report.internal("fingerprint_sources").columns %>
-      <table class="report fingerprint-sources">
-        <thead>
-          <tr>
-            <% columns.each do |column| %>
-              <%= tag.th(column.label, scope: "col", data: { column: column.key }) %>
-            <% end %>
-          </tr>
-        </thead>
-        <tbody>
-          <% @sources.each do |row| %>
-            <tr>
-              <% columns.each do |column| %>
-                <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, row[column.key]) %></td>
+    <section class="card" aria-labelledby="fingerprint-contexts-heading">
+      <h2 id="fingerprint-contexts-heading" class="card-title">Top contexts</h2>
+      <% if @contexts.empty? %>
+        <div class="empty-state">
+          <p class="empty-state-title">No contexts for this source and time range.</p>
+        </div>
+      <% else %>
+        <div class="table-wrap">
+          <table class="report fingerprint-contexts">
+            <thead>
+              <tr>
+                <th scope="col">Context</th>
+                <th scope="col" class="numeric">Calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% @contexts.each do |context| %>
+                <tr>
+                  <td><%= report_context_name(context) %></td>
+                  <td class="numeric"><%= number_with_delimiter(context["times"].to_i) %></td>
+                </tr>
               <% end %>
-            </tr>
-          <% end %>
-        </tbody>
-        <% if @all_sources %>
-          <tfoot>
-            <tr class="all-sources">
-              <th scope="row" data-column="role">All sources</th>
-              <% Report.internal("fingerprint_all_sources").columns.each do |column| %>
-                <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, @all_sources[column.key]) %></td>
-              <% end %>
-            </tr>
-          </tfoot>
-        <% elsif @all_sources_unavailable %>
-          <% all_columns = Report.internal("fingerprint_all_sources").columns %>
-          <tfoot>
-            <tr class="all-sources unavailable">
-              <th scope="row" data-column="role">All sources</th>
-              <td colspan="<%= all_columns.size %>">Timed out</td>
-            </tr>
-          </tfoot>
-        <% end %>
-      </table>
-      <% if @all_sources_unavailable %>
-        <p class="report-hint all-sources-note">The all-sources stats ran out of the page's report time limit. The other results are complete; a shorter time range may let them finish.</p>
+            </tbody>
+          </table>
+        </div>
       <% end %>
-    <% end %>
+    </section>
+
+    <section class="card" aria-labelledby="fingerprint-sources-heading">
+      <h2 id="fingerprint-sources-heading" class="card-title">Stats for each source</h2>
+      <p class="text-sm text-ink-muted">History is the per-call mean time kept for each source over its whole life, not just this time range. All sources sums calls and time over every project, environment, cluster and role in the same time range, with the history kept for all of them together.</p>
+      <% if @sources.empty? %>
+        <div class="empty-state">
+          <p class="empty-state-title">No stats for this source and time range.</p>
+        </div>
+      <% end %>
+      <% if @sources.any? || @all_sources || @all_sources_unavailable %>
+        <% columns = Report.internal("fingerprint_sources").columns %>
+        <div class="table-wrap">
+          <table class="report fingerprint-sources">
+            <thead>
+              <tr>
+                <% columns.each do |column| %>
+                  <%= tag.th(column.label, scope: "col", class: ("numeric" if column.numeric?), data: { column: column.key }) %>
+                <% end %>
+              </tr>
+            </thead>
+            <tbody>
+              <% @sources.each do |row| %>
+                <tr>
+                  <% columns.each do |column| %>
+                    <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, row[column.key]) %></td>
+                  <% end %>
+                </tr>
+              <% end %>
+            </tbody>
+            <% if @all_sources %>
+              <tfoot>
+                <tr class="all-sources">
+                  <th scope="row" data-column="role">All sources</th>
+                  <% Report.internal("fingerprint_all_sources").columns.each do |column| %>
+                    <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, @all_sources[column.key]) %></td>
+                  <% end %>
+                </tr>
+              </tfoot>
+            <% elsif @all_sources_unavailable %>
+              <% all_columns = Report.internal("fingerprint_all_sources").columns %>
+              <tfoot>
+                <tr class="all-sources unavailable">
+                  <th scope="row" data-column="role">All sources</th>
+                  <td colspan="<%= all_columns.size %>">Timed out</td>
+                </tr>
+              </tfoot>
+            <% end %>
+          </table>
+        </div>
+        <% if @all_sources_unavailable %>
+          <p class="all-sources-note text-sm text-ink-muted">The all-sources stats ran out of the page's report time limit. The other results are complete; a shorter time range may let them finish.</p>
+        <% end %>
+      <% end %>
+    </section>
   <% end %>
 </div>

@@ -1,40 +1,48 @@
 <% content_for :title, "Audit log" %>
 <div class="audit-logs">
-  <p><%= link_to "Home", root_path %> · <%= link_to "Admin", admin_path %></p>
-  <h1>Audit log</h1>
-  <p>Admin actions, newest first. The users:* tasks show as rake, and role changes from IdP groups at sign-in as oidc.</p>
+  <%= render "shared/breadcrumbs", trail: [["Admin", admin_path]], current: "Audit log" %>
+  <div class="page-header">
+    <h1>Audit log</h1>
+    <p class="lede">Admin actions, newest first. The users:* tasks show as rake, and role changes from IdP groups at sign-in as oidc.</p>
+  </div>
   <% if @entries.empty? %>
-    <p>No audit entries<%= " older than these" if @paged %>.</p>
+    <div class="empty-state">
+      <p class="empty-state-title">No audit entries<%= " older than these" if @paged %>.</p>
+    </div>
   <% else %>
-    <table class="audit-log">
-      <thead>
-        <tr>
-          <th scope="col">At</th>
-          <th scope="col">Actor</th>
-          <th scope="col">Action</th>
-          <th scope="col">Target</th>
-          <th scope="col">Details</th>
-        </tr>
-      </thead>
-      <tbody>
-        <% @entries.each do |entry| %>
-          <tr data-audit-id="<%= entry.id %>">
-            <td><%= entry.at.utc.strftime("%Y-%m-%d %H:%M:%S UTC") %></td>
-            <td><%= entry.actor_email %><%= " (user #{entry.actor_user_id})" if entry.actor_user_id %></td>
-            <td><%= entry.action %></td>
-            <td><%= [entry.target_type, entry.target_id].compact.join(" ") %></td>
-            <td><code><%= JSON.generate(entry.details) if entry.details.present? %></code></td>
+    <div class="card card-flush table-wrap">
+      <table class="data-table audit-log">
+        <thead>
+          <tr>
+            <th scope="col">At</th>
+            <th scope="col">Actor</th>
+            <th scope="col">Action</th>
+            <th scope="col">Target</th>
+            <th scope="col">Details</th>
           </tr>
-        <% end %>
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          <% @entries.each do |entry| %>
+            <tr data-audit-id="<%= entry.id %>">
+              <td class="whitespace-nowrap tabular-nums"><%= entry.at.utc.strftime("%Y-%m-%d %H:%M:%S UTC") %></td>
+              <td><%= entry.actor_email %><%= " (user #{entry.actor_user_id})" if entry.actor_user_id %></td>
+              <td><span class="badge badge-neutral rounded-sm font-mono font-medium"><%= entry.action %></span></td>
+              <td><%= [entry.target_type, entry.target_id].compact.join(" ") %></td>
+              <td><code class="text-xs break-words text-ink-muted"><%= JSON.generate(entry.details) if entry.details.present? %></code></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
   <% end %>
-  <p>
-    <% if @paged %>
-      <%= link_to "Newest", audit_logs_path %>
-    <% end %>
-    <% if @older_before %>
-      <%= link_to "Older", audit_logs_path(before: @older_before), rel: "next" %>
-    <% end %>
-  </p>
+  <% if @paged || @older_before %>
+    <nav class="flex gap-2" aria-label="Audit log pages">
+      <% if @paged %>
+        <%= link_to "Newest", audit_logs_path, class: "btn btn-sm" %>
+      <% end %>
+      <% if @older_before %>
+        <%= link_to "Older", audit_logs_path(before: @older_before), rel: "next", class: "btn btn-sm" %>
+      <% end %>
+    </nav>
+  <% end %>
 </div>

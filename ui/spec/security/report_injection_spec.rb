@@ -46,6 +46,8 @@ RSpec.describe "Report SQL injection", type: :request do
     User.delete_all
     @fixture = ReportFixture.seed!
     user = User.create!(email: "injection@example.com", name: "Viewer", role: "viewer", active: true)
+    # Never signed in, so its email shows on no page unless a payload leaks it.
+    User.create!(email: "injection-bystander@example.com", name: "Bystander", role: "admin", active: true)
     post "/__test/sign_in", params: { user_id: user.id }
     @counts = ReportFixture.table_counts
   end
@@ -57,7 +59,11 @@ RSpec.describe "Report SQL injection", type: :request do
 
     expect([200, 400, 404, 422]).to include(response.status), "#{path} #{params.inspect} -> #{response.status}"
     expect(elapsed).to be < 4, "#{path} #{params.inspect} took #{elapsed}s"
-    expect(response.body).not_to include("injection@example.com")
+    expect(response.body).not_to include("injection-bystander@example.com")
+    # The top bar shows the signed-in user's email; nothing else may.
+    page = Nokogiri::HTML5(response.body)
+    page.css("header.topbar").remove
+    expect(page.to_html).not_to include("injection@example.com")
     expect(response.body).not_to include("programs", "SyncLearners")
   end
 

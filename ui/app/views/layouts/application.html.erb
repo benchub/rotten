@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
-    <title><%= content_for(:title) || "Ui" %></title>
+    <title><%= page_title %></title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="application-name" content="Ui">
+    <meta name="application-name" content="<%= ApplicationHelper::APP_NAME %>">
     <meta name="mobile-web-app-capable" content="yes">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
@@ -15,13 +15,38 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="/icon.png">
 
-    <%# Includes all stylesheet files in app/assets/stylesheets %>
-    <%= stylesheet_link_tag :app, "data-turbo-track": "reload" %>
+    <%# Tailwind's build of app/assets/tailwind/application.css (bin/rails tailwindcss:build or :watch). %>
+    <%= stylesheet_link_tag "tailwind", "data-turbo-track": "reload" %>
     <%= javascript_importmap_tags %>
   </head>
 
   <body>
-    <main class="container mx-auto mt-28 px-5 flex">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <%= link_to ApplicationHelper::APP_NAME, root_path, class: "brand" %>
+        <% if current_user %>
+          <nav class="topbar-nav" aria-label="Main">
+            <ul>
+              <li><%= nav_link "Reports", reports_path, :reports %></li>
+              <% if current_user.admin? %>
+                <li><%= nav_link "Admin", admin_path, :admin %></li>
+              <% end %>
+            </ul>
+          </nav>
+          <div class="topbar-user">
+            <span><%= current_user.email %></span>
+            <%= role_badge(current_user.role) %>
+            <% if Rails.configuration.x.auth_mode == "password" && current_user.password_login? %>
+              <%= link_to "Change password", edit_password_path, class: "topbar-link",
+                          aria: { current: ("page" if controller_name == "passwords") } %>
+            <% end %>
+            <%= button_to "Log out", logout_path, method: :delete, class: "btn btn-on-dark btn-sm", form_class: "m-0" %>
+          </div>
+        <% end %>
+      </div>
+    </header>
+    <main id="main" class="page">
       <%= yield %>
     </main>
   </body>

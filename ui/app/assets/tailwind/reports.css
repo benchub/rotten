@@ -1,0 +1,109 @@
+/* The report workbench, the fingerprint page and their charts. */
+@layer components {
+  /* The workbench form: a card of fieldsets. */
+  .report-form { @apply flex flex-wrap items-end gap-4; }
+  .report-form.workbench { @apply grid grid-cols-[minmax(0,1fr)] gap-6; }
+  .report-form fieldset { @apply m-0 flex min-w-0 flex-wrap items-end gap-x-4 gap-y-3 border-0 p-0; }
+  .report-form legend { @apply mb-2 p-0 text-xs font-bold tracking-[0.06em] text-ink-muted uppercase; }
+  .report-form :is(.source-picker, .time-window) { @apply contents; }
+  .report-form .field select { @apply min-w-36; }
+  .report-form .field input[type="text"] { @apply w-36; }
+  .report-form .custom-range {
+    @apply flex flex-wrap items-end gap-3 rounded-md border border-dashed border-line-strong bg-surface-muted px-3 py-2;
+  }
+  .report-form .report-options { @apply flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-line pt-4; }
+  .report-form .form-actions { @apply ml-auto; }
+  .report-form .form-actions .btn-primary { @apply min-w-32; }
+
+  /* The report chooser: radio cards. */
+  .report-form fieldset.report-chooser { @apply block; }
+  .report-choices { @apply grid gap-2 grid-cols-[repeat(auto-fill,minmax(15rem,1fr))]; }
+  .report-choice {
+    @apply relative flex items-start gap-2 rounded-md border border-line bg-surface px-3 py-2;
+    @apply hover:border-line-strong hover:bg-surface-muted;
+  }
+  .report-choice:has(input:checked) {
+    @apply border-primary bg-primary-soft;
+    box-shadow: inset 0 0 0 1px var(--color-primary);
+  }
+  .report-choice:has(input:focus-visible) { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+  .report-choice input { @apply relative z-1 mt-[0.2rem] flex-none; }
+  .report-choice input:focus-visible { @apply outline-none shadow-none; }
+  .report-choice label { @apply cursor-pointer text-sm; }
+  .report-choice label::after { content: ""; @apply absolute inset-0; } /* the whole card picks the report */
+  .report-choice-title { @apply block font-semibold text-ink; }
+  .report-choice-description { @apply mt-0.5 block text-xs text-ink-muted; }
+
+  /* Results: a card with the report tabs along its top. */
+  .results { @apply p-0; }
+  .results-body { @apply px-6 py-4; }
+  .results-body > :last-child { @apply mb-0; }
+  .report-tabs { @apply rounded-t-lg border-b border-line bg-surface-muted; }
+  .report-tabs ul { @apply m-0 flex list-none flex-wrap gap-x-1 px-3 py-0; }
+  .report-tabs a {
+    @apply -mb-px block border-b-3 border-transparent px-3 pt-3 pb-[calc(0.75rem-3px)];
+    @apply text-sm font-semibold text-ink-muted no-underline;
+    @apply hover:border-line-strong hover:text-ink;
+  }
+  .report-tabs a[aria-current="page"] { @apply border-primary font-semibold text-primary; }
+  .report-title { @apply mb-1 text-xl; }
+  .report-window {
+    @apply mb-4 inline-flex flex-wrap items-baseline gap-2 rounded-full border border-line bg-surface-muted px-3 py-1;
+    @apply text-sm tabular-nums;
+  }
+  .report-window-label { @apply text-xs font-bold tracking-[0.05em] text-ink-muted uppercase; }
+
+  /* Report tables, on top of the shared table styles. */
+  table.report th a { @apply text-inherit no-underline hover:text-primary hover:underline; }
+  table.report th a::after { content: "\2195" / ""; @apply ml-[0.3em] text-[0.95em] text-placeholder; }
+  table.report th[aria-sort] { @apply text-primary; }
+  table.report th:is([aria-sort="ascending"], [aria-sort="descending"]) a::after { @apply text-[0.8em] text-primary; }
+  table.report th[aria-sort="ascending"] a::after { content: "\25B2" / ""; }
+  table.report th[aria-sort="descending"] a::after { content: "\25BC" / ""; }
+  table.report td[data-column="fingerprint_id"] a { @apply font-mono font-semibold; }
+  table.report tfoot tr.all-sources :is(th, td) {
+    @apply border-t-2 border-b-0 border-t-line-strong bg-surface-muted font-semibold;
+  }
+  table.report tr.all-sources.unavailable td { @apply font-normal text-ink-muted italic; }
+  .report-contexts { @apply m-0 list-disc pl-4; }
+  .report-contexts li { @apply whitespace-nowrap; }
+
+  /* Query text: a disclosure whose summary is the query on one line, cut with
+     an ellipsis. Opening it wraps the same text so all of it shows. */
+  .query-disclosure > summary { @apply flex cursor-pointer list-none items-baseline gap-1 rounded-sm; }
+  .query-disclosure > summary::-webkit-details-marker { display: none; }
+  .query-disclosure > summary::before { content: "\25B8" / ""; @apply flex-none text-xs text-ink-muted; }
+  .query-disclosure[open] > summary::before { content: "\25BE" / ""; }
+  .query-disclosure > summary:hover .query-text { @apply text-primary; }
+  .query-text {
+    @apply block max-w-xl min-w-56 truncate font-mono text-xs text-ink;
+  }
+  .query-disclosure[open] .query-text { @apply whitespace-pre-wrap wrap-anywhere; }
+
+  /* The fingerprint page. */
+  .fingerprint-sql {
+    @apply m-0 rounded-md border border-line bg-surface-muted px-4 py-3 text-sm leading-[1.6] break-words whitespace-pre-wrap;
+  }
+  .chart-grid { @apply mb-3 grid gap-x-6 gap-y-4 grid-cols-[repeat(auto-fit,minmax(min(100%,30rem),1fr))]; }
+  .chart-panel h3 { @apply text-sm tracking-[0.04em] text-ink-muted uppercase; }
+
+  /* Charts, drawn by FingerprintsHelper#timeseries_chart and driven by chart_controller.js. */
+  .chart { @apply relative max-w-[720px]; }
+  .timeseries-chart { @apply block h-auto w-full max-w-[720px] cursor-crosshair touch-pan-y select-none; }
+  :is(.timeseries-chart .chart-hidden, .chart-tooltip.chart-hidden) { @apply hidden; }
+  .timeseries-chart .chart-axis { stroke: var(--color-chart-axis); stroke-width: 1; }
+  .timeseries-chart .chart-line { fill: none; stroke: var(--color-chart-line); stroke-width: 1.75; stroke-linejoin: round; }
+  .timeseries-chart .chart-point { fill: var(--color-chart-line); }
+  .timeseries-chart .chart-point:focus { outline: none; stroke: var(--color-ink); stroke-width: 2; }
+  .timeseries-chart :is(.chart-label, .chart-empty) { fill: var(--color-ink-muted); font-size: 11px; font-family: var(--font-sans); }
+  .timeseries-chart .chart-guide { stroke: var(--color-chart-guide); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+  .timeseries-chart .chart-selection {
+    fill: var(--color-primary); fill-opacity: 0.12; stroke: var(--color-primary); stroke-width: 1; pointer-events: none;
+  }
+  .chart-tooltip {
+    @apply pointer-events-none absolute top-0 -translate-x-1/2 rounded-sm bg-topbar px-2 py-0.5 text-xs whitespace-nowrap text-white tabular-nums;
+  }
+
+  /* Fields the report-chooser and time-window controllers hide, whatever their display. */
+  .report-form [hidden] { display: none !important; }
+}

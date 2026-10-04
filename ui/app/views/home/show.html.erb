@@ -1,14 +1,23 @@
-<h1>Rotten</h1>
+<div class="page-header">
+  <h1>Welcome to Rotten</h1>
+  <p class="lede">Signed in as <%= current_user.email %>.</p>
+</div>
 <% if notice.present? %>
-  <p><%= notice %></p>
+  <p class="alert alert-success" role="status"><%= notice %></p>
 <% end %>
-<p>Signed in as <%= current_user.email %>.</p>
-<p><%= link_to "Reports", reports_path %></p>
-<% if current_user.admin? %>
-  <p><%= link_to "Pass keys", api_keys_path %></p>
-  <p><%= link_to "Audit log", audit_logs_path %></p>
-<% end %>
-<% if Rails.configuration.x.auth_mode == "password" && current_user.password_login? %>
-  <p><%= link_to "Change password", edit_password_path %></p>
-<% end %>
-<%= button_to "Log out", logout_path, method: :delete %>
+<ul class="link-cards">
+  <li class="card link-card">
+    <h2><%= link_to "Run a report", reports_path %></h2>
+    <p>Top queries by time or calls, outliers, replica use, and one query's history.</p>
+  </li>
+  <% if current_user.admin? %>
+    <li class="card link-card">
+      <h2><%= link_to "Pass keys", api_keys_path %></h2>
+      <p>Create and revoke the keys workers use to send stats.</p>
+    </li>
+    <li class="card link-card">
+      <h2><%= link_to "Audit log", audit_logs_path %></h2>
+      <p>Who did what in admin, newest first.</p>
+    </li>
+  <% end %>
+</ul>

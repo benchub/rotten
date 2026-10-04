@@ -4,14 +4,18 @@
   <meta name="turbo-cache-control" content="no-cache">
 <% end %>
 <div class="api-keys">
-  <h1>Pass key created</h1>
-  <p>
-    Created <strong><%= @issued.api_key.name %></strong>, pinned to <%= @issued.api_key.fqdn %>.
-  </p>
-  <p role="alert">
-    Copy this pass key now and put it in the worker's config. It won't be shown again:
-    Rotten keeps only a hash of it. If it's lost, revoke the key and create another.
-  </p>
-  <pre><code id="pass-key-token"><%= @issued.token %></code></pre>
-  <p><%= link_to "Back to pass keys", api_keys_path %></p>
+  <div class="page-header">
+    <h1>Pass key created</h1>
+    <p class="lede">
+      Created <strong><%= @issued.api_key.name %></strong>, pinned to <span class="font-mono"><%= @issued.api_key.fqdn %></span>.
+    </p>
+  </div>
+  <div class="card form-card">
+    <p class="alert alert-warning" role="alert">
+      Copy this pass key now and put it in the worker's config. It won't be shown again:
+      Rotten keeps only a hash of it. If it's lost, revoke the key and create another.
+    </p>
+    <pre class="secret-token"><code id="pass-key-token"><%= @issued.token %></code></pre>
+    <p><%= link_to "Back to pass keys", api_keys_path, class: "btn" %></p>
+  </div>
 </div>

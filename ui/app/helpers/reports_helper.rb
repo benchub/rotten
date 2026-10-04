@@ -9,9 +9,17 @@ module ReportsHelper
     when :ms, :percent, :number then number_with_precision(value, precision: 2, delimiter: ",")
     when :time then value.utc.strftime("%Y-%m-%d %H:%M")
     when :context then report_contexts(value)
-    else value.to_s
+    else column.key == "example" ? report_query_text(value.to_s) : value.to_s
     end
   end
+
+  # Query text, cut to one line by CSS (see .query-disclosure). The summary
+  # holds the whole query once, so screen readers and copying get all of it;
+  # opening the disclosure (click, Enter or Space) wraps it to show it all.
+  def report_query_text(sql)
+    tag.details(tag.summary(tag.span(sql, class: "query-text", title: sql)), class: "query-disclosure")
+  end
+
 
   def report_contexts(contexts)
     items = Array(contexts).filter_map do |context|
@@ -70,7 +78,7 @@ module ReportsHelper
     keys = reports.select { |report| report.own_fields.include?(field) }.map(&:key)
     return if keys.empty?
 
-    tag.div(data: { report_chooser_target: "field", reports: keys.join(" "), report_chooser_keep: (true if keep) }, &block)
+    tag.div(class: "field", data: { report_chooser_target: "field", reports: keys.join(" "), report_chooser_keep: (true if keep) }, &block)
   end
 
   def report_aria_sort(query, column)

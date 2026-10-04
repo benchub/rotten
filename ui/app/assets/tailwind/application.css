@@ -1,1 +1,96 @@
+/*
+ * Rotten's design: Tailwind v4, built by tailwindcss-rails into
+ * app/assets/builds/tailwind.css (bin/rails tailwindcss:build, or :watch).
+ *
+ * The theme tokens live here. Recurring components (cards, buttons, inputs,
+ * tables, badges, tabs, radio cards) are classes in @layer components, so the
+ * markup stays readable and spec selectors stay stable; one-off layout uses
+ * utilities in the views.
+ *
+ * The strict CSP allows no inline styles: style with classes only. No
+ * animations or transitions. Text colors meet WCAG AA on their backgrounds.
+ */
 @import "tailwindcss";
+@import "./base.css";
+@import "./components.css";
+@import "./reports.css";
+
+@theme static {
+  /* Surfaces and lines */
+  --color-canvas: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f0f2f5;
+  --color-surface-zebra: #f8f9fb;
+  --color-surface-hover: #e8eefb;
+  --color-line: #d6dbe2;
+  --color-line-strong: #737d8c;       /* form controls: 4.2:1 on white */
+
+  /* Text */
+  --color-ink: #18202c;               /* 16:1 on white */
+  --color-ink-muted: #4b5563;         /* 7.6:1 on white */
+  --color-ink-heading: #374151;       /* table headers: 9.6:1 on surface-muted */
+  --color-placeholder: #6b7280;       /* 4.8:1 on white */
+
+  /* Accents */
+  --color-primary: #1d4ed8;           /* 6.7:1 with white text */
+  --color-primary-hover: #1e3a8a;
+  --color-primary-soft: #eaf0fe;
+  --color-focus: #2563eb;
+  --color-danger: #b42318;            /* 5.9:1 on its soft background */
+  --color-danger-soft: #fdf0ef;
+  --color-danger-line: #f1b5b0;
+  --color-warning: #8a3c0b;           /* 7.3:1 on its soft background */
+  --color-warning-soft: #fff8e6;
+  --color-warning-line: #f0c869;
+  --color-warning-accent: #c2700b;
+  --color-success: #166534;           /* 6.5:1 on its soft background */
+  --color-success-soft: #ecf8f0;
+  --color-success-line: #a6dcb8;
+  --color-admin: #78350f;             /* 8.2:1 on admin-soft */
+  --color-admin-soft: #fef3c7;
+  --color-admin-line: #fcd34d;
+  --color-neutral-soft: #eef0f3;
+  --color-neutral-line: #d1d5db;
+
+  /* The top bar */
+  --color-topbar: #111827;
+  --color-topbar-ink: #e5e7eb;        /* 14:1 on the top bar */
+  --color-topbar-muted: #aeb6c4;      /* 8.7:1 on the top bar */
+  --color-topbar-accent: #93b4fd;     /* 8.6:1 on the top bar */
+  --color-topbar-line: #4b5563;
+  --color-brand-dot: #fbbf24;
+
+  /* Charts */
+  --color-chart-line: #1d4ed8;
+  --color-chart-axis: #8b95a3;
+  --color-chart-guide: #4b5563;
+
+  /* Type */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.5;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.5;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.5;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.25;
+  --text-xl: 1.375rem;
+  --text-xl--line-height: 1.25;
+  --text-2xl: 1.75rem;
+  --text-2xl--line-height: 1.25;
+
+  /* Shape */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 3px rgb(16 24 40 / 0.08);
+  --shadow-focus: 0 0 0 3px rgb(37 99 235 / 0.35);
+
+  /* Widths */
+  --container-page: 90rem;
+  --container-lede: 52rem;
+  --container-form: 36rem;
+  --container-auth: 26rem;
+}

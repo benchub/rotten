@@ -10,6 +10,36 @@ specs. The report specs seed the Go report fixture through
 `ROTTEN_UI_TEST_SEED_DATABASE_URL`, a `rotten_owner` connection that
 `make test-ui` sets, because `rotten_ui` can only read the event tables.
 
+## Styles
+
+The CSS is Tailwind v4 through `tailwindcss-rails` (the standalone binary, no
+Node). The sources are in `app/assets/tailwind/`:
+
+- `application.css` imports Tailwind and the files below, and holds the design
+  tokens in `@theme`: the palette, fonts, type scale, radii and shadows. Every
+  color in the views comes from a token, and the text pairs meet WCAG AA.
+- `base.css` sets element defaults, link styles and the focus outline.
+- `components.css` and `reports.css` hold the recurring components, built with
+  `@apply` in `@layer components`: cards, buttons, inputs, tables, badges,
+  alerts, tabs, the report chooser and the charts.
+
+Views use utilities for one-off layout and the component classes for the rest.
+There are no animations or transitions, and no inline styles, because the CSP
+forbids them.
+
+The build writes `app/assets/builds/tailwind.css`, which is gitignored:
+
+- `make test-ui` runs `bin/rails tailwindcss:build` before the specs, and
+  `spec/requests/stylesheet_spec.rb` fails if the layout doesn't link the
+  built CSS or it's stale.
+- The dev stack's `ui` service builds it before `rails server` starts, and the
+  `ui-css` service runs `bin/rails tailwindcss:watch[always]` so a refresh
+  picks up changes. Outside Docker, `bin/dev` does the same through
+  `Procfile.dev`.
+- The production image builds it in `assets:precompile`.
+
+## Dev image
+
 The dev image (`ui/dev.Dockerfile`, with Chromium for system specs) is built
 for the Docker host's native platform, so it runs without emulation on arm64.
 `make ui-image` tags it `rotten-ui-dev:linux-<arch>` and checks the built

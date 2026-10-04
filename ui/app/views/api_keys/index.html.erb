@@ -1,56 +1,66 @@
 <% content_for :title, "Pass keys" %>
 <div class="api-keys">
-  <p><%= link_to "Home", root_path %> · <%= link_to "Admin", admin_path %></p>
-  <h1>Pass keys</h1>
+  <%= render "shared/breadcrumbs", trail: [["Admin", admin_path]], current: "Pass keys" %>
+  <div class="page-header flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <h1>Pass keys</h1>
+      <p class="lede">
+        Workers send a pass key to the server. Each key is pinned to one worker host.
+        A revoked key is refused within the server's auth cache TTL of 30 seconds.
+      </p>
+    </div>
+    <%= link_to "New pass key", new_api_key_path, class: "btn btn-primary" %>
+  </div>
   <% if notice.present? %>
-    <p role="status"><%= notice %></p>
+    <p class="alert alert-success" role="status"><%= notice %></p>
   <% end %>
-  <p>
-    Workers send a pass key to the server. Each key is pinned to one worker host.
-    A revoked key is refused within the server's auth cache TTL of 30 seconds.
-  </p>
-  <p><%= link_to "New pass key", new_api_key_path %></p>
   <% if @api_keys.empty? %>
-    <p>No pass keys yet.</p>
+    <div class="empty-state">
+      <p class="empty-state-title">No pass keys yet.</p>
+      <p>Create one for each worker host.</p>
+    </div>
   <% else %>
-    <table class="api-key-list">
-      <thead>
-        <tr>
-          <th scope="col">ID</th>
-          <th scope="col">Name</th>
-          <th scope="col">FQDN</th>
-          <th scope="col">Created</th>
-          <th scope="col">Created by</th>
-          <th scope="col">Last used</th>
-          <th scope="col">Status</th>
-          <th scope="col">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <% @api_keys.each do |api_key| %>
-          <tr data-key-id="<%= api_key.id %>">
-            <td><%= api_key.id %></td>
-            <td><%= api_key.name %></td>
-            <td><%= api_key.fqdn.presence || "(not pinned)" %></td>
-            <td><%= api_key.created_at.utc.strftime("%Y-%m-%d %H:%M UTC") %></td>
-            <td><%= api_key.created_by %></td>
-            <td><%= api_key.last_used_at ? api_key.last_used_at.utc.strftime("%Y-%m-%d %H:%M UTC") : "never" %></td>
-            <td>
-              <% if api_key.revoked? %>
-                Revoked <%= api_key.revoked_at.utc.strftime("%Y-%m-%d %H:%M UTC") %> by <%= api_key.revoked_by %>
-              <% else %>
-                Active
-              <% end %>
-            </td>
-            <td>
-              <% unless api_key.revoked? %>
-                <%= button_to "Revoke", revoke_api_key_path(api_key),
-                      form: { data: { turbo_confirm: "Revoke #{api_key.name}? Workers using it will be refused." } } %>
-              <% end %>
-            </td>
+    <div class="card card-flush table-wrap">
+      <table class="data-table api-key-list">
+        <thead>
+          <tr>
+            <th scope="col" class="numeric">ID</th>
+            <th scope="col">Name</th>
+            <th scope="col">FQDN</th>
+            <th scope="col">Created</th>
+            <th scope="col">Created by</th>
+            <th scope="col">Last used</th>
+            <th scope="col">Status</th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
           </tr>
-        <% end %>
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          <% @api_keys.each do |api_key| %>
+            <tr data-key-id="<%= api_key.id %>">
+              <td class="numeric"><%= api_key.id %></td>
+              <td class="font-semibold"><%= api_key.name %></td>
+              <td class="font-mono"><%= api_key.fqdn.presence || "(not pinned)" %></td>
+              <td class="whitespace-nowrap"><%= api_key.created_at.utc.strftime("%Y-%m-%d %H:%M UTC") %></td>
+              <td><%= api_key.created_by %></td>
+              <td class="whitespace-nowrap"><%= api_key.last_used_at ? api_key.last_used_at.utc.strftime("%Y-%m-%d %H:%M UTC") : "never" %></td>
+              <td>
+                <% if api_key.revoked? %>
+                  <span class="badge badge-neutral">Revoked</span>
+                  <span class="mt-1 block text-xs text-ink-muted"><%= api_key.revoked_at.utc.strftime("%Y-%m-%d %H:%M UTC") %> by <%= api_key.revoked_by %></span>
+                <% else %>
+                  <span class="badge badge-success">Active</span>
+                <% end %>
+              </td>
+              <td class="actions">
+                <% unless api_key.revoked? %>
+                  <%= button_to "Revoke", revoke_api_key_path(api_key), class: "btn btn-danger btn-sm",
+                        form: { data: { turbo_confirm: "Revoke #{api_key.name}? Workers using it will be refused." } } %>
+                <% end %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
   <% end %>
 </div>

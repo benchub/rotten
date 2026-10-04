@@ -1,3 +1,6 @@
-<h1>Rotten sign in</h1>
-<p><%= message %></p>
-<p><%= link_to "Back to sign in", login_path %></p>
+<% content_for :title, "Sign in" %>
+<div class="auth-panel card">
+  <h1>Sign in to Rotten</h1>
+  <p class="alert alert-error" role="alert"><%= message %></p>
+  <p><%= link_to "Back to sign in", login_path, class: "btn" %></p>
+</div>

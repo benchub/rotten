@@ -1,0 +1,9 @@
+<%# trail is [label, path] pairs, then the current page's label. %>
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+  <ol>
+    <% trail.each do |label, path| %>
+      <li><%= link_to label, path %></li>
+    <% end %>
+    <li><span aria-current="page"><%= current %></span></li>
+  </ol>
+</nav>
