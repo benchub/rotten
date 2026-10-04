@@ -1086,3 +1086,26 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Change:** a `serveFlagHelp` helper renders each serve flag's help as "(default $ENV, then config Key, else <default>)", using the same default constants as `loadServeConfig`.
   - **Test:** `TestServeHelpStatesPrecedence` parses the real `serve -h` output against hard-coded expectations. Any unchecked flag fails it.
   - **Review:** one Opus round, clean.
+
+### 20261003-140000-1: Let users change their own password, and add `users:enable`.
+- **Do:**
+  - Add a page where a logged-in password user changes their password, using the current one. The fingerprint check already ends their other sessions; re-fingerprint the current session.
+  - Add a `users:enable[email]` rake task.
+  - Don't add a forced change at first login. The user decided against it on 2026-10-04.
+- **Red test:**
+  - Changing the password works, the current session stays alive, and other sessions are dropped.
+  - A wrong current password is rejected.
+  - `users:enable` works.
+- **Done when:** Passes.
+- **Needs:** -105250-4.
+- **Completed:** 2026-10-04, ace6131.
+  - **Password change page:**
+    - `PasswordsController` serves `/password`, for password users only. OIDC users get a 404.
+    - Attempts are rate-limited like login (10 per IP and 5 per user, per 3 minutes), with separate counters.
+    - The current password is checked with a single bcrypt call, and failures get a generic error.
+    - A successful change rotates the session ID and refreshes the fingerprint. A spec replays a stolen cookie to show old sessions stop working.
+  - **Policy:** `User#password_usable` now also requires at least 12 characters and a confirmation. Login doesn't validate the password it's given, so existing shorter passwords still work.
+  - **Home page:** it now shows flash messages.
+  - **`users:enable`:** it's the inverse of `users:disable`, and neither writes audit rows. Auditing is covered by 180000-1.
+  - **Known gap:** `users:enable` revives the user's sessions from before the disable. This is documented in `docs/ui.md`, and `ui/spec/security/user_reenable_sessions_spec.rb` is pending until 150000-1 un-pends it.
+  - **Review:** two Opus rounds.

@@ -57,18 +57,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ## Phase F: Docs.
 
-### 20261003-140000-1: Let users change their own password, and add `users:enable`.
-- **Do:**
-  - Add a page where a logged-in password user changes their password, using the current one. The fingerprint check already ends their other sessions; re-fingerprint the current session.
-  - Add a `users:enable[email]` rake task.
-  - Don't add a forced change at first login. The user decided against it on 2026-10-04.
-- **Red test:**
-  - Changing the password works, the current session stays alive, and other sessions are dropped.
-  - A wrong current password is rejected.
-  - `users:enable` works.
-- **Done when:** Passes.
-- **Needs:** -105250-4.
-
 ### 20261003-140000-2: Document that login rate-limit counters are per process.
 - **Do:** The rate limits use a memory store in each process, so N Puma workers or replicas allow N times the limit. The user decided on 2026-10-04 to keep the memory store. In `docs/ui.md`, document:
   - that each process keeps its own counters;
