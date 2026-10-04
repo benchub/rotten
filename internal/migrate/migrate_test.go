@@ -2,10 +2,15 @@ package migrate_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/benchub/rotten/internal/migrate"
 	"github.com/benchub/rotten/internal/testdb"
+	"github.com/benchub/rotten/migrations"
 )
 
 // schemaSnapshot lists every relation, column, and type in the rotten
@@ -171,6 +176,76 @@ func TestUsersTableSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestUsersProviderUIDIsUnique(t *testing.T) {
+	db := testdb.StartRotten(t)
+	conn := db.Connect(t)
+	ctx := context.Background()
+
+	insert := `insert into rotten.users (email, provider, provider_uid) values ($1, $2, $3)`
+	if _, err := conn.Exec(ctx, insert, "first@example.com", "oidc:a", "sub-1"); err != nil {
+		t.Fatalf("insert first identity: %v", err)
+	}
+	_, err := conn.Exec(ctx, insert, "second@example.com", "oidc:a", "sub-1")
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" || pgErr.ConstraintName != "users_provider_uid_key" {
+		t.Fatalf("duplicate (provider, provider_uid): err %v, want a unique violation on users_provider_uid_key", err)
+	}
+
+	for what, args := range map[string][]any{
+		"same sub, other provider":     {"other@example.com", "oidc:b", "sub-1"},
+		"no sub (password user)":       {"pw1@example.com", "password", nil},
+		"another user with no sub":     {"pw2@example.com", "password", nil},
+		"same provider, different sub": {"third@example.com", "oidc:a", "sub-2"},
+	} {
+		if _, err := conn.Exec(ctx, insert, args...); err != nil {
+			t.Errorf("%s: %v", what, err)
+		}
+	}
+}
+
+// Migration 0009 refuses to run over duplicate identities rather than pick
+// which row keeps one: they're login data, so a person has to decide.
+func TestUsersProviderUIDMigrationRefusesExistingDuplicates(t *testing.T) {
+	db := testdb.StartRottenEmpty(t)
+	ctx := context.Background()
+	dsn := db.DSNAs(t, testdb.OwnerRole)
+
+	before := copyMigrations(t)
+	if _, ok := before[usersProviderUIDMigration]; !ok {
+		t.Fatalf("migration %s not found", usersProviderUIDMigration)
+	}
+	delete(before, usersProviderUIDMigration)
+	if _, err := migrate.UpWith(ctx, dsn, before, migrations.Permissions); err != nil {
+		t.Fatalf("migrate to 0008: %v", err)
+	}
+	conn := db.Connect(t)
+	if _, err := conn.Exec(ctx, `insert into rotten.users (email, provider, provider_uid) values
+		('one@example.com', 'oidc:a', 'sub-dup'), ('two@example.com', 'oidc:a', 'sub-dup')`); err != nil {
+		t.Fatalf("insert duplicates: %v", err)
+	}
+
+	_, err := migrate.Up(ctx, dsn)
+	if err == nil || !strings.Contains(err.Error(), "rotten.users has 1 (provider, provider_uid) pair shared by more than one user") {
+		t.Fatalf("migrate over duplicates: err %v, want a clear duplicate-identity error", err)
+	}
+	var version int64
+	if err := conn.QueryRow(ctx, "select max(version_id) from public.goose_db_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 8 {
+		t.Errorf("version after failed migrate = %d, want 8", version)
+	}
+
+	if _, err := conn.Exec(ctx, `update rotten.users set provider_uid = null where email = 'two@example.com'`); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := migrate.Up(ctx, dsn); err != nil || len(applied) != 1 || applied[0] != 9 {
+		t.Fatalf("migrate after fixing duplicates: applied %v, err %v; want [9]", applied, err)
+	}
+}
+
+const usersProviderUIDMigration = "0009_users_provider_uid_unique.sql"
 
 func TestUsersColumnCommentsDescribeValues(t *testing.T) {
 	db := testdb.StartRotten(t)

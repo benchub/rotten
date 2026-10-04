@@ -132,7 +132,6 @@ From the backlog:
 - End sessions when OIDC group membership is lost.
 - Share login rate-limit counters across UI processes.
 - Let users change their own password, and add `users:enable`.
-- Add a unique index on `users(provider, provider_uid)`.
 - Run the fingerprint page's queries under one timeout.
 - Show an all-sources row in the fingerprint stats table.
 - Narrow the report source picker as the user chooses.

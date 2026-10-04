@@ -91,6 +91,25 @@ took about 3 seconds for every 10 million events. Run it at a quiet time.
 Workers keep their harvests in their outbox while the server waits, and
 resend them afterwards. See `docs/perf.md` for the measurements.
 
+**Migration 0009 stops if two users share an OIDC identity.** It adds
+`users_provider_uid_key`, a unique index on `rotten.users (provider,
+provider_uid)` for rows with a `provider_uid`. If any pair already belongs to
+more than one user, it fails with `rotten.users has N (provider,
+provider_uid) pair(s) shared by more than one user` and changes nothing. It
+doesn't merge them for you, because the row that keeps the identity decides
+whose role and history that person gets. Find them as `rotten_owner`:
+
+```sql
+SELECT provider, provider_uid, array_agg(id ORDER BY id)
+  FROM rotten.users
+ WHERE provider_uid IS NOT NULL
+ GROUP BY 1, 2
+HAVING count(*) > 1;
+```
+
+In each group, keep one user, then delete the others or set their
+`provider_uid` to `NULL`, and run `migrate` again.
+
 ## 4. Partition maintenance and retention
 
 `rotten.events` and `rotten.event_context` are partitioned by day on

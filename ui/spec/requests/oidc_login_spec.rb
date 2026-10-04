@@ -88,6 +88,31 @@ RSpec.describe "OIDC login", type: :request do
       expect(User.count).to eq(1)
     end
 
+    it "signs in as the user a concurrent login created for the same subject, instead of a 500 or a duplicate" do
+      racer = nil
+      allow(User).to receive(:create!).and_wrap_original do |original, *args, **kwargs|
+        # The racer commits on its own connection, under another email, so
+        # only the (provider, provider_uid) index can catch the duplicate.
+        racer ||= Thread.new do
+          User.connection_pool.with_connection do |connection|
+            connection.select_value(<<~SQL)
+              insert into users (email, provider, provider_uid, role)
+              values ('racer@example.test', #{connection.quote(oidc_provider)}, 'sub-race', 'viewer') returning id
+            SQL
+          end
+        end.value
+        original.call(*args, **kwargs)
+      end
+      mock_oidc_auth(uid: "sub-race", email: "race@example.test", groups: ["rotten-viewers"])
+
+      oidc_sign_in
+
+      expect(response).to redirect_to("/")
+      expect(User.count).to eq(1)
+      expect(session[:user_id]).to eq(racer)
+      expect(User.find(racer)).to have_attributes(provider_uid: "sub-race", email: "race@example.test")
+    end
+
     it "refuses to link an email that already belongs to a different subject" do
       other = User.create!(email: "taken@example.test", provider: oidc_provider, provider_uid: "sub-original", role: "admin")
       mock_oidc_auth(uid: "sub-impostor", email: "taken@example.test", groups: %w[rotten-viewers rotten-admins])

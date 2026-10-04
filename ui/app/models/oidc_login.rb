@@ -46,8 +46,10 @@ class OidcLogin
       attempts += 1
       provision(claims, role)
     rescue ActiveRecord::RecordNotUnique
-      # Another login created this user, or the resynced email belongs to
-      # someone else. Look again once; a second collision is a real conflict.
+      # Another login created this user (users_provider_uid_key or the email
+      # index caught it), or the resynced email belongs to someone else. Look
+      # again once, which finds the other login's row by (provider, sub); a
+      # second collision is a real conflict.
       retry if attempts < 2
       deny(:conflict)
     end

@@ -46,6 +46,29 @@ RSpec.describe OidcLogin do
     expect(User.count).to eq(1)
   end
 
+  it "retries and resyncs when a concurrent login creates the same subject under another email" do
+    racer = nil
+    allow(User).to receive(:create!).and_wrap_original do |original, *args, **kwargs|
+      racer ||= Thread.new do
+        User.connection_pool.with_connection do |connection|
+          connection.select_value(<<~SQL)
+            insert into users (email, provider, provider_uid, role)
+            values ('first@example.test', 'openid_connect:https://idp.example.test', 'sub-race', 'viewer') returning id
+          SQL
+        end
+      end.value
+      original.call(*args, **kwargs)
+    end
+
+    result = described_class.new(config: config, provider: provider).call(auth)
+
+    expect(result.error).to be_nil
+    expect(result.user.id).to eq(racer)
+    expect(result.user.reload.email).to eq("race@example.test")
+    expect(User.count).to eq(1)
+    expect(User).to have_received(:create!).once
+  end
+
   it "denies, rather than raising, when a resynced email collides with another user" do
     User.create!(email: "taken@example.test", role: "viewer")
     mine = User.create!(email: "mine@example.test", provider: provider, provider_uid: "sub-mine", role: "viewer")
