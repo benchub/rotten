@@ -25,9 +25,11 @@ SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_statements';
 ```
 
 The min/max reset below needs extension version 1.11 or later, which comes
-with Postgres 17. The worker checks `extversion`, not the server version: on
-an older extension it skips the reset without an error, so min and max cover
-the entry's whole lifetime.
+with Postgres 17. On 17 and 18, `schema/observer.sql` stops with an error
+that says to run `ALTER EXTENSION pg_stat_statements UPDATE` if the
+extension is older. The worker checks `extversion`, not the server version:
+on an older extension it skips the reset without an error, so min and max
+cover the entry's whole lifetime.
 
 ## 2. Create the observer role and its grants
 
@@ -49,7 +51,7 @@ What it grants depends on the Postgres version:
 | 17, 18 | `pg_read_all_stats`, plus `USAGE` on `observer_schema` and `EXECUTE` on `<observer_schema>.pg_stat_statements_minmax_reset()` | After each harvest the worker resets only the min and max times, so they cover one window. The script creates a `SECURITY DEFINER` wrapper that calls `pg_stat_statements_reset(0, 0, 0, true)` and nothing else. The raw reset function can't be granted safely, because with its defaults it does a full reset. |
 
 On 17 and 18 the script refuses to run, and changes nothing, if
-`pg_stat_statements` isn't installed, or if `observer_schema` or an existing
+`pg_stat_statements` isn't installed or is older than 1.11, or if `observer_schema` or an existing
 wrapper is owned by someone else, or if another non-superuser role can create
 objects in that schema. If you pass an `observer_schema` other than `rotten`,
 set the worker's `MinmaxResetSchema` to match.

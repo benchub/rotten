@@ -171,6 +171,57 @@ func TestObserverRejectsUnsafeSchema(t *testing.T) {
 	}
 }
 
+// TestObserverOldExtension checks that on 17+ with pg_stat_statements still at
+// 1.10 (as after a pg_upgrade), the script refuses with a clear message that
+// says to update the extension, changes nothing, and works once it's updated.
+func TestObserverOldExtension(t *testing.T) {
+	for _, v := range []int{17, 18} {
+		t.Run(fmt.Sprintf("pg%d", v), func(t *testing.T) {
+			t.Parallel()
+			db := StartObserved(t, v)
+			su := db.Connect(t)
+			ctx := context.Background()
+			const observer, schema = "obs", "rotten"
+
+			execAll(t, su,
+				"drop extension pg_stat_statements",
+				"create extension pg_stat_statements version '1.10'")
+
+			path := filepath.Join(RepoRoot(), "schema", "observer.sql")
+			out, err := db.PSQL(t, path, map[string]string{
+				"observer_role": observer, "observer_schema": schema, "VERBOSITY": "verbose"})
+			const want = "55000: pg_stat_statements is at version 1.10, but Postgres 17 and later need 1.11 or newer; run ALTER EXTENSION pg_stat_statements UPDATE"
+			if err == nil || !strings.Contains(out, want) {
+				t.Fatalf("observer.sql on extension 1.10: err = %v, want output containing %q:\n%s", err, want, out)
+			}
+			var roles, schemas int
+			if err := su.QueryRow(ctx, "select count(*) from pg_roles where rolname = $1", observer).Scan(&roles); err != nil {
+				t.Fatal(err)
+			}
+			if err := su.QueryRow(ctx, "select count(*) from pg_namespace where nspname = $1", schema).Scan(&schemas); err != nil {
+				t.Fatal(err)
+			}
+			if roles != 0 || schemas != 0 {
+				t.Errorf("failed run left %d role(s) and %d schema(s) behind, want none", roles, schemas)
+			}
+
+			execAll(t, su, "alter extension pg_stat_statements update")
+			if out, err := loadObserver(t, db, observer, schema); err != nil {
+				t.Fatalf("observer.sql after update: %v\n%s", err, out)
+			}
+			execAll(t, su, fmt.Sprintf("alter role %s password '%s'", observer, observer))
+			obs, err := pgx.Connect(ctx, db.DSNAs(t, observer))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer obs.Close(ctx)
+			if _, err := obs.Exec(ctx, "select rotten.pg_stat_statements_minmax_reset()"); err != nil {
+				t.Errorf("wrapper after update: %v", err)
+			}
+		})
+	}
+}
+
 // TestObserverSQL loads schema/observer.sql into each observed version and
 // checks what the observer role can and can't do.
 func TestObserverSQL(t *testing.T) {

@@ -25,7 +25,9 @@
 -- also allows a full reset. Instead we create one SECURITY DEFINER wrapper,
 -- <observer_schema>.pg_stat_statements_minmax_reset(), that only runs
 -- pg_stat_statements_reset(0, 0, 0, true). On 14 through 16 there's no
--- min/max reset, so we skip it.
+-- min/max reset, so we skip it. On 17+ the extension must be at 1.11 or later;
+-- if it isn't (say, after a pg_upgrade), the script stops and says to run
+-- ALTER EXTENSION pg_stat_statements UPDATE.
 select current_setting('server_version_num')::int >= 170000 as pg17plus \gset
 
 \if :pg17plus
@@ -35,6 +37,17 @@ select current_setting('server_version_num')::int >= 170000 as pg17plus \gset
   select format('do $do$begin raise exception %L; end$do$',
                 'pg_stat_statements is not installed in this database')
   where not exists (select from pg_extension where extname = 'pg_stat_statements') \gexec
+
+  -- The four-argument reset arrived in extension version 1.11. After a
+  -- pg_upgrade to 17+, the extension stays at its old version until someone
+  -- updates it.
+  select format('do $do$begin raise exception using errcode = %L, message = %L; end$do$',
+                'object_not_in_prerequisite_state',
+                format('pg_stat_statements is at version %s, but Postgres 17 and later need 1.11 or newer; run ALTER EXTENSION pg_stat_statements UPDATE',
+                       extversion))
+  from pg_extension
+  where extname = 'pg_stat_statements'
+    and string_to_array(extversion, '.')::int[] < '{1,11}' \gexec
 
   -- The wrapper runs as us, so nobody else may own its schema or create
   -- objects in it.
