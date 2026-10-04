@@ -65,6 +65,14 @@ RSpec.describe ReportRunner do
     expect { runner.run("select 1", []) }.to raise_error(ActiveRecord::QueryCanceled)
   end
 
+  it "reports how much of the budget is left, starting the clock on first ask" do
+    runner = described_class.new(timeout_ms: 5_000)
+    expect(runner.remaining_ms).to be_between(4_900, 5_000)
+
+    runner.run("select pg_sleep(0.5)", [])
+    expect(runner.remaining_ms).to be_between(1_000, 4_550)
+  end
+
   it "uses the configured timeout by default" do
     original = Rails.configuration.x.report_timeout_ms
     Rails.configuration.x.report_timeout_ms = 4321

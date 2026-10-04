@@ -682,7 +682,7 @@ func perfCases(f perfFixture) []perfCase {
 		add("replica_utilization_by_job "+r.label, "replica_utilization_by_job.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole)...)
 	}
-	// The fingerprint page runs these three together, with the UI's automatic
+	// The fingerprint page runs these four together, with the UI's automatic
 	// bucket: the smallest that gives at most 200 buckets.
 	for _, r := range []struct {
 		label, bucket string
@@ -701,6 +701,7 @@ func perfCases(f perfFixture) []perfCase {
 			add("fingerprint_timeseries "+r.label+" "+fp.label+" role=replica", "fingerprint_timeseries.sql", r.start, r.budget, 5, with(fp.id, r.start, end, r.bucket, testdb.ReportReplicaRole)...)
 			add("fingerprint_contexts "+r.label+" "+fp.label, "fingerprint_contexts.sql", r.start, r.budget, 5, with(fp.id, r.start, end, 10, nil)...)
 			add("fingerprint_sources "+r.label+" "+fp.label, "fingerprint_sources.sql", r.start, r.budget, 5, with(fp.id, r.start, end, nil)...)
+			add("fingerprint_all_sources "+r.label+" "+fp.label, "fingerprint_all_sources.sql", r.start, r.budget, 5, fp.id, r.start, end)
 		}
 	}
 	return cases

@@ -107,8 +107,6 @@ Known issues
   containers, the limit is multiplied by their number.
 - **Replica utilization is slow at long ranges.** On busy clusters, ranges
   of 7 days or more can approach the 15-second report timeout.
-- **The fingerprint page can take up to three report timeouts**, since it
-  runs three queries, each with its own.
 - **The report source picker doesn't narrow.** You can pick a project,
   environment, cluster and role combination that doesn't exist.
 - **No audit log viewer.** Key creates and revokes are recorded in
@@ -129,8 +127,6 @@ From the backlog:
 - Expire UI sessions and make sign-out revoke them.
 - End sessions when OIDC group membership is lost.
 - Share login rate-limit counters across UI processes.
-- Run the fingerprint page's queries under one timeout.
-- Show an all-sources row in the fingerprint stats table.
 - Narrow the report source picker as the user chooses.
 - Add an audit log viewer, and audit user admin actions.
 - Make replica utilization scale past 7 days on busy clusters.

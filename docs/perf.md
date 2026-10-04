@@ -112,12 +112,17 @@ Plan shapes:
 | fingerprint_timeseries | 3h | 1ms / 1ms | 1ms / 1ms | 1/1 | 30 |
 | fingerprint_contexts | 3h | 2ms / 1ms | 1ms / 1ms | 1/1 | 60 |
 | fingerprint_sources | 3h | 1ms / 1ms | 1ms / 0ms | 1/1 | 30 |
+| fingerprint_all_sources | 3h | 1ms / 1ms | 1ms / 1ms | 1/1 | 30 |
 | fingerprint_timeseries | 7d | 60ms / 2ms | 16ms / 2ms | 8/8 | 23 |
 | fingerprint_contexts | 7d | 90ms / 18ms | 248ms / 9ms | 8/8 | 46 |
 | fingerprint_sources | 7d | 65ms / 2ms | 14ms / 1ms | 8/8 | 23 |
+| fingerprint_all_sources | 7d | 13ms / 2ms | 9ms / 1ms | 8/8 | 23 |
 | fingerprint_timeseries | 21d | 348ms / 5ms | 324ms / 4ms | 21/21 | 10 |
 | fingerprint_contexts | 21d | 517ms / 37ms | 1.06s / 57ms | 21/21 | 20 |
 | fingerprint_sources | 21d | 317ms / 7ms | 320ms / 3ms | 21/21 | 10 |
+| fingerprint_all_sources | 21d | 155ms / 6ms | 169ms / 2ms | 21/21 | 10 |
+
+- **fingerprint_all_sources** (added later, task 20261003-170000-2; numbers from its own run) isn't limited to cluster 13: it sums every source's events. It reads only `events_fingerprint_window` and the source-0 `fingerprint_stats` row, with no join to `logical_sources`, so it's cheaper than fingerprint_sources even for the hot fingerprint across all canvas clusters.
 
 - **Plan shape:** all of these use `events_fingerprint_window`. The hot fingerprint's custom plans BitmapAnd it with `(logical_source_id, calls)`. `fingerprint_contexts` then reads `event_context` by `event_id`.
 - **Role filter:** the `role=replica` variants of fingerprint_timeseries run at about half to two-thirds of the unfiltered time. For example, 21d hot is 209ms custom and 161ms generic.

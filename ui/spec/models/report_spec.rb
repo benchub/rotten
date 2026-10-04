@@ -8,7 +8,7 @@ RSpec.describe Report do
   end
 
   it "keeps the fingerprint detail queries out of the report list" do
-    internal = %w[fingerprint_contexts fingerprint_sources]
+    internal = %w[fingerprint_contexts fingerprint_sources fingerprint_all_sources]
 
     expect(described_class.all.map(&:key)).not_to include(*internal)
     internal.each do |key|
@@ -20,7 +20,7 @@ RSpec.describe Report do
 
   it "loads each report's SQL from the reports directory" do
     described_class.files.each do |file|
-      expect(ReportSql.read(file)).to include("$1", "rotten.logical_sources")
+      expect(ReportSql.read(file)).to include("$1", "rotten.events")
     end
   end
 

@@ -244,6 +244,83 @@ RSpec.describe "Fingerprint detail", type: :request do
     Rails.configuration.x.report_timeout_ms = original_timeout if original_timeout
   end
 
+  it "runs the all-sources stats through the page's one runner, after the others" do
+    sign_in
+    runners = []
+    allow(ReportRunner).to receive(:new).and_wrap_original do |original, **kwargs|
+      original.call(**kwargs).tap { |runner| runners << runner }
+    end
+    files = []
+    allow(ReportSql).to receive(:read).and_wrap_original do |original, file|
+      files << file
+      original.call(file)
+    end
+
+    get "/fingerprints/#{users_id}", params: source_params
+
+    expect(response).to have_http_status(:ok)
+    expect(runners.size).to eq(1)
+    expect(files).to eq(%w[fingerprint_timeseries.sql fingerprint_contexts.sql fingerprint_sources.sql
+                           fingerprint_all_sources.sql])
+  end
+
+  it "keeps the rest of the page when only the all-sources query runs past the timeout" do
+    sign_in
+    allow(ReportRunner).to receive(:new).and_wrap_original do |original, **|
+      original.call(timeout_ms: 1_000)
+    end
+    allow(ReportSql).to receive(:read).and_call_original
+    allow(ReportSql).to receive(:read).with("fingerprint_all_sources.sql")
+                                      .and_return("select pg_sleep(2), $1::bigint, $2::timestamptz, $3::timestamptz")
+
+    get "/fingerprints/#{users_id}", params: source_params
+
+    expect(response).to have_http_status(:ok)
+    expect(response.body).not_to include("took longer than")
+    page = Nokogiri::HTML(response.body)
+    expect(page.css("svg.timeseries-chart").size).to eq(2)
+    expect(page.css("table.fingerprint-contexts tbody tr").size).to eq(7)
+    expect(page.css("table.fingerprint-sources tbody tr").map { |row| row.css("td").first.text })
+      .to eq(%w[primary replica])
+    row = page.at_css("table.fingerprint-sources tfoot tr.all-sources.unavailable")
+    expect(row.css("th, td").map { |cell| cell.text.strip }).to eq(["All sources", "Timed out"])
+    expect(page.at_css("p.all-sources-note").text).to include("ran out of the page's report time limit")
+  end
+
+  it "skips the all-sources query when almost none of the budget is left" do
+    sign_in
+    stub_const("FingerprintsController::ALL_SOURCES_MIN_MS", 10_000_000)
+    files = []
+    allow(ReportSql).to receive(:read).and_wrap_original do |original, file|
+      files << file
+      original.call(file)
+    end
+
+    get "/fingerprints/#{users_id}", params: source_params
+
+    expect(response).to have_http_status(:ok)
+    expect(files).not_to include("fingerprint_all_sources.sql")
+    row = Nokogiri::HTML(response.body).at_css("table.fingerprint-sources tfoot tr.all-sources.unavailable")
+    expect(row.css("th, td").map { |cell| cell.text.strip }).to eq(["All sources", "Timed out"])
+  end
+
+  it "still answers 503 when the per-source query runs past the timeout" do
+    sign_in
+    allow(ReportRunner).to receive(:new).and_wrap_original do |original, **|
+      original.call(timeout_ms: 200)
+    end
+    allow(ReportSql).to receive(:read).and_call_original
+    allow(ReportSql).to receive(:read).with("fingerprint_sources.sql")
+                                      .and_return("select pg_sleep(1), $1::text, $2::text, $3::text, $4::bigint, " \
+                                                  "$5::timestamptz, $6::timestamptz, $7::text")
+
+    get "/fingerprints/#{users_id}", params: source_params
+
+    expect(response).to have_http_status(:service_unavailable)
+    expect(response.body).to include("took longer than")
+    expect(response.body).not_to include("all-sources")
+  end
+
   it "doesn't list the fingerprint detail queries as reports" do
     sign_in
 
@@ -251,6 +328,9 @@ RSpec.describe "Fingerprint detail", type: :request do
     expect(response).to have_http_status(:not_found)
 
     get "/reports/fingerprint_sources", params: source_params
+    expect(response).to have_http_status(:not_found)
+
+    get "/reports/fingerprint_all_sources", params: source_params
     expect(response).to have_http_status(:not_found)
   end
 end

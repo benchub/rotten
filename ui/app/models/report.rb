@@ -124,6 +124,16 @@ class Report
           ["history_samples", "History samples", :count],
           ["history_mean_ms", "History mean ms/call", :ms],
           ["history_deviation_ms", "History deviation ms", :ms]
+        ]),
+    new(key: "fingerprint_all_sources", title: "Stats for all sources", file: "fingerprint_all_sources.sql",
+        kind: :fingerprint_all_sources, description: "One query's calls, time and history across every source.",
+        columns: [
+          ["calls", "Calls", :count],
+          ["total_ms", "Total ms", :ms],
+          ["avg_ms_per_call", "Avg ms/call", :ms],
+          ["history_samples", "History samples", :count],
+          ["history_mean_ms", "History mean ms/call", :ms],
+          ["history_deviation_ms", "History deviation ms", :ms]
         ])
   ].freeze
 end

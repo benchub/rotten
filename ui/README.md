@@ -271,7 +271,11 @@ Each fingerprint has a page at `/fingerprints/<id>`. It shows the normalized
 SQL, and after you pick a source and time range: charts of calls and total
 time for each bucket, the top 10 contexts (job tag, or controller and
 action), and stats for each logical source, including the per-call mean time
-history kept in `fingerprint_stats`. The charts are SVG drawn on the server;
+history kept in `fingerprint_stats`. Below them, an **All sources** row
+shows the same stats over the same time range across every project,
+environment, cluster and role, with the all-sources history (logical source
+0 in `fingerprint_stats`), so the picked source compares with the
+fingerprint's whole footprint. The charts are SVG drawn on the server;
 each point carries `data-time`, `data-end` and `data-value`. A small
 Stimulus controller, `app/javascript/controllers/chart_controller.js`, with
 no chart library, adds to them:
@@ -301,9 +305,12 @@ no chart library, adds to them:
 The controller only toggles classes and sets attributes and CSSOM
 properties, so it works under the strict CSP with no inline script or style.
 An unknown or malformed ID gets a 404. The page runs
-`fingerprint_timeseries.sql`, `fingerprint_contexts.sql` and
-`fingerprint_sources.sql`; the last two aren't listed under `/reports`. Each
-query has its own statement timeout.
+`fingerprint_timeseries.sql`, `fingerprint_contexts.sql`,
+`fingerprint_sources.sql` and `fingerprint_all_sources.sql`; the last three
+aren't listed under `/reports`. They share one report timeout. The
+all-sources query runs last; if it runs out of time, or less than 100ms is
+left for it, the page still answers 200 with everything else and shows the
+All sources row as timed out.
 
 Each report is a SQL file in the repo's `reports/` directory, and the app
 reads them from `../reports`, next to the app. `dev/docker-compose.yaml` and
@@ -327,7 +334,7 @@ Each report runs as `rotten_ui` in a read-only transaction with
 never applies to the next request on the same connection. A report that runs
 past it is stopped, and the page answers 503 with a message suggesting a
 shorter range or a narrower source. `ROTTEN_UI_REPORT_TIMEOUT` sets the
-limit for the whole page: the fingerprint page's three queries share it, each
+limit for the whole page: the fingerprint page's four queries share it, each
 getting only what's left. See [`docs/ui.md`](../docs/ui.md#general).
 
 ## Pass keys

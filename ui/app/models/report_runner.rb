@@ -32,8 +32,8 @@ class ReportRunner
     end
   end
 
-  private
-
+  # Milliseconds left of the budget. The clock starts on the first call to
+  # this or to run.
   def remaining_ms
     now = Process.clock_gettime(Process::CLOCK_MONOTONIC, :millisecond)
     @deadline_ms ||= now + timeout_ms

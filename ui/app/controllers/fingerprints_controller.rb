@@ -1,10 +1,11 @@
 # One fingerprint: its normalized SQL, and for a picked source and time range
-# a time series chart, its top contexts and its stats on each role. The
-# source and range go through the same ReportQuery validation as the
-# fingerprint time series report, and every query runs through one
-# ReportRunner, so the page shares one timeout.
+# a time series chart, its top contexts, its stats on each role, and the same
+# stats across all sources. The source and range go through the same
+# ReportQuery validation as the fingerprint time series report, and every
+# query runs through one ReportRunner, so the page shares one timeout.
 class FingerprintsController < ApplicationController
   RANGE_FIELDS = %i[range from to].freeze
+  ALL_SOURCES_MIN_MS = 100
 
   def show
     @fingerprint = Fingerprint.lookup(params[:id])
@@ -19,13 +20,30 @@ class FingerprintsController < ApplicationController
     @series = @query.run(runner)
     @contexts = @query.run(runner, report: Report.internal("fingerprint_contexts"))
     @sources = @query.run(runner, report: Report.internal("fingerprint_sources"))
+    @all_sources = all_sources(runner)
   rescue ActiveRecord::QueryCanceled
-    @series = @contexts = @sources = nil
+    @series = @contexts = @sources = @all_sources = nil
     @timeout_seconds = Rails.configuration.x.report_timeout_ms / 1000.0
     render :show, status: :service_unavailable
   end
 
   private
+
+  # The all-sources row runs last, on what's left of the budget, and doesn't
+  # depend on the picked source. Running out of time there marks just that
+  # row unavailable rather than failing the page. With less than
+  # ALL_SOURCES_MIN_MS left it isn't tried.
+  def all_sources(runner)
+    if runner.remaining_ms >= ALL_SOURCES_MIN_MS
+      return @query.run(runner, report: Report.internal("fingerprint_all_sources")).first
+    end
+
+    @all_sources_unavailable = true
+    nil
+  rescue ActiveRecord::QueryCanceled
+    @all_sources_unavailable = true
+    nil
+  end
 
   # The fingerprint comes from the path, never from a fingerprint_id query
   # parameter. The chart is always in time order, so sort and dir are

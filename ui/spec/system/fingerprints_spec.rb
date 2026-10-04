@@ -63,6 +63,12 @@ RSpec.describe "Fingerprint detail", type: :system do
       ["primary", "900", "450.00", "0.50", "30,000", "0.50", "0.10"],
       ["replica", "200", "80.00", "0.40", "", "", ""]
     ])
+    # Every project, environment, cluster and role over the same 3 hours,
+    # with the all-sources history (logical source 0).
+    within("table.fingerprint-sources tfoot tr.all-sources") do
+      expect(find("th[scope='row']").text).to eq("All sources")
+      expect(all("td").map(&:text)).to eq(["1,325", "640.00", "0.48", "50,000", "0.50", "0.20"])
+    end
 
     csp_violations = page.driver.browser.logs.get(:browser).map(&:message).grep(/Content Security Policy/i)
     expect(csp_violations).to be_empty
@@ -78,6 +84,17 @@ RSpec.describe "Fingerprint detail", type: :system do
     expect(chart_points("calls").sum { |point| point["data-value"].to_f }).to eq(200)
     expect(table_rows("table.fingerprint-contexts")).to eq([["grades#show", "200"]])
     expect(table_rows("table.fingerprint-sources")).to eq([["replica", "200", "80.00", "0.40", "", "", ""]])
+    expect(find("table.fingerprint-sources tfoot tr.all-sources").all("th, td").map(&:text))
+      .to eq(["All sources", "1,325", "640.00", "0.48", "50,000", "0.50", "0.20"])
+  end
+
+  it "shows the all-sources row when the picked source has no stats" do
+    slow_id = @fixture.fingerprint_ids.fetch("slow")
+    visit "/fingerprints/#{slow_id}?project=bridge&environment=production&cluster=13&range=3h&bucket=10m"
+
+    expect(page).to have_text("No stats for this source and time range.")
+    expect(find("table.fingerprint-sources tfoot tr.all-sources").all("th, td").map(&:text))
+      .to eq(["All sources", "20", "800.00", "40.00", "1,001", "5.03", "1.49"])
   end
 
   it "links to the time series report as a table" do
@@ -247,6 +264,29 @@ RSpec.describe "Fingerprint detail", type: :system do
       expect(page).to have_no_link("Reset zoom")
       expect(csp_violations).to be_empty
     end
+  end
+
+  it "shows the all-sources row as timed out and keeps the rest of the page" do
+    users_id = @fixture.fingerprint_ids.fetch("users")
+    allow(ReportSql).to receive(:read).and_call_original
+    allow(ReportSql).to receive(:read).with("fingerprint_all_sources.sql")
+                                      .and_return("select pg_sleep(30), $1::bigint, $2::timestamptz, $3::timestamptz")
+    original = Rails.configuration.x.report_timeout_ms
+    Rails.configuration.x.report_timeout_ms = 1_000
+
+    visit "/fingerprints/#{users_id}?project=canvas&environment=production&cluster=13&range=3h&bucket=10m"
+
+    expect(chart_points("calls").size).to eq(18)
+    expect(table_rows("table.fingerprint-sources")).to eq([
+      ["primary", "900", "450.00", "0.50", "30,000", "0.50", "0.10"],
+      ["replica", "200", "80.00", "0.40", "", "", ""]
+    ])
+    row = find("table.fingerprint-sources tfoot tr.all-sources.unavailable")
+    expect(row.all("th, td").map(&:text)).to eq(["All sources", "Timed out"])
+    expect(find("p.all-sources-note")).to have_text("ran out of the page's report time limit")
+    expect(page).to have_no_text("took longer than")
+  ensure
+    Rails.configuration.x.report_timeout_ms = original
   end
 
   it "shows the timeout message when the page's queries together run past the timeout" do

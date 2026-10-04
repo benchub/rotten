@@ -63,7 +63,7 @@ docker run -d -p 8080:80 \
 | `SECRET_KEY_BASE` | yes | See above. Rails reads it itself. |
 | `ROTTEN_UI_HOSTS` | yes, in production | Comma-separated host names, such as `rotten.example.com`. A name starting with a dot, such as `.example.com`, also allows its subdomains. A request whose `Host` or `X-Forwarded-Host` isn't listed gets a 403, except `/up`, so health checks can use an IP address. The app refuses to boot without it. |
 | `ROTTEN_UI_AUTH` | yes | `oidc` or `password`. The app refuses to boot if it's missing or anything else. |
-| `ROTTEN_UI_REPORT_TIMEOUT` | no, default `15` | Time limit for each report page's queries, in seconds. Fractions such as `2.5` are allowed. It must be a number from 0.001 to 2147483. The fingerprint page runs three queries that share this limit: each gets only what's left of it. |
+| `ROTTEN_UI_REPORT_TIMEOUT` | no, default `15` | Time limit for each report page's queries, in seconds. Fractions such as `2.5` are allowed. It must be a number from 0.001 to 2147483. The fingerprint page runs four queries that share this limit: each gets only what's left of it. |
 | `ROTTEN_UI_SESSION_LIFETIME_HOURS` | no, default `12` | How long a sign-in lasts, in hours. Fractions such as `0.5` are allowed. It must be a number from 0.01 to 8760; the app refuses to boot otherwise. The expiry is fixed at sign-in and activity doesn't extend it. See [Sessions](#sessions). |
 | `DATABASE_CONNECT_TIMEOUT` | no, default `2` | Seconds to wait when connecting to the database. |
 | `RAILS_MAX_THREADS` | no | Puma threads per process (default 3) and the database pool size per process (default 5). Set it once to keep them equal. |

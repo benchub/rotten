@@ -50,10 +50,11 @@
     <% end %>
 
     <h2>Stats for each source</h2>
-    <p class="report-hint">History is the per-call mean time kept for each source over its whole life, not just this time range.</p>
+    <p class="report-hint">History is the per-call mean time kept for each source over its whole life, not just this time range. All sources sums calls and time over every project, environment, cluster and role in the same time range, with the history kept for all of them together.</p>
     <% if @sources.empty? %>
       <p>No stats for this source and time range.</p>
-    <% else %>
+    <% end %>
+    <% if @sources.any? || @all_sources || @all_sources_unavailable %>
       <% columns = Report.internal("fingerprint_sources").columns %>
       <table class="report fingerprint-sources">
         <thead>
@@ -72,7 +73,28 @@
             </tr>
           <% end %>
         </tbody>
+        <% if @all_sources %>
+          <tfoot>
+            <tr class="all-sources">
+              <th scope="row" data-column="role">All sources</th>
+              <% Report.internal("fingerprint_all_sources").columns.each do |column| %>
+                <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, @all_sources[column.key]) %></td>
+              <% end %>
+            </tr>
+          </tfoot>
+        <% elsif @all_sources_unavailable %>
+          <% all_columns = Report.internal("fingerprint_all_sources").columns %>
+          <tfoot>
+            <tr class="all-sources unavailable">
+              <th scope="row" data-column="role">All sources</th>
+              <td colspan="<%= all_columns.size %>">Timed out</td>
+            </tr>
+          </tfoot>
+        <% end %>
       </table>
+      <% if @all_sources_unavailable %>
+        <p class="report-hint all-sources-note">The all-sources stats ran out of the page's report time limit. The other results are complete; a shorter time range may let them finish.</p>
+      <% end %>
     <% end %>
   <% end %>
 </div>
