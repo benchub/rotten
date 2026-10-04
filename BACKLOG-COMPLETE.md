@@ -1109,3 +1109,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **`users:enable`:** it's the inverse of `users:disable`, and neither writes audit rows. Auditing is covered by 180000-1.
   - **Known gap:** `users:enable` revives the user's sessions from before the disable. This is documented in `docs/ui.md`, and `ui/spec/security/user_reenable_sessions_spec.rb` is pending until 150000-1 un-pends it.
   - **Review:** two Opus rounds.
+
+### 20261003-200000-3: Validate `--fqdn` in `rotten-server keys create`.
+- **Do:** `internal/auth/admin.go` `CreateKey` stores the FQDN exactly as typed. The UI (-52) validates it. Apply the same rules in the CLI, normalizing to lowercase with no trailing dot, so CLI and UI keys behave the same. Update `docs/keys.md`.
+- **Red test:** Invalid FQDNs are rejected; mixed case and a trailing dot are normalized.
+- **Done when:** Passes.
+- **Needs:** none.
+- **Completed:** 2026-10-04, 2d545dc.
+  - **Go:** `CreateKey` now calls `auth.NormalizeFQDN` when an FQDN is given. It strips whitespace and NUL, lowercases ASCII and drops one trailing dot. It allows labels of up to 63 characters and names of up to 253, and rejects wildcards, ports, underscores, IPv6 and non-ASCII. The CLI checks `--fqdn` before connecting and exits 2 on a bad value.
+  - **Shared rules:** `ui/spec/fixtures/fqdn_vectors.json` is read by both the Go test and an RSpec, so the two sides can't drift. Writing it showed the UI accepted the Kelvin sign, because Unicode downcase turned it into `k`. The UI now uses `downcase(:ascii)`.
+  - **Existing keys:** `AllowsFQDN` already normalizes both sides at lookup, so keys created before this change still match.
+  - **Review:** one Opus round, clean.

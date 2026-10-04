@@ -139,12 +139,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Done when:** Passes.
 - **Needs:** none.
 
-### 20261003-200000-3: Validate `--fqdn` in `rotten-server keys create`.
-- **Do:** `internal/auth/admin.go` `CreateKey` stores the FQDN exactly as typed. The UI (-52) validates it. Apply the same rules in the CLI, normalizing to lowercase with no trailing dot, so CLI and UI keys behave the same. Update `docs/keys.md`.
-- **Red test:** Invalid FQDNs are rejected; mixed case and a trailing dot are normalized.
-- **Done when:** Passes.
-- **Needs:** none.
-
 ### 20261003-200000-4: Check the pg_stat_statements extension version in `observer.sql` on PG17+.
 - **Do:** On PG17 and later, `schema/observer.sql` wraps the 4-argument `pg_stat_statements_reset`, which needs extension version ≥ 1.11. After a `pg_upgrade`, the extension can still be at 1.10, and the script fails with an unclear error. Add a precondition that raises a clear "run `ALTER EXTENSION pg_stat_statements UPDATE`" message. Alternatively, gate on `extversion` rather than `server_version_num`.
 - **Red test:** On PG17 with the extension at 1.10, if testdb can install that version, the script fails with the clear message. Otherwise, unit-test the gating logic.
