@@ -1315,3 +1315,26 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Sort:** a hidden `sort_report` marker drops a sort carried over from another report without JS.
   - **Time window:** From/To show only for Custom, pre-filled with the current window. Each run states its resolved window, and the page notes when From/To were ignored.
   - **Review:** two rounds plus a final fix. Round 1 found the role being dropped by utilization tabs and stale no-JS sorts. Round 2 found a system spec that passed without submitting.
+
+### 20261004-093600-2: Visual refresh of the UI.
+- **Needs:** 20261004-093600-1.
+- **Why (user, 2026-10-04):** The pages are bland. No animations needed, but they should look like a polished internal tool.
+- **Do:**
+  - A shared layout with a top bar: app name "rotten", nav (Reports, Admin for admins), the signed-in user, and logout. Fix the `<title>` default ("Ui").
+  - A small design system, either in plain CSS with custom properties (colors, spacing, radius, type scale) or in Tailwind if it's already wired into the asset build. Check that first, and don't add a Node build.
+  - Card panels for the filter form and the results. Styled selects, inputs and buttons with visible focus states. A primary "Run" button.
+  - Tables: sticky header, zebra rows, hover, right-aligned tabular numbers, monospace truncated query text with the full text available, and clear sort indicators.
+  - Error and empty states that look intentional. Badges for roles.
+  - Charts: colors match the palette.
+  - Apply all this across every page: home, login, password, reports, fingerprint, admin, API keys and audit log.
+  - Must keep working under the strict CSP: no inline styles or scripts. Must meet WCAG AA contrast. No animations.
+- **Red test:**
+  - A system spec that the layout nav appears on every authenticated page and shows Admin only to admins.
+  - A security spec that the CSP still holds: no inline `style=` attributes in rendered pages.
+  - Existing system specs stay green.
+- **Completed:** 2026-10-04, e29fac8.
+  - **Layout:** a top bar with "rotten", Reports, Admin (admins only), the user with a role badge, and logout. Titles read "Page · rotten".
+  - **Tailwind:** kept (user, 2026-10-04) and moved to v4. The design is `@theme` tokens plus `@apply` component classes in `app/assets/tailwind/`, and `app/assets/stylesheets/` is gone.
+  - **Dev stack:** the `ui` service builds CSS before `rails server`, and a new `ui-css` service runs `tailwindcss:watch[always]`. `make test-ui` builds Tailwind first. `stylesheet_spec` recompiles and requires a byte-for-byte match with the built CSS.
+  - **Query text:** long query text opens through a `<details>` disclosure that works from the keyboard.
+  - **Review:** two rounds plus a final fix. Round 1 found the truncated query text unreachable from the keyboard. Round 2 found the stale-CSS check ignored view, helper and JS changes.
