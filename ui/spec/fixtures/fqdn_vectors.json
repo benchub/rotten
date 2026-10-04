@@ -1,0 +1,85 @@
+{
+  "_comment": "FQDN test vectors shared by internal/auth/fqdn_test.go and ui/spec/models/api_key_issue_fqdn_spec.rb, so the CLI and the UI accept and normalize the same pinned FQDNs. valid maps input to the stored form: ASCII whitespace trimmed, ASCII-lowercased, one trailing dot dropped. Labels are letters, digits and inner hyphens, 63 characters at most; the whole name is 253 characters at most after normalizing. An empty input isn't here: the UI requires an FQDN, while the CLI treats an empty --fqdn as an unpinned key.",
+  "valid": [
+    {
+      "input": "db1.example.com",
+      "fqdn": "db1.example.com"
+    },
+    {
+      "input": "DB1.Example.COM",
+      "fqdn": "db1.example.com"
+    },
+    {
+      "input": "db1.example.com.",
+      "fqdn": "db1.example.com"
+    },
+    {
+      "input": " DB2.Example.Test. ",
+      "fqdn": "db2.example.test"
+    },
+    {
+      "input": "\t\u000b\fdb1.example.com\r\n",
+      "fqdn": "db1.example.com"
+    },
+    {
+      "input": "\u0000db1.example.com\u0000",
+      "fqdn": "db1.example.com"
+    },
+    {
+      "input": "localhost",
+      "fqdn": "localhost"
+    },
+    {
+      "input": "a",
+      "fqdn": "a"
+    },
+    {
+      "input": "10.0.0.1",
+      "fqdn": "10.0.0.1"
+    },
+    {
+      "input": "a-b.c--d.e9",
+      "fqdn": "a-b.c--d.e9"
+    },
+    {
+      "input": "xn--d1-6ka.example",
+      "fqdn": "xn--d1-6ka.example"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+      "fqdn": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fqdn": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "input": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.",
+      "fqdn": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "invalid": [
+    " ",
+    ".",
+    "..",
+    "db1..example.com",
+    ".db1.example.com",
+    "db1.example.com..",
+    "-db1.example.com",
+    "db1-.example.com",
+    "db_1.example.com",
+    "db 1.example.com",
+    "db1.example.com:5432",
+    "db1.example.com/",
+    "*.example.com",
+    "[::1]",
+    "::1",
+    "d\u00e91.example.com",
+    "\u00a0db1.example.com",
+    "\u212aey.example.com",
+    "\u0130.example.com",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ]
+}

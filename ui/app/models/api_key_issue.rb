@@ -32,9 +32,11 @@ class ApiKeyIssue
     super(value.to_s.strip)
   end
 
-  # The server lowercases and drops a trailing dot before comparing.
+  # The server lowercases and drops a trailing dot before comparing. ASCII
+  # only, like internal/auth.NormalizeFQDN: a full Unicode downcase would turn
+  # the Kelvin sign into "k" and accept it.
   def fqdn=(value)
-    super(value.to_s.strip.downcase.delete_suffix("."))
+    super(value.to_s.strip.downcase(:ascii).delete_suffix("."))
   end
 
   # Returns an Issued, or nil with errors set.

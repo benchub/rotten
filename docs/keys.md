@@ -29,10 +29,14 @@ rotten-server keys revoke db1-worker
 
 - `create --fqdn HOST NAME` prints the key once. Names are unique, even
   among revoked keys. Always pass `--fqdn`; the command accepts a key without
-  it, but the server refuses such a key. The command doesn't validate the
-  FQDN; it stores it as typed, without the checks the UI does, so check it
-  for typos. Matching ignores case and a trailing dot, so `DB1.example.com.`
-  still matches a worker whose `FQDN` is `db1.example.com`.
+  it, but the server refuses such a key. `HOST` gets the same checks as in
+  the UI: labels of letters, digits and inner hyphens, at most 63 characters
+  each and 253 in all. Wildcards, ports, underscores and non-ASCII
+  characters are refused. Surrounding whitespace is trimmed, and the FQDN is
+  stored lowercased without a trailing dot, so `--fqdn DB1.example.com.`
+  stores `db1.example.com`. Single-label names such as `localhost` and
+  dotted IPv4 addresses pass the checks, but the worker's `FQDN` must match.
+  Matching ignores case and a trailing dot.
 - `list` shows each key's id, name, FQDN, creator, creation time, last use and
   status. It never shows secrets.
 - `revoke NAME` revokes a key. Keys are never deleted.
@@ -44,7 +48,8 @@ command.
 
 Admins manage keys at `/admin/keys`. **New pass key** asks for a name and the
 worker's FQDN, and shows the key once. **Revoke** revokes a key. The UI
-lowercases the FQDN and drops a trailing dot, and it records each create and
+checks and normalizes the FQDN exactly as the command line does, and it
+records each create and
 revoke in `ui_audit_log`. See `ui/README.md` for details.
 
 ## Issuing a key to a worker

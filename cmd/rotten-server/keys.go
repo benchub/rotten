@@ -24,7 +24,9 @@ ROTTEN_ADMIN_DSN (or -dsn).
 
 create prints the new key once. It isn't stored and can't be shown again.
 --fqdn pins the key to one worker host. Register and SubmitHarvest refuse a
-key without a pinned fqdn, so every worker key needs --fqdn.
+key without a pinned fqdn, so every worker key needs --fqdn. HOST must be a
+host name such as db1.example.com, checked as the UI checks it; it's stored
+lowercased, without a trailing dot.
 list never shows secrets. revoke takes effect within the server's key cache
 TTL (30 seconds by default).
 `
@@ -58,6 +60,12 @@ func runKeys(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() != nargs {
 		fmt.Fprint(stderr, keysUsage)
 		return 2
+	}
+	if fqdn != nil && *fqdn != "" {
+		if _, err := auth.NormalizeFQDN(*fqdn); err != nil {
+			fmt.Fprintf(stderr, "rotten-server keys: %v\n", err)
+			return 2
+		}
 	}
 	if *dsn == "" {
 		*dsn = os.Getenv("ROTTEN_ADMIN_DSN")

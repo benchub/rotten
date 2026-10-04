@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -72,6 +73,44 @@ func TestKeysRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(w1, "revoked") || strings.Contains(w2, "revoked") {
 		t.Errorf("list after revoke:\n%s", out)
+	}
+}
+
+// --fqdn follows the UI's rules: bad names are refused before anything is
+// stored, and case and a trailing dot are normalized away.
+func TestKeysCreateFQDN(t *testing.T) {
+	db := testdb.StartRotten(t)
+	t.Setenv("ROTTEN_ADMIN_DSN", db.DSNAs(t, testdb.OwnerRole))
+	keys := func(args ...string) (string, string, int) {
+		var out, errb bytes.Buffer
+		code := run(append([]string{"keys"}, args...), &out, &errb)
+		return out.String(), errb.String(), code
+	}
+
+	for i, bad := range []string{"db_1.example.com", "*.example.com", "db1..example.com", "."} {
+		out, errs, code := keys("create", "--fqdn", bad, fmt.Sprintf("bad%d", i))
+		if code == 0 || !strings.Contains(errs, "fqdn") || strings.Contains(out, "rotten_") {
+			t.Errorf("create --fqdn %q: code %d, stdout %q, stderr %q; want an fqdn error and no key", bad, code, out, errs)
+		}
+	}
+	if _, errs, code := keys("create", "--fqdn", "DB1.Example.COM.", "mixed"); code != 0 {
+		t.Fatalf("create mixed: %d %s", code, errs)
+	}
+	out, _, _ := keys("list")
+	if strings.Contains(out, "bad") {
+		t.Errorf("a key with a bad fqdn was stored:\n%s", out)
+	}
+	var row string
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) > 2 && f[1] == "mixed" {
+			row = l
+			if f[2] != "db1.example.com" {
+				t.Errorf("mixed stored fqdn %q, want db1.example.com", f[2])
+			}
+		}
+	}
+	if row == "" {
+		t.Errorf("list has no mixed key:\n%s", out)
 	}
 }
 

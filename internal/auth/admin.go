@@ -23,18 +23,23 @@ type Created struct {
 	Token string
 }
 
-// CreateKey inserts a key and returns its token. fqdn "" leaves it unpinned.
+// CreateKey inserts a key and returns its token. fqdn "" leaves it unpinned;
+// otherwise it must pass NormalizeFQDN and is stored normalized.
 func CreateKey(ctx context.Context, db DB, name, fqdn, by string) (Created, error) {
 	if name == "" {
 		return Created{}, errors.New("key name is empty")
 	}
+	var f *string
+	if fqdn != "" {
+		n, err := NormalizeFQDN(fqdn)
+		if err != nil {
+			return Created{}, err
+		}
+		f = &n
+	}
 	secret, hash, err := NewSecret()
 	if err != nil {
 		return Created{}, err
-	}
-	var f *string
-	if fqdn != "" {
-		f = &fqdn
 	}
 	var id int64
 	err = db.QueryRow(ctx,
