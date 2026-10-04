@@ -9,8 +9,10 @@
 # - An email match only links a user with no provider identity yet.
 # - A user matched on (provider, sub) has name, email, groups and role resynced
 #   on every login, even one that is then refused, so a user who leaves the
-#   groups loses admin. A refused login never creates, links or changes any
-#   other row, and never gets a session.
+#   groups loses admin. A refusal for lost group access also bumps their
+#   session_generation, ending the sessions they already have, even when the
+#   resync itself is refused as a conflict. A refused login never creates,
+#   links or changes any other row, and never gets a session.
 # - Role comes from groups and fails closed: admin needs the admin group;
 #   otherwise viewer, if the viewer group is unset or the user is in it.
 class OidcLogin
@@ -51,6 +53,9 @@ class OidcLogin
       # again once, which finds the other login's row by (provider, sub); a
       # second collision is a real conflict.
       retry if attempts < 2
+      # The rollback undid any bump resync made, so a known subject who lost
+      # group access is revoked here, outside the transaction.
+      revoke_known_subject(claims[:sub]) if role.nil?
       deny(:conflict)
     end
   end
@@ -58,6 +63,12 @@ class OidcLogin
   private
 
   attr_reader :config, :provider
+
+  def revoke_known_subject(sub)
+    User.find_by(provider: provider, provider_uid: sub)&.revoke_sessions!
+  rescue ActiveRecord::RecordNotFound
+    nil
+  end
 
   def provision(claims, role)
     User.transaction { provision_in_transaction(claims, role) }
@@ -86,12 +97,17 @@ class OidcLogin
 
   # The user matched on (issuer, sub), so this really is them: resync even if
   # the login is then refused, so someone who left the groups loses admin.
-  # The email only changes when the IdP says the new one is verified.
+  # Groups are only checked at login, so a refusal for lost group access also
+  # ends every session they still have. The email only changes when the IdP
+  # says the new one is verified.
   def resync(user, claims, role)
     attributes = attributes(claims, role || "viewer")
     attributes.delete(:email) unless claims[:email_verified]
     user.update!(attributes)
-    return deny(:not_authorized) if role.nil?
+    if role.nil?
+      user.revoke_sessions!
+      return deny(:not_authorized)
+    end
     return deny(:inactive) unless user.active?
 
     user.update!(last_login_at: Time.current)

@@ -1,10 +1,7 @@
 require "rails_helper"
 
-# users:disable ends a user's sessions on their next request, but sessions
-# live in the cookie and never expire, so a copy taken before the disable
-# still names the user. Once users:enable runs, that copy works again.
-# 20261003-150000-1 adds users.session_generation, bumped by disable, which
-# revokes it; until then these examples are pending.
+# users:disable bumps the user's session_generation, so a session cookie
+# copied before the disable stays refused after users:enable.
 RSpec.describe "Sessions across users:disable and users:enable", type: :request do
   let(:cookie_name) { Rails.application.config.session_options.fetch(:key) }
 
@@ -37,7 +34,6 @@ RSpec.describe "Sessions across users:disable and users:enable", type: :request 
       UserAdmin.enable(user.email)
       expect(user.reload).to be_active
 
-      pending "revoked by session_generation in 20261003-150000-1"
       expect_sent_to_login(replay(copied))
     end
   end

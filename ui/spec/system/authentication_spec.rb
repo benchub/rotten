@@ -23,4 +23,18 @@ RSpec.describe "Authentication", type: :system do
     expect(page).to have_current_path("/login")
     expect(page).to have_text("Signed out")
   end
+
+  it "sends a user whose session expired back to the login page, saying why" do
+    user = User.create!(email: "expiring-system@example.com", name: "Expiring User", role: "viewer", active: true)
+
+    visit "/__test/sign_in?user_id=#{user.id}"
+    visit "/"
+    expect(page).to have_button("Log out")
+
+    travel 12.hours
+    visit "/"
+
+    expect(page).to have_current_path("/login")
+    expect(page).to have_text("Your session expired. Sign in again.")
+  end
 end

@@ -21,10 +21,12 @@ class PasswordsController < ApplicationController
   end
 
   # Checks the current password before looking at the new one. A wrong one
-  # costs one bcrypt hash, as a failed login does. On success the session is
-  # reset, for a new session ID, and restarted with the new credential
-  # fingerprint, so this browser stays signed in while every other session,
-  # including a copy of this one's old cookie, is dropped on its next request.
+  # costs one bcrypt hash, as a failed login does. On success the user's
+  # session_generation is bumped, which ends every session they have,
+  # including a copy of this one's old cookie. This session is then reset, for
+  # a new session ID, and restarted with the new generation and credential
+  # fingerprint, so this browser stays signed in with a fresh lifetime: the
+  # current password was just checked, as at login.
   def update
     user = User.authenticate_password_login(email: current_user.email, password: params[:current_password])
     return render_edit(WRONG_CURRENT_PASSWORD, :unprocessable_content) unless user&.id == current_user.id

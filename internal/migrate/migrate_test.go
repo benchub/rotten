@@ -3,8 +3,12 @@ package migrate_test
 import (
 	"context"
 	"errors"
+	"maps"
+	"path"
+	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -150,16 +154,17 @@ func TestUsersTableSchema(t *testing.T) {
 	}
 
 	wantTypes := map[string]string{
-		"id":              "bigint",
-		"email":           "text",
-		"name":            "text",
-		"provider":        "text",
-		"provider_uid":    "text",
-		"password_digest": "text",
-		"role":            "text",
-		"groups":          "text[]",
-		"active":          "boolean",
-		"last_login_at":   "timestamp with time zone",
+		"id":                 "bigint",
+		"email":              "text",
+		"name":               "text",
+		"provider":           "text",
+		"provider_uid":       "text",
+		"password_digest":    "text",
+		"role":               "text",
+		"groups":             "text[]",
+		"active":             "boolean",
+		"last_login_at":      "timestamp with time zone",
+		"session_generation": "bigint",
 	}
 	for column, want := range wantTypes {
 		var got string
@@ -211,11 +216,7 @@ func TestUsersProviderUIDMigrationRefusesExistingDuplicates(t *testing.T) {
 	ctx := context.Background()
 	dsn := db.DSNAs(t, testdb.OwnerRole)
 
-	before := copyMigrations(t)
-	if _, ok := before[usersProviderUIDMigration]; !ok {
-		t.Fatalf("migration %s not found", usersProviderUIDMigration)
-	}
-	delete(before, usersProviderUIDMigration)
+	before := migrationsBefore(t, usersProviderUIDMigration)
 	if _, err := migrate.UpWith(ctx, dsn, before, migrations.Permissions); err != nil {
 		t.Fatalf("migrate to 0008: %v", err)
 	}
@@ -240,12 +241,99 @@ func TestUsersProviderUIDMigrationRefusesExistingDuplicates(t *testing.T) {
 	if _, err := conn.Exec(ctx, `update rotten.users set provider_uid = null where email = 'two@example.com'`); err != nil {
 		t.Fatal(err)
 	}
-	if applied, err := migrate.Up(ctx, dsn); err != nil || len(applied) != 1 || applied[0] != 9 {
-		t.Fatalf("migrate after fixing duplicates: applied %v, err %v; want [9]", applied, err)
+	// Later migrations apply in the same run, so only 9 itself is checked.
+	if applied, err := migrate.Up(ctx, dsn); err != nil || !slices.Contains(applied, 9) {
+		t.Fatalf("migrate after fixing duplicates: applied %v, err %v; want it to include 9", applied, err)
 	}
 }
 
 const usersProviderUIDMigration = "0009_users_provider_uid_unique.sql"
+
+// migrationsBefore copies the migrations without name and every migration
+// after it, so a test can stop the schema just before name, however many
+// migrations are added later.
+func migrationsBefore(t *testing.T, name string) fstest.MapFS {
+	t.Helper()
+	m := copyMigrations(t)
+	if _, ok := m[name]; !ok {
+		t.Fatalf("migration %s not found", name)
+	}
+	for p := range m {
+		if path.Ext(p) == ".sql" && p >= name {
+			delete(m, p)
+		}
+	}
+	return m
+}
+
+const usersSessionGenerationMigration = "0010_users_session_generation.sql"
+
+// users.session_generation is what the UI bumps to end every session a user
+// has. Users from before the migration start at 0, like new ones.
+func TestUsersSessionGeneration(t *testing.T) {
+	db := testdb.StartRottenEmpty(t)
+	ctx := context.Background()
+	dsn := db.DSNAs(t, testdb.OwnerRole)
+
+	before := migrationsBefore(t, usersSessionGenerationMigration)
+	if _, err := migrate.UpWith(ctx, dsn, before, migrations.Permissions); err != nil {
+		t.Fatalf("migrate to 0009: %v", err)
+	}
+	conn := db.Connect(t)
+	if _, err := conn.Exec(ctx, `insert into rotten.users (email) values ('existing@example.com')`); err != nil {
+		t.Fatalf("insert existing user: %v", err)
+	}
+	if applied, err := migrate.Up(ctx, dsn); err != nil || !slices.Contains(applied, 10) {
+		t.Fatalf("migrate to 0010: applied %v, err %v; want it to include 10", applied, err)
+	}
+
+	var dataType, comment string
+	var notNull bool
+	var def *string
+	if err := conn.QueryRow(ctx, `
+		select format_type(a.atttypid, a.atttypmod), a.attnotnull, pg_get_expr(d.adbin, d.adrelid),
+			coalesce(col_description(a.attrelid, a.attnum), '')
+		from pg_attribute a
+		left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+		where a.attrelid = 'rotten.users'::regclass
+		  and a.attname = 'session_generation'
+		  and not a.attisdropped`).Scan(&dataType, &notNull, &def, &comment); err != nil {
+		t.Fatalf("session_generation column: %v", err)
+	}
+	if dataType != "bigint" || !notNull || def == nil || *def != "0" {
+		t.Errorf("session_generation is %s, not null %v, default %v; want bigint not null default 0", dataType, notNull, def)
+	}
+	if comment == "" {
+		t.Error("users.session_generation has no comment")
+	}
+
+	if _, err := conn.Exec(ctx, `insert into rotten.users (email) values ('new@example.com')`); err != nil {
+		t.Fatalf("insert new user: %v", err)
+	}
+	rows, err := conn.Query(ctx, `select email, session_generation from rotten.users order by email`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for rows.Next() {
+		var email string
+		var generation int64
+		if err := rows.Scan(&email, &generation); err != nil {
+			t.Fatal(err)
+		}
+		got[email] = generation
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int64{"existing@example.com": 0, "new@example.com": 0}
+	if !maps.Equal(got, want) {
+		t.Errorf("session generations = %v, want %v", got, want)
+	}
+	if _, err := conn.Exec(ctx, `update rotten.users set session_generation = null`); err == nil {
+		t.Error("setting session_generation to null succeeded")
+	}
+}
 
 func TestUsersColumnCommentsDescribeValues(t *testing.T) {
 	db := testdb.StartRotten(t)
@@ -253,16 +341,17 @@ func TestUsersColumnCommentsDescribeValues(t *testing.T) {
 	ctx := context.Background()
 
 	want := map[string]string{
-		"id":              "Primary key for UI users.",
-		"email":           "Email address used to identify the user; the UI stores it lowercased, and uniqueness is case-insensitive.",
-		"name":            "Display name from the identity provider or password admin.",
-		"provider":        "Authentication provider name for externally authenticated users.",
-		"provider_uid":    "Provider-specific stable user identifier.",
-		"password_digest": "bcrypt password digest for password auth; null for OIDC users.",
-		"role":            "Authorization role: viewer or admin.",
-		"groups":          "External identity provider groups observed at last login.",
-		"active":          "Local kill switch; inactive users are logged out on their next request.",
-		"last_login_at":   "Time this user last completed authentication.",
+		"id":                 "Primary key for UI users.",
+		"email":              "Email address used to identify the user; the UI stores it lowercased, and uniqueness is case-insensitive.",
+		"name":               "Display name from the identity provider or password admin.",
+		"provider":           "Authentication provider name for externally authenticated users.",
+		"provider_uid":       "Provider-specific stable user identifier.",
+		"password_digest":    "bcrypt password digest for password auth; null for OIDC users.",
+		"role":               "Authorization role: viewer or admin.",
+		"groups":             "External identity provider groups observed at last login.",
+		"active":             "Local kill switch; inactive users are logged out on their next request.",
+		"last_login_at":      "Time this user last completed authentication.",
+		"session_generation": "Bumped to end every UI session this user has; a session stores the value it started with.",
 	}
 	for column, comment := range want {
 		var got string

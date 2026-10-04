@@ -21,29 +21,38 @@ class UserAdmin
     raise duplicate(email)
   end
 
-  # Works in both modes: it's the kill switch for OIDC users too.
+  # Works in both modes: it's the kill switch for OIDC users too. It ends
+  # every session the user has, so enable can't bring any of them back.
   def self.disable(email)
     user = find!(email)
-    user.update!(active: false)
+    User.transaction do
+      user.update!(active: false)
+      user.revoke_sessions!
+    end
     user
   end
 
   # The inverse of disable, and like it works in both modes. An OIDC user
-  # still needs to be in an allowed group to sign in.
+  # still needs to be in an allowed group to sign in. Sessions from before
+  # the disable stay ended.
   def self.enable(email)
     user = find!(email)
     user.update!(active: true)
     user
   end
 
-  # Leaves active alone, so a disabled user stays disabled.
+  # Leaves active alone, so a disabled user stays disabled. Ends every
+  # session the user has.
   def self.reset_password(email)
     require_password_mode!
     user = find!(email)
     raise Error, "#{user.email} doesn't sign in with a password (provider #{user.provider.inspect})" unless user.password_login?
 
     password = generate_password
-    user.update!(password: password)
+    User.transaction do
+      user.update!(password: password)
+      user.revoke_sessions!
+    end
     Created.new(user: user, password: password)
   end
 

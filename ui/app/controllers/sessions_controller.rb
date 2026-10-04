@@ -33,7 +33,10 @@ class SessionsController < ApplicationController
     end
   end
 
+  # Ends every session the user has, on any device, including copies of this
+  # one's cookie, not just this browser's.
   def destroy
+    current_user.revoke_sessions!
     end_session
     redirect_to login_path, notice: "Signed out"
   end

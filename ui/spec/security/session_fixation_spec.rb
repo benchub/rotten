@@ -87,12 +87,7 @@ RSpec.describe "Session fixation", type: :request do
       expect(response).to redirect_to("/login")
     end
 
-    # The session lives in the cookie (CookieStore), so the server has nothing
-    # to delete: a copy of the cookie taken before logout still works until
-    # the secret rotates. Needs a server-side session store or a per-user
-    # session generation; see the follow-up in the task report.
     it "refuses a copy of the session cookie after logout" do
-      pending "CookieStore sessions can't be revoked server-side"
       log_in
       stolen = cookies[cookie_name]
 

@@ -152,6 +152,9 @@ func TestUIRolePermissions(t *testing.T) {
 	wantAllowed(t, c, `select id, email, name, provider, provider_uid, password_digest, role, groups,
 		active, last_login_at from rotten.users`)
 	wantAllowed(t, c, "update rotten.users set active = false where email = 'ui@example.com'")
+	// Ending a user's sessions bumps the generation and reads it back.
+	wantAllowed(t, c, `update rotten.users set session_generation = session_generation + 1
+		where email = 'ui@example.com' returning session_generation`)
 	wantAllowed(t, c, "delete from rotten.users where email = 'ui@example.com'")
 
 	// The UI's create returns the new id, which needs select on id.

@@ -64,6 +64,7 @@ docker run -d -p 8080:80 \
 | `ROTTEN_UI_HOSTS` | yes, in production | Comma-separated host names, such as `rotten.example.com`. A name starting with a dot, such as `.example.com`, also allows its subdomains. A request whose `Host` or `X-Forwarded-Host` isn't listed gets a 403, except `/up`, so health checks can use an IP address. The app refuses to boot without it. |
 | `ROTTEN_UI_AUTH` | yes | `oidc` or `password`. The app refuses to boot if it's missing or anything else. |
 | `ROTTEN_UI_REPORT_TIMEOUT` | no, default `15` | Statement timeout for each report query, in seconds. Fractions such as `2.5` are allowed. It must be a number from 0.001 to 2147483. The fingerprint page runs three queries, each with this timeout. |
+| `ROTTEN_UI_SESSION_LIFETIME_HOURS` | no, default `12` | How long a sign-in lasts, in hours. Fractions such as `0.5` are allowed. It must be a number from 0.01 to 8760; the app refuses to boot otherwise. The expiry is fixed at sign-in and activity doesn't extend it. See [Sessions](#sessions). |
 | `DATABASE_CONNECT_TIMEOUT` | no, default `2` | Seconds to wait when connecting to the database. |
 | `RAILS_MAX_THREADS` | no | Puma threads per process (default 3) and the database pool size per process (default 5). Set it once to keep them equal. |
 | `WEB_CONCURRENCY` | no; unset runs Puma in single mode, one process | Puma worker processes. Puma reads it itself. Each process has its own login rate-limit counters, so more processes allow more login attempts. |
@@ -94,7 +95,10 @@ never their values.
 
 Group names must match exactly, case included. Roles are copied from the
 groups claim at each login, so a change in group membership takes effect at
-the user's next login.
+the user's next login. Sessions expire after
+`ROTTEN_UI_SESSION_LIFETIME_HOURS`, so that's at most 12 hours by default.
+A login refused because the user is no longer in an allowed group also ends
+every session they still have.
 
 ### Password mode
 
@@ -116,10 +120,8 @@ at `/password`, linked from the home page, by giving their current one. New
 passwords need at least 12 characters and at most 72 bytes. See
 `ui/README.md` for the details.
 
-`users:enable` also brings back any session from before the disable,
-including a copied cookie, because sessions aren't revoked yet. When
-re-enabling a password user after a compromise, also run
-`users:reset_password`, which ends their old sessions.
+`users:disable` and `users:reset_password` end every session the user has,
+and `users:enable` doesn't bring any of them back. See [Sessions](#sessions).
 
 ### Development only
 
@@ -170,6 +172,28 @@ another identity provider, add that provider's origin to
 `ROTTEN_UI_CSP_FORM_ACTION_ORIGINS`.
 
 Other providers work the same way; `ui/README.md` has a checklist.
+
+## Sessions
+
+The session lives in the encrypted cookie, so the server can't delete one.
+Instead each session records the user's `session_generation` (a column on
+`rotten.users`) when it starts, and a session whose generation is behind the
+user's is refused. These bump the generation, ending every session that user
+has on any device, including copied cookies:
+
+- signing out,
+- changing or resetting a password (the browser that changed it stays
+  signed in),
+- `users:disable`,
+- an OIDC login refused because the user is no longer in an allowed group.
+
+Each session also expires `ROTTEN_UI_SESSION_LIFETIME_HOURS` (default 12)
+after sign-in, however active it is, and the user is sent to `/login` to
+sign in again. For OIDC users that re-checks their groups. Changing your
+password starts a fresh lifetime, since it asks for the current password.
+
+Sessions from before migration 0010 have neither a generation nor an expiry,
+so they count as ended: everyone signs in again once after upgrading.
 
 ## Running more than one process
 

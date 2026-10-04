@@ -106,10 +106,13 @@ from booting, with an error that names the bad entry.
 - **Rows on refusal.** A refused login never creates a user, and never links
   or changes a user it only found by email. If the user already exists with
   this issuer and `sub`, the resync still happens, so someone removed from the
-  groups loses admin in the database straight away. That doesn't end sessions
-  they already have; those last until they sign out or `active` is cleared.
+  groups loses admin in the database straight away. That refusal also bumps
+  their `session_generation`, which ends every session they already have.
 - **Sessions.** The session is reset before the user ID is stored, which
-  prevents session fixation.
+  prevents session fixation. It expires after
+  `ROTTEN_UI_SESSION_LIFETIME_HOURS` (12 by default), and signing in again
+  re-checks the user's groups. See [Sessions](#sessions-and-revocation)
+  below.
 - **Failures** from the provider or OmniAuth (a denied consent, a bad state,
   an unreachable issuer) land on `/auth/failure`, which redirects to `/login`
   with a generic message. Details go to the log only.
@@ -166,19 +169,12 @@ with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
 | Task | What it does |
 | --- | --- |
 | `bin/rails "users:create[alice@example.com,viewer]"` | Creates an active user with role `viewer` or `admin`, and prints a random 24-character password. |
-| `bin/rails "users:disable[alice@example.com]"` | Sets `active` to false. The user's sessions end on their next request. |
-| `bin/rails "users:enable[alice@example.com]"` | Sets `active` back to true, undoing `users:disable`. An already-enabled user stays enabled and the task still succeeds. Sessions from before the disable work again; see below. |
-| `bin/rails "users:reset_password[alice@example.com]"` | Sets and prints a new random password. The old one stops working, and the user's existing sessions end on their next request. A disabled user stays disabled. |
+| `bin/rails "users:disable[alice@example.com]"` | Sets `active` to false and ends every session the user has. |
+| `bin/rails "users:enable[alice@example.com]"` | Sets `active` back to true, undoing `users:disable`. An already-enabled user stays enabled and the task still succeeds. Sessions from before the disable stay ended. |
+| `bin/rails "users:reset_password[alice@example.com]"` | Sets and prints a new random password. The old one stops working, and every session the user has ends. A disabled user stays disabled. |
 
 - **Passwords** are printed once and stored only as a bcrypt digest. Pass them
   on securely. There's no forced change at first login.
-- **Re-enabling restores old sessions.** `users:disable` doesn't revoke
-  sessions, it only refuses them while the user is disabled, and session
-  cookies never expire. So `users:enable` makes any session from before the
-  disable work again, including a copied cookie, for OIDC and password users
-  alike. Until session revocation lands, when re-enabling a password user
-  after a compromise, also run `users:reset_password`, which ends their old
-  sessions.
 - **Changing your own password.** A signed-in password user can change their
   password at `/password`, linked from the home page as **Change password**.
   It asks for the current password, the new one and a confirmation. OIDC
@@ -187,10 +183,10 @@ with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
   the rule lives in the
   `User` model. A wrong, missing or malformed current password gets one
   generic message and costs one bcrypt hash, like a failed login, and the
-  new password is only checked after the current one. On success the session
-  is reset, for a new session ID, and restarted with the new password's
-  fingerprint, so this browser stays signed in and every other session,
-  including a copy of this one's old cookie, ends on its next request.
+  new password is only checked after the current one. On success every
+  session the user has ends, including a copy of this one's old cookie, and
+  this browser gets a new session, with a new ID and a fresh lifetime, so it
+  stays signed in.
   `PATCH /password` is rate limited like `POST /login`: 10 attempts per IP
   address and 5 per user in any 3 minutes, counted separately from login.
   Changes aren't written to `ui_audit_log`, which records admin actions.
@@ -212,8 +208,9 @@ with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
   holds an HMAC of the password digest (keyed from `secret_key_base`, never
   the digest itself). Each request recomputes it; once the password changes it
   no longer matches, and the session is dropped and sent to `/login`, as for a
-  disabled user. OIDC sessions carry no such check and last until the user is
-  disabled or signs out.
+  disabled user. A password change or reset also bumps `session_generation`
+  (below), which ends the same sessions; the HMAC stays as a backstop for a
+  password set any other way, such as from a console.
 - **Rate limits.** `POST /login` allows 10 attempts per IP address and 5 per
   email address in any 3 minutes, counting successes too. Past that, it
   answers 429 until the window ends. The counters live in `Rails.cache`, an
@@ -226,6 +223,37 @@ with the same `DATABASE_URL` and `ROTTEN_UI_AUTH=password`:
 
 In `oidc` mode, `POST /login` returns 404 and `/login` shows no password form.
 In `password` mode the OIDC routes return 404 and OmniAuth isn't installed.
+
+### Sessions and revocation
+
+Sessions live in the encrypted cookie, so the server can't delete one. At
+sign-in the session stores the user's `users.session_generation` and an
+absolute expiry, `ROTTEN_UI_SESSION_LIFETIME_HOURS` (12 by default) from
+now. Every request already loads the user, and refuses the session, with no
+extra query, when:
+
+- the user is disabled, or (password users) the password HMAC doesn't match;
+- the session's generation isn't the user's current one;
+- the expiry has passed. Activity never extends it. Pages that need a login
+  then redirect to `/login` with "Your session expired. Sign in again."
+
+These bump the generation, in one `UPDATE ... SET
+session_generation = session_generation + 1`, so concurrent bumps all count.
+That ends every session the user has, on every device, copied cookies
+included:
+
+- **Signing out** ends all of the user's sessions, not just this browser's.
+- **Changing or resetting a password.** The browser that changed it gets a
+  new session with the new generation and stays signed in.
+- **`users:disable`**, so `users:enable` can't bring old sessions back.
+- **An OIDC login refused for lost group access**, for a user Rotten already
+  knows. Group membership is otherwise only checked at sign-in, which the
+  expiry forces at least every lifetime.
+
+A session without a generation or an expiry, from before these existed,
+counts as ended, so everyone signs in again once after upgrading.
+`spec/security/session_revocation_spec.rb` and
+`spec/security/session_expiry_spec.rb` cover all of this.
 
 ## Reports
 
@@ -361,10 +389,9 @@ everything else.
 - **Sessions.** The session cookie is encrypted, `HttpOnly` and
   `SameSite=Lax`, and `Secure` in production, where HSTS is sent too. Sign-in
   issues a new session, so a session planted before sign-in is useless.
-  Sign-out clears the cookie in the browser, but the session lives entirely in
-  the cookie, so a copy taken before sign-out keeps working until the user is
-  disabled or, for password users, the password changes. Sessions don't
-  expire on their own either.
+  Sign-out ends every session the user has, including copies of the cookie,
+  and every session expires a fixed time after sign-in; see
+  [Sessions and revocation](#sessions-and-revocation).
 - **Headers.** A strict Content-Security-Policy: everything from this origin
   only; scripts and styles also need the per-request nonce that importmap's
   tags carry; no plugins, no framing, and forms may post only to this origin,

@@ -110,6 +110,13 @@ HAVING count(*) > 1;
 In each group, keep one user, then delete the others or set their
 `provider_uid` to `NULL`, and run `migrate` again.
 
+**Migration 0010 signs everyone out of the UI once.** It adds
+`rotten.users.session_generation` (`bigint not null default 0`), which the UI
+bumps to end all of a user's sessions; it's quick and doesn't rewrite the
+table. UI sessions started before the matching UI release have no generation
+or expiry, so they're refused and users sign in again. See
+[ui.md](ui.md#sessions).
+
 ## 4. Partition maintenance and retention
 
 `rotten.events` and `rotten.event_context` are partitioned by day on
@@ -206,7 +213,7 @@ get nothing outside the `rotten` schema, and `PUBLIC` gets nothing in it.
 | --- | --- | --- |
 | `rotten_owner` | `rotten-server migrate`, `rotten-server keys`, pg_partman maintenance | Owns the database, the `rotten` schema and every table and partition. Runs migrations and grants. Creates, lists and revokes pass keys. Needs pg_partman's privileges in `public`. Use it only for administration, never for a long-running service. |
 | `rotten_ingest` | `rotten-server serve` | Read every event and lookup table. Insert into `controllers`, `actions`, `job_tags`, `logical_sources`, `physical_sources`, `logical_physical_sources`, `fingerprints`, `events`, `event_context` and `fingerprint_stats`, and update `fingerprint_stats`, `logical_sources.project` and `physical_sources.fqdn`. Never delete. On `api_keys`, read only `id`, `name`, `secret_hash`, `fqdn` and `revoked_at`, and update only `last_used_at`. Read and insert `ingested_batches`, and prune it only through `rotten.prune_ingested_batches()`. |
-| `rotten_ui` | The Rails UI | Read every event and lookup table. On `api_keys`, read everything but `secret_hash`, insert only `name`, `secret_hash`, `fqdn` and `created_by`, and update only `revoked_at` and `revoked_by`; it can't delete a key. Select, insert, update and delete `users`. Read `ui_audit_log`, and insert into it without setting `id` or `at`; it can't change or delete rows. |
+| `rotten_ui` | The Rails UI | Read every event and lookup table. On `api_keys`, read everything but `secret_hash`, insert only `name`, `secret_hash`, `fqdn` and `created_by`, and update only `revoked_at` and `revoked_by`; it can't delete a key. Select, insert, update and delete `users`, including bumping `session_generation`. Read `ui_audit_log`, and insert into it without setting `id` or `at`; it can't change or delete rows. |
 | `rotten_readonly` | People running `reports/*.sql` in psql, dashboards | Read the event and lookup tables only. No access to `api_keys`, `ingested_batches`, `users` or `ui_audit_log`. |
 
 The observed databases have their own role, `rotten_observer`. See

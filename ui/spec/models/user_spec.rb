@@ -81,6 +81,18 @@ RSpec.describe User, type: :model do
       expect(user.authenticate("original-password-1")).to be(false)
     end
 
+    it "ends the user's sessions by bumping session_generation, and keeps the new value on the object" do
+      expect { user.change_password("brand-new-password-2", "brand-new-password-2") }
+        .to change { User.find(user.id).session_generation }.by(1)
+
+      expect(user.session_generation).to eq(User.find(user.id).session_generation)
+      expect(user).not_to be_changed
+    end
+
+    it "leaves session_generation alone when the change is refused" do
+      expect { user.change_password("short", "short") }.not_to(change { User.find(user.id).session_generation })
+    end
+
     [
       ["a blank password", "", ""],
       ["a nil password", nil, nil],
@@ -104,6 +116,52 @@ RSpec.describe User, type: :model do
 
       expect(sso.change_password("brand-new-password-2", "brand-new-password-2")).to be(false)
       expect(sso.reload.password_digest).to be_nil
+    end
+  end
+
+  describe "#revoke_sessions!" do
+    it "starts users at generation 0" do
+      expect(User.create!(email: "gen@example.test", role: "viewer").session_generation).to eq(0)
+    end
+
+    # Each bump is one UPDATE ... SET session_generation = session_generation
+    # + 1, so a stale copy of the row can't overwrite another bump.
+    it "bumps atomically in the database, so stale copies of the user don't lose a bump" do
+      user = User.create!(email: "gen@example.test", role: "viewer")
+      first = User.find(user.id)
+      second = User.find(user.id)
+
+      expect(first.revoke_sessions!).to eq(1)
+      expect(second.revoke_sessions!).to eq(2)
+
+      expect(second.session_generation).to eq(2)
+      expect(second).not_to be_changed
+      expect(user.reload.session_generation).to eq(2)
+    end
+
+    it "counts every bump made at the same time" do
+      user = User.create!(email: "gen@example.test", role: "viewer")
+
+      threads = Array.new(4) do
+        Thread.new do
+          ActiveRecord::Base.connection_pool.with_connection do
+            copy = User.find(user.id)
+            5.times { copy.revoke_sessions! }
+          end
+        end
+      end
+      threads.each(&:join)
+
+      expect(user.reload.session_generation).to eq(20)
+    end
+
+    it "touches only the given user" do
+      user = User.create!(email: "gen@example.test", role: "viewer")
+      other = User.create!(email: "other@example.test", role: "viewer")
+
+      user.revoke_sessions!
+
+      expect(other.reload.session_generation).to eq(0)
     end
   end
 
