@@ -5,7 +5,9 @@ class SessionsController < ApplicationController
   TOO_MANY_ATTEMPTS = "Too many sign-in attempts. Wait a few minutes and try again.".freeze
 
   # Counted in Rails.cache, a memory store, so each app process keeps its own
-  # counts. Every POST counts, successful or not.
+  # counts: N Puma workers or replicas allow N times these limits. See "Login
+  # rate limits" in docs/ui.md, whose smoke check reads these constants.
+  # Every POST counts, successful or not.
   ATTEMPTS_PER_IP = 10
   ATTEMPTS_PER_EMAIL = 5
   ATTEMPTS_WINDOW = 3.minutes

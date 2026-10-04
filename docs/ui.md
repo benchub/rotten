@@ -67,7 +67,7 @@ docker run -d -p 8080:80 \
 | `ROTTEN_UI_SESSION_LIFETIME_HOURS` | no, default `12` | How long a sign-in lasts, in hours. Fractions such as `0.5` are allowed. It must be a number from 0.01 to 8760; the app refuses to boot otherwise. The expiry is fixed at sign-in and activity doesn't extend it. See [Sessions](#sessions). |
 | `DATABASE_CONNECT_TIMEOUT` | no, default `2` | Seconds to wait when connecting to the database. |
 | `RAILS_MAX_THREADS` | no | Puma threads per process (default 3) and the database pool size per process (default 5). Set it once to keep them equal. |
-| `WEB_CONCURRENCY` | no; unset runs Puma in single mode, one process | Puma worker processes. Puma reads it itself. Each process has its own login rate-limit counters, so more processes allow more login attempts. |
+| `WEB_CONCURRENCY` | no; unset runs Puma in single mode, one process | Puma worker processes. Puma reads it itself. Each process has its own login rate-limit counters, so more processes allow more login attempts; see [Login rate limits](#login-rate-limits). |
 | `RAILS_LOG_LEVEL` | no, default `info` | Log level. Logs go to stdout. `debug` may log personal data. |
 | `PORT` | no, default `3000` | Puma's port. In the image, Thruster listens on 80 and proxies to Puma; leave this alone there. |
 | `PIDFILE` | no | Where Puma writes its PID file. Unset means no PID file in production. |
@@ -195,10 +195,39 @@ password starts a fresh lifetime, since it asks for the current password.
 Sessions from before migration 0010 have neither a generation nor an expiry,
 so they count as ended: everyone signs in again once after upgrading.
 
+## Login rate limits
+
+In password mode, signing in and changing a password are rate limited. Every
+attempt counts, successful or not, and an attempt over a limit gets a 429
+with a "Too many ... attempts" message.
+
+| Action | Limits |
+| --- | --- |
+| Sign in (`POST /login`) | 10 attempts per client IP address and 5 attempts per email address, every 3 minutes |
+| Change password (`PATCH /password`) | 10 attempts per client IP address and 5 attempts per user, every 3 minutes, counted separately from sign-in |
+
+The counters live in `Rails.cache`, which is a memory store in production,
+so each process keeps its own counters. They aren't shared between Puma
+workers or containers, and a restart resets them. N processes allow N times
+these limits: with `WEB_CONCURRENCY=4` in each of 2 containers, a client
+gets 80 sign-in attempts per IP address every 3 minutes, not 10.
+
+Puma runs one process by default: `config/puma.rb` doesn't set `workers`, the
+image doesn't set `WEB_CONCURRENCY`, and unset means single mode. Keep it
+that way and run one UI process; it's the only setup where the limits are
+exactly as listed. If you must run more, scale the limits down to match by
+dividing `ATTEMPTS_PER_IP` and `ATTEMPTS_PER_EMAIL` in
+`ui/app/controllers/sessions_controller.rb` by the number of processes,
+rounding down; the password change limits reuse them. Leave
+`ATTEMPTS_WINDOW` unchanged: shortening it would weaken the limits, not
+tighten them.
+Each limit must stay at least 1, since a limit of 0 refuses every attempt
+and locks everyone out, so the number of processes can't be more than the
+smallest limit.
+
 ## Running more than one process
 
-The login rate-limit counters live in each process's memory. With
-several Puma workers or containers, each counts on its own, so the effective
-limit is multiplied by their number. Sessions live in the encrypted cookie,
-so any process can serve any request, as long as they all share
+Each process has its own login rate-limit counters; see
+[Login rate limits](#login-rate-limits). Sessions live in the encrypted
+cookie, so any process can serve any request, as long as they all share
 `SECRET_KEY_BASE`.

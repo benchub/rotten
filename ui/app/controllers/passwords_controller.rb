@@ -6,8 +6,8 @@ class PasswordsController < ApplicationController
   WRONG_CURRENT_PASSWORD = "Your current password wasn't right. Try again.".freeze
   TOO_MANY_ATTEMPTS = "Too many password change attempts. Wait a few minutes and try again.".freeze
 
-  # The same limits and mechanism as login, but counted separately from it.
-  # Every PATCH counts, successful or not.
+  # The same limits and mechanism as login, but counted separately from it,
+  # and likewise per process. Every PATCH counts, successful or not.
   ATTEMPTS_PER_IP = SessionsController::ATTEMPTS_PER_IP
   ATTEMPTS_PER_USER = SessionsController::ATTEMPTS_PER_EMAIL
   ATTEMPTS_WINDOW = SessionsController::ATTEMPTS_WINDOW
