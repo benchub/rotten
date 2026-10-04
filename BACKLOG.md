@@ -57,31 +57,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ## Phase F: Docs.
 
-### 20261003-180000-1: Add an audit log viewer, and audit user admin actions.
-- **Do:** -52 added `ui_audit_log`, which `rotten_ui` can insert into and read but not change. Do two things:
-  - Add an admin-only, paginated page for reading it.
-  - Write audit rows for user admin actions too: the `users:*` rake tasks, and OIDC role changes at login if wanted.
-- **Red test:**
-  - Viewers get 403.
-  - Admins see the entries newest first.
-  - `users:disable` writes an audit row.
-- **Done when:** Passes.
-- **Needs:** none.
-
 ### 20261003-190000-1: Make replica utilization scale past 7 days on busy clusters.
 - **Do:** After the -53 rewrite, `replica_utilization_by_controller_action` takes about 5.5s at 7d on the 10M-event perf seed (by_job about 3.2s). Cost grows linearly with the cluster's events in the range, so a busier cluster or a custom range up to 21 days could hit the 15s UI timeout. Consider a structural fix, such as storing each event's context total at ingest (a goose migration plus an ingest change), so the report doesn't recount all `event_context` rows.
 - **Red test:** A `make test-perf` case at 21d, or at 7d with a heavier seed, that stays within the UI timeout.
 - **Done when:** Passes.
 - **Needs:** none.
-
-### 20261004-060000-2: The `ingest` test package can exceed Go's 10-minute timeout under heavy Docker load.
-- **Do:** One gate run happened while a builder was running the full UI suite. testcontainers port-inspect timeouts (the 130000-1 retry path) stalled `internal/ingest`, which normally takes about 3 minutes, past `go test`'s default 10-minute timeout, and it panicked. Options:
-  - share one container per package through `TestMain`;
-  - set an explicit `-timeout` in `make test`;
-  - cap container starts with a semaphore.
-- **Red test:** A smoke check that `make test` passes an explicit `-timeout`, or that `ingest` starts at most N containers.
-- **Done when:** Passes.
-- **Needs:** none. Related: 20261004-020000-1.
 
 ### 20261004-060000-3: Flaky system spec `spec/system/api_keys_spec.rb:107`.
 - **Do:** It failed once during the 150000-1 build with a Selenium "Node with given id does not belong to the document" error (a stale element after a Turbo re-render), then passed on re-run. Make the spec wait on a stable selector after the action, rather than holding an element reference across a re-render.

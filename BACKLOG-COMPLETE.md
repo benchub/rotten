@@ -1243,3 +1243,30 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Wording:** "by default" removed from plan.md, the `keys` CLI help, `ui/README.md` and the API keys page.
   - **Test:** `internal/docscheck/keycache_test.go` ties six docs to `auth.DefaultTTL`, and fails if any non-test Go file outside `internal/auth` sets `.TTL` or `TTL:`.
   - **Review:** one Opus round plus a final fix that broadened the TTL scan.
+
+### 20261003-180000-1: Add an audit log viewer, and audit user admin actions.
+- **Do:** -52 added `ui_audit_log`, which `rotten_ui` can insert into and read but not change. Do two things:
+  - Add an admin-only, paginated page for reading it.
+  - Write audit rows for user admin actions too: the `users:*` rake tasks, and OIDC role changes at login if wanted.
+- **Red test:**
+  - Viewers get 403.
+  - Admins see the entries newest first.
+  - `users:disable` writes an audit row.
+- **Completed:** 2026-10-04, 78ecbd1.
+  - **Page:** `/admin/audit` (admin only). Keyset paging on `id` with `?before=`, 50 a page; a bad `before` gets 400.
+  - **Rake audits:** `UserAdmin` writes `user.create`, `user.disable`, `user.enable` and `user.reset_password` in the same transaction as the change.
+  - **OIDC audits:**
+    - `user.role_change` is written on a role change.
+    - `user.access_lost` is written only on the transition, with the user row locked.
+    - The email-conflict refusal now saves the new groups, and demotes an admin to viewer.
+    - The role decision uses the same first 500 groups that are stored.
+  - **Review:** two Opus rounds plus a final fix.
+
+### 20261004-060000-2: The `ingest` test package can exceed Go's 10-minute timeout under heavy Docker load.
+- **Do:** One gate run happened while a builder was running the full UI suite. testcontainers port-inspect timeouts stalled `internal/ingest` past `go test`'s default 10-minute timeout. Options: a shared container per package, an explicit `-timeout`, or a semaphore.
+- **Red test:** A smoke check that `make test` passes an explicit `-timeout`.
+- **Completed:** 2026-10-04, 25b60f0.
+  - **Timeout:** `GO_TEST_TIMEOUT ?= 30m`, placed before `GO_TEST_ARGS` so a user-supplied `-timeout` still wins.
+  - **Smoke check:** `internal/docscheck/makefile_test.go` checks the `-timeout` that `make -n test` passes.
+  - **No semaphore:** ingest is serial, and `go test` runs each package as its own process, so a cap wouldn't help.
+  - **Review:** one Opus round, clean.
