@@ -1207,3 +1207,22 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Where it applies:** the report and fingerprint pages. Without JavaScript the full lists still render.
   - **Invalid selections:** an invalid source from the URL stays selected on load, so it still matches the server's 422 error. Changing an upstream field narrows the fields below it.
   - **Review:** two Opus rounds. Round 1 fixed invalid URL selections being silently replaced.
+
+### 20261003-170000-1: Run the fingerprint page's queries under one timeout.
+- **Do:** `/fingerprints/:id` ran three report queries, each with its own `statement_timeout`, so the worst case was about 3 × `ROTTEN_UI_REPORT_TIMEOUT`. Bound the page by one budget.
+- **Red test:** With a tiny timeout and a slow query, the page fails within about one timeout.
+- **Completed:** 2026-10-04, 7fb49f8.
+  - **Budget:** one `ReportRunner` per request holds the page budget, timed on the monotonic clock from the first query. Before each query it sets `statement_timeout` to the remaining milliseconds; if nothing is left it raises `QueryCanceled` without querying, so a 0 (no-limit) timeout is never sent. Works on Postgres 14–18.
+  - **Reports page:** unchanged.
+  - **Docs:** `docs/ui.md` and `ui/README.md` describe the timeout as per page.
+  - **Specs:** runner, request and system specs, with timing margins widened in review.
+  - **Review:** two Opus rounds.
+
+### 20261003-200000-2: Make the worker outbox cap configurable.
+- **Do:** Add an optional worker config key for the outbox cap, validated, defaulting to 288, documented.
+- **Red test:** The config parses and passes the cap through; invalid values are rejected.
+- **Completed:** 2026-10-04, 0ca4f19.
+  - **Config:** `OutboxCap` is optional and additive; existing configs are unchanged. It must be an integer from 1 to 2016 (one week of 5-minute windows), and null, strings, floats and booleans are rejected.
+  - **Lowering the cap:** `state.Open` trims the oldest batches at startup, counts them in `dropped_cap`, and the worker logs them.
+  - **Docs:** `docs/worker.md`, `docs/plan.md`, and the README's known-issues list.
+  - **Review:** two Opus rounds. Round 1 moved the trim from the next enqueue to startup, because a baseline harvest never enqueues.

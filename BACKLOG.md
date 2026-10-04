@@ -57,12 +57,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 ## Phase F: Docs.
 
-### 20261003-170000-1: Run the fingerprint page's queries under one timeout.
-- **Do:** `/fingerprints/:id` runs three report queries: the time series, the contexts and the sources. Each runs in its own read-only transaction with its own `statement_timeout`, so the worst case is about 3 × `ROTTEN_UI_REPORT_TIMEOUT`. Run them in one transaction with a single deadline, or set a page-level budget.
-- **Red test:** With a tiny timeout and a slow query, the page fails within about one timeout, not three.
-- **Done when:** Passes.
-- **Needs:** none.
-
 ### 20261003-170000-2: Show an all-sources row in the fingerprint stats table.
 - **Do:** The stats table covers only the selected project, environment, cluster and role. Add an "all sources" row, using the lifetime `fingerprint_stats` data or an aggregate across all sources, so operators see the fingerprint's overall footprint.
 - **Red test:** A system spec on the fixture shows the all-sources totals.
@@ -83,12 +77,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 ### 20261003-190000-1: Make replica utilization scale past 7 days on busy clusters.
 - **Do:** After the -53 rewrite, `replica_utilization_by_controller_action` takes about 5.5s at 7d on the 10M-event perf seed (by_job about 3.2s). Cost grows linearly with the cluster's events in the range, so a busier cluster or a custom range up to 21 days could hit the 15s UI timeout. Consider a structural fix, such as storing each event's context total at ingest (a goose migration plus an ingest change), so the report doesn't recount all `event_context` rows.
 - **Red test:** A `make test-perf` case at 21d, or at 7d with a heavier seed, that stays within the UI timeout.
-- **Done when:** Passes.
-- **Needs:** none.
-
-### 20261003-200000-2: Make the worker outbox cap configurable.
-- **Do:** The -38 decision said the cap is "288 by default, configurable", but `cmd/rotten-worker/main.go` passes no `OutboxCap` to `state.Open`, so it's fixed at `state.DefaultOutboxCap`. Add an optional worker config key, such as `OutboxCap`. Validate it (> 0, with a sane upper bound), keep 288 as the default, and document it in `docs/worker.md` and plan.md. This is a worker config format change, but an additive, optional one.
-- **Red test:** The config parses and passes the cap through; invalid values are rejected.
 - **Done when:** Passes.
 - **Needs:** none.
 
