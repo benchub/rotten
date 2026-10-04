@@ -20,6 +20,7 @@ import (
 
 	"github.com/benchub/rotten/internal/migrate"
 	"github.com/jackc/pgx/v5"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
@@ -462,20 +463,58 @@ func (d *DB) PSQL(t testing.TB, path string, vars map[string]string) (string, er
 }
 
 // StartObserved starts an observed Postgres (14 through 18) with
-// pg_stat_statements preloaded and created, and track_planning on.
-func StartObserved(t testing.TB, version int) *DB {
+// pg_stat_statements preloaded and created, and track_planning on. extra
+// customizes the container, e.g. SmallTCPSendBuffer.
+func StartObserved(t testing.TB, version int, extra ...testcontainers.ContainerCustomizer) *DB {
 	t.Helper()
 	skipShort(t)
 	if version < 14 || version > 18 {
 		t.Fatalf("testdb: unsupported Postgres version %d", version)
 	}
 	db := start(t, fmt.Sprintf("postgres:%d", version), "observed",
-		testcontainers.WithCmdArgs(
+		append([]testcontainers.ContainerCustomizer{testcontainers.WithCmdArgs(
 			"-c", "shared_preload_libraries=pg_stat_statements",
-			"-c", "pg_stat_statements.track_planning=on"))
+			"-c", "pg_stat_statements.track_planning=on")}, extra...)...)
 	conn := db.Connect(t)
 	if _, err := conn.Exec(context.Background(), "create extension pg_stat_statements"); err != nil {
 		t.Fatalf("testdb: create pg_stat_statements: %v", err)
 	}
 	return db
+}
+
+// SmallTCPSendBuffer caps the container's TCP send buffers at 128 KiB, so a
+// client that reads a big result slowly, connected by the container address
+// (see ContainerDSN), makes Postgres block on the socket mid-query. On
+// Docker's default bridge (MTU 65535) the kernel would otherwise grow the
+// buffer to hold megabytes; a compose network (MTU 1500) behaves like this
+// without the cap.
+func SmallTCPSendBuffer() testcontainers.ContainerCustomizer {
+	return testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) {
+		if hc.Sysctls == nil {
+			hc.Sysctls = map[string]string{}
+		}
+		hc.Sysctls["net.ipv4.tcp_wmem"] = "4096 16384 131072"
+	})
+}
+
+// ContainerDSN is the superuser DSN by the container's own address on the
+// Docker bridge, not the forwarded host port, whose proxy buffers results
+// and hides socket back pressure from Postgres. Only another container can
+// reach that address, so the test skips when it isn't running in one, as
+// under `make test`.
+func (d *DB) ContainerDSN(t testing.TB) string {
+	t.Helper()
+	if _, err := os.Stat("/.dockerenv"); err != nil {
+		t.Skip("testdb: the container address is reachable only from another container; run under make test")
+	}
+	ip, err := d.c.ContainerIP(context.Background())
+	if err != nil || ip == "" {
+		t.Fatalf("testdb: container IP %q: %v", ip, err)
+	}
+	u, err := url.Parse(d.DSN)
+	if err != nil {
+		t.Fatalf("testdb: parse DSN: %v", err)
+	}
+	u.Host = net.JoinHostPort(ip, "5432")
+	return u.String()
 }

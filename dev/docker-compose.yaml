@@ -193,6 +193,32 @@ services:
         aliases:
           - rotten-worker
 
+  # Application-like load with marginalia comments on the observed Postgres,
+  # so the controller, action and job views have data. See dev/README.md.
+  traffic:
+    image: rotten-dev-go:1.27
+    working_dir: /src
+    # Build, then exec, so the generator is PID 1 and gets compose's
+    # SIGTERM: `go run` doesn't pass it on, so the generator never shut down
+    # cleanly. The shared go-build cache keeps rebuilds quick.
+    command:
+      - sh
+      - -ec
+      - go build -o /tmp/traffic ./dev/cmd/traffic && exec /tmp/traffic
+    environment:
+      TRAFFIC_ADMIN_DSN: postgres://postgres:postgres@observed-db:5432/observed?sslmode=disable
+      TRAFFIC_RATE: ${TRAFFIC_RATE:-1}
+      TRAFFIC_EPISODE_EVERY: ${TRAFFIC_EPISODE_EVERY:-15m}
+    volumes:
+      - ..:/src:ro
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+    depends_on:
+      observed-postgres:
+        condition: service_healthy
+    networks:
+      - observed
+
   ui:
     build:
       context: ../ui

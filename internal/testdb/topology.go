@@ -19,6 +19,7 @@ const (
 	ServerAlias   = "rotten-server"
 	WorkerAlias   = "rotten-worker"
 	RottenAlias   = "rotten-db"
+	TrafficAlias  = "rotten-traffic"
 )
 
 // Topology is the three-network dev/test layout from docs/plan.md.
@@ -160,6 +161,31 @@ func (topology *Topology) WorkerNetworkOptions(alias string) []testcontainers.Co
 		tcnetwork.WithNetwork([]string{alias}, topology.ObservedNetwork),
 		tcnetwork.WithNetwork([]string{alias}, topology.EdgeNetwork),
 	}
+}
+
+// TrafficNetworkOptions attaches a container to observed only, like the dev
+// stack's traffic generator.
+func (topology *Topology) TrafficNetworkOptions(alias string) []testcontainers.ContainerCustomizer {
+	return []testcontainers.ContainerCustomizer{
+		tcnetwork.WithNetwork([]string{alias}, topology.ObservedNetwork),
+	}
+}
+
+// StartTrafficProbe starts a probe container on observed only, where the dev
+// stack's traffic generator runs.
+func (topology *Topology) StartTrafficProbe(t testing.TB) TopologyContainer {
+	t.Helper()
+	ctx := context.Background()
+	opts := []testcontainers.ContainerCustomizer{
+		testcontainers.WithEntrypoint("sleep", "infinity"),
+	}
+	opts = append(opts, topology.TrafficNetworkOptions(TrafficAlias)...)
+	c, err := testcontainers.Run(ctx, "postgres:18", opts...)
+	testcontainers.CleanupContainer(t, c)
+	if err != nil {
+		t.Fatalf("testdb: start traffic probe: %v", err)
+	}
+	return TopologyContainer{Alias: TrafficAlias, Container: c}
 }
 
 // StartServerProbe starts a Postgres-backed probe on edge and core. Tests use

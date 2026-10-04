@@ -73,6 +73,14 @@ whatever runs on the observed database. See `dev/README.md`
 for the details, and `docker compose -f dev/docker-compose.yaml down -v` to
 remove it all.
 
+The `traffic` service plays a small made-up LMS against the observed
+database: a few queries a second, with production-style marginalia comments,
+so the controller, action and job views have data, with a slow episode every
+15 minutes for the outliers report. To start it in a stack
+that's already running, use
+`docker compose -f dev/docker-compose.yaml up -d traffic`. See
+`dev/README.md`, including what the worker can attribute to a context.
+
 Setting it up for real
 ----------------------
 

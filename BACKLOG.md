@@ -120,4 +120,24 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - A helper spec for the highlighting edge cases: overlapping or empty matches, multibyte text, and a pattern that doesn't compile in Ruby.
   - A system spec: enter a pattern, run, see highlighted matches, switch reports with a chip, and the pattern is still applied.
 
+### 20261004-144107-1: Postgres 18 drops leading marginalia, so contexts vanish on 18.
+- **Why (found in 20261004-142000-1):** On Postgres 18, the query text `pg_stat_statements` keeps has no leading comment; 14 to 17 keep it (pinned by `TestPostgres18DropsLeadingComments` in `internal/devtraffic`). Production's comments are leading, so on an observed 18 server the worker extracts no controller, action or job tag at all, silently. Trailing and inline comments survive on every version.
+- **Do:** Decide with the user. Options: document in `docs/observed.md` and `docs/worker.md` that 18 needs trailing marginalia (e.g. Rails' `prepend_comment = false` / marginalia's append mode); have the worker log a warning when it observes an 18 server and has context regexes but sees no matches; or both.
+- **Red test:** A real-Postgres 18 test for whichever behavior is chosen, e.g. the warning appears once with leading comments and not with trailing ones.
+
+### 20261004-144107-2: Contexts are credited by each entry's first text, not per call.
+- **Why (found in 20261004-142000-1):** `pg_stat_statements` keeps one text per (userid, dbid, toplevel, queryid) entry, the first it saw. The worker extracts one context from that text and credits all of the entry's calls in a window to it (`buildHarvestBatchFromRows`, `extractContextValue`). A query run by many controllers is credited entirely to whichever ran it first, for the entry's lifetime, so per-context counts in the controller, action and job views can be badly wrong. The views don't say so.
+- **Do:** Decide with the user. At least document the limitation where the UI shows contexts and in `docs/worker.md` (counts are "calls of entries first seen under this context"). A real fix needs another source (e.g. sampling `pg_stat_activity` query texts per queryid on 14+, where `compute_query_id` exposes `query_id`), which is a design change.
+- **Red test:** Depends on the choice; for docs only, a docscheck that the caveat is present.
+
+### 20261004-221500-1: Outliers report misses short slow spells in preset ranges.
+- **Why (found in 20261004-142000-1):** `reports/outliers.sql` compares the average of a fingerprint's per-window means over the whole range with its history: every `fingerprint_stats` sample outside the range, including later ones. A 2-minute slow spell in a 1-hour or 3-hour range is averaged with 30 to 90 normal windows. And once a fingerprint has had two spells, each is in the other's history, which widens the deviation. The dev traffic's episodes therefore show only with a custom range covering one episode (dev/README.md, "Slow episodes and the outliers report"). Production spikes behave the same way.
+- **Do:** Decide with the user whether that's intended. One option is scoring each in-range window (or the worst few) against history, instead of the range's average, possibly with a robust baseline (median/MAD) so past spells don't hide new ones.
+- **Red test:** A report spec with 60 normal windows and 2 slow ones in a 1-hour range, plus history containing one earlier slow spell, that expects the fingerprint to be listed.
+
+### 20261004-163000-1: Dev services don't get SIGTERM under `go run`.
+- **Why (found in 20261004-142000-1 review):** `rotten-server` (migrate and serve), `rotten-worker` and `gen-test-certs` in `dev/docker-compose.yaml` run under `go run`, which is PID 1. On SIGTERM, Docker signals only PID 1, and `go run` doesn't pass the signal on, so `docker compose stop` waits the grace period and then kills them without their graceful shutdown (the worker's final harvest, the server's drain). The `traffic` service now builds its binary and `exec`s it, and `dev/cmd/traffic`'s `TestComposeStopShutsDownCleanly` checks that.
+- **Do:** Launch them the same way (`sh -ec 'go build -o /tmp/<name> ./cmd/<name> && exec /tmp/<name> ...'`), keeping their arguments.
+- **Red test:** Like `TestComposeStopShutsDownCleanly`, for the worker and the server: run the compose command, send SIGTERM to the started process, and require the shutdown log line and exit 0 within 10 s.
+
 ## Phase F: Docs.
