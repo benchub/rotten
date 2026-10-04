@@ -55,25 +55,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261004-142000-1: Dev stack traffic with marginalia comments.
-- **Why (user, 2026-10-04):** The dev stack runs no application-like queries, so the controller, action and job views and reports are empty, and there are few fingerprints.
-- **Do:**
-  - Add a `traffic` service to `dev/docker-compose.yaml`, on the `observed` network only. It creates a small made-up app schema in `observed` (courses, enrollments, favorites, users, submissions, ...), seeds it, and then runs a steady, varied load until stopped.
-  - Use a mix of about 20 to 30 distinct query shapes so there's a spread of fingerprints. Include reads, writes, joins, aggregates and IN lists, with a few deliberately slow ones so the outliers report has something to show.
-  - Every statement carries a leading marginalia comment in the same format as production.
-    - **Web:** `/*action:list_favorite_courses,context_id:<uuid>,controller:favorites,hostname:app010001220216,pid:1546252*/ SELECT ...`
-    - **Jobs:** `/*context_id:<number>,hostname:job010001045202,job_tag:Enrollment.recompute_final_score,pid:78897*/ SELECT ...`
-  - Make up controllers, actions and job tags. The same query shapes should run under several contexts. Context IDs are random per request or job. Hostnames and pids come from a small pool.
-  - Find out how the worker actually attributes contexts. `pg_stat_statements` keeps one text per queryid, so check whether several contexts per fingerprint can show up, and design the load so the UI shows several contexts per fingerprint where the pipeline allows it. Write down the finding.
-  - Prefer a small Go program under `dev/cmd/`, as with the existing dev tools.
-  - **Outliers (user, 2026-10-04):** a few query shapes are usually fast but have occasional slow episodes on the same fingerprint, so the outliers report has something to show. Use slow row consumption on a large result, plus another realistic cause such as lock waits. Make sure the slowness shows up in `pg_stat_statements` exec time. Document how long the stack must run before outliers can appear.
-  - Document it in `dev/README.md` and the dev section of the root `README.md`.
-- **Red test:**
-  - A Go test that every generated statement's comment matches the `dev/worker.json` context regexes and gives the intended controller, action or job.
-  - A real-Postgres test (`internal/testdb`) that a short generator run produces several fingerprints in `pg_stat_statements`, with comments the worker extracts.
-  - The existing dev topology tests cover the new service's network isolation.
-  - A real-Postgres test that a slow episode raises the fingerprint's mean exec time well above the fast baseline.
-
 ### 20261004-143600-1: Dev stack replica with its own worker, and a primary/replica traffic split.
 - **Needs:** 20261004-142000-1.
 - **Why (user, 2026-10-04):** The dev stack has one observed Postgres and one worker, so the role filter, per-role stats and the replica utilization reports have nothing to compare.

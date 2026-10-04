@@ -1353,3 +1353,32 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Removed:** `report_tab_link`, `ReportQuery#switch_params` and the `.report-tabs` CSS. Sort links, fingerprint links, the `/reports/:id` redirect and `sort_report` are unchanged.
   - **Specs:** the tab-click specs now switch reports with the chips and check that role and range survive. Two tab-only request specs were dropped.
   - **Review:** one round, clean.
+
+### 20261004-142000-1: Dev stack traffic with marginalia comments.
+- **Why (user, 2026-10-04):** The dev stack runs no application-like queries, so the controller, action and job views and reports are empty, and there are few fingerprints.
+- **Do:**
+  - Add a `traffic` service to `dev/docker-compose.yaml`, on the `observed` network only. It creates a small made-up app schema in `observed` (courses, enrollments, favorites, users, submissions, ...), seeds it, and then runs a steady, varied load until stopped.
+  - Use a mix of about 20 to 30 distinct query shapes so there's a spread of fingerprints. Include reads, writes, joins, aggregates and IN lists, with a few deliberately slow ones so the outliers report has something to show.
+  - Every statement carries a leading marginalia comment in the same format as production.
+    - **Web:** `/*action:list_favorite_courses,context_id:<uuid>,controller:favorites,hostname:app010001220216,pid:1546252*/ SELECT ...`
+    - **Jobs:** `/*context_id:<number>,hostname:job010001045202,job_tag:Enrollment.recompute_final_score,pid:78897*/ SELECT ...`
+  - Make up controllers, actions and job tags. The same query shapes should run under several contexts. Context IDs are random per request or job. Hostnames and pids come from a small pool.
+  - Find out how the worker actually attributes contexts. `pg_stat_statements` keeps one text per queryid, so check whether several contexts per fingerprint can show up, and design the load so the UI shows several contexts per fingerprint where the pipeline allows it. Write down the finding.
+  - Prefer a small Go program under `dev/cmd/`, as with the existing dev tools.
+  - **Outliers (user, 2026-10-04):** a few query shapes are usually fast but have occasional slow episodes on the same fingerprint, so the outliers report has something to show. Use slow row consumption on a large result, plus another realistic cause such as lock waits. Make sure the slowness shows up in `pg_stat_statements` exec time. Document how long the stack must run before outliers can appear.
+  - Document it in `dev/README.md` and the dev section of the root `README.md`.
+- **Red test:**
+  - A Go test that every generated statement's comment matches the `dev/worker.json` context regexes and gives the intended controller, action or job.
+  - A real-Postgres test (`internal/testdb`) that a short generator run produces several fingerprints in `pg_stat_statements`, with comments the worker extracts.
+  - The existing dev topology tests cover the new service's network isolation.
+  - A real-Postgres test that a slow episode raises the fingerprint's mean exec time well above the fast baseline.
+- **Completed:** 2026-10-04, 85e1285.
+  - **Generator:** `dev/cmd/traffic` plus `internal/devtraffic`. Shards `lms_shard_1`..`4` × roles `lms_web`/`lms_jobs`. 30 shapes in a table with `ReadOnly` flags, run by 13 web actions and 8 job tags. About 1 request per second.
+  - **Findings, now backlog tasks:**
+    - PG 18 strips leading comments from pgss text (-144107-1), so on PG 18 the generator puts its comments at the end.
+    - Contexts are credited by each pgss entry's first text (-144107-2).
+    - Short slow spells get lost in preset ranges (-221500-1).
+    - Other dev services run under `go run` (-163000-1).
+  - **Outliers:** episodes every 15 minutes, 2 minutes long: slow_read, lock_wait and sleep. They can show after about 15 minutes of traffic.
+  - **Shutdown:** the binary is PID 1 via `exec`, so `docker compose stop` shuts it down cleanly.
+  - **Review:** two rounds. Round 1 found the `go run` SIGTERM problem and an episode test that depended on how many calls completed in time. Round 2 was clean.
