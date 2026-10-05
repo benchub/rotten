@@ -264,6 +264,79 @@ RSpec.describe "Reports", type: :system do
     ])
   end
 
+  describe "the context caveat" do
+    let(:caveat) do
+      "Contexts are approximate. Postgres keeps one query text for each pg_stat_statements entry (per " \
+        "user, database and query): the first it saw, which may be from before this time range. All of an " \
+        "entry's calls are credited to the context in that text, so a count means calls of entries first seen " \
+        "under that context, not every call the context made."
+    end
+    let(:header_title) { "From the first query text of each pg_stat_statements entry, not from each call" }
+
+    it "notes how contexts are credited under each report that shows them, and on their column headers" do
+      visit "/reports"
+      pick_source(project: "canvas", cluster: "13")
+
+      [["Top queries by total time", "context"], ["Top queries by calls", "context"],
+       ["Replica utilization by job", "job_tag"],
+       ["Replica utilization by controller and action", "controller_action"]].each do |title, column|
+        run_report(title)
+        expect(page).to have_css("table.report")
+        expect(page).to have_css("p.context-caveat#context-caveat", exact_text: caveat)
+        expect(page).to have_css("th[data-column='#{column}'][title='#{header_title}'][aria-describedby='context-caveat']")
+        expect(page).to have_css("th[title]", count: 1)
+      end
+
+      # A sortable context column keeps its sort state alongside the note.
+      within("table.report thead") { click_link "Controller#action" }
+      expect(page).to have_css("th[data-column='controller_action'][aria-sort='ascending']" \
+                               "[title='#{header_title}'][aria-describedby='context-caveat']")
+
+      pick_source(project: "canvas", cluster: "7")
+      run_report("Outliers")
+      expect(page).to have_css("table.report")
+      expect(page).to have_css("p.context-caveat", exact_text: caveat)
+      expect(page).to have_css("th[data-column='context'][title='#{header_title}']")
+    end
+
+    it "notes on the match hint that contexts come from each entry's kept text, not from each call" do
+      visit "/reports"
+
+      expect(page).to have_css("#match-hint", text: "Contexts come from the query text Postgres kept for each " \
+                                                    "pg_stat_statements entry, not from each call.")
+    end
+
+    # The meaning, apart from the exact wording: attribution is per
+    # pg_stat_statements entry, from text that may predate the range.
+    it "says contexts are credited per entry, from text that may predate the range, not per call or query" do
+      visit "/reports"
+      pick_source(project: "canvas", cluster: "13")
+      run_report("Replica utilization by job")
+
+      note = find("p.context-caveat").text
+      expect(note).to include("pg_stat_statements entry", "before this time range", "not every call")
+      expect(note).not_to match(/each query,|that query's calls|first ran/)
+      expect(find("th[data-column='job_tag']")["title"]).to include("entry", "not from each call")
+      expect(find("#match-hint").text).to include("entry", "not from each call")
+    end
+
+    it "leaves the caveat off reports without contexts and off empty results" do
+      users_id = @fixture.fingerprint_ids.fetch("users")
+      visit "/reports?report=fingerprint_timeseries&project=canvas&environment=production&cluster=13&range=3h" \
+            "&fingerprint_id=#{users_id}&bucket=10m"
+      expect(page).to have_css("table.report")
+      expect(page).to have_no_css(".context-caveat")
+      expect(page).to have_no_css("th[title]")
+
+      visit "/reports"
+      pick_source(project: "canvas", cluster: "13", role: "replica")
+      fill_in "Match", with: "matches-nothing-at-all"
+      run_report("Top queries by calls")
+      expect(page).to have_css(".empty-state")
+      expect(page).to have_no_css(".context-caveat")
+    end
+  end
+
   it "follows a fingerprint through its detail page to its time series over a custom range" do
     visit "/reports"
     pick_source(project: "canvas", cluster: "13")

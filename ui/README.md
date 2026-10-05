@@ -345,6 +345,19 @@ that's slow on the data is stopped by the report timeout like any report.
 
 Matches are marked with `<mark>` in the query text (inside the one-line
 disclosure too), the top contexts and the utilization name column.
+
+Contexts are approximate. Postgres keeps one query text for each
+`pg_stat_statements` entry (per user, database and query): the first it saw,
+which may be from before the selected time range. The worker credits all of
+the entry's calls to the context in that text (see "Query context" in
+`docs/worker.md`). One fingerprint can span several entries, such as one per
+user, each with its own context. So a count means calls of entries first
+seen under that context, not every call the context made. Every table that shows contexts (the top contexts in the top
+and outlier reports, the utilization reports and the fingerprint page's top
+contexts) has a note saying so under it, `p.context-caveat`, and its context
+column header has a `title` and `aria-describedby` pointing at the note. The
+Match hint says contexts come from the query text kept for each entry, not
+from each call.
 `ReportsHelper#highlight_match` HTML-escapes the text and wraps only the
 matched spans. Ruby replays the pattern, and its regex dialect differs from
 Postgres's, so `MatchHighlighter` marks nothing rather than something wrong:

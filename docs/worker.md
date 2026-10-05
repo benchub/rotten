@@ -112,6 +112,22 @@ application doesn't add comments, use a pattern that never matches, such as
 `a^`, since the keys can't be blank. An invalid pattern stops the worker at
 startup with an error that names the key.
 
+Contexts are credited per entry, not per call. `pg_stat_statements` keeps
+one query text for each entry (user, database, top-level flag and query ID):
+the first text it saw. The worker reads the context from that text and
+credits all of the entry's calls in a window to it, even when that text is
+from before the window. Entries are then merged by fingerprint, so one
+fingerprint can carry several contexts, one per entry (say, one per user).
+After a reset or an eviction, Postgres keeps a new first text for the new
+entry, but the worker caches texts by key and drops a text only when its key
+is missing from a harvest. If the same key is reset or evicted and comes
+back between two harvests, the worker keeps using the old text, so its calls
+stay with the old text's context. So a query that many controllers or jobs
+run under one entry is credited to whichever ran it first, for as long as
+the entry lasts, or longer. Per-context counts in the UI mean calls of
+entries first seen under that context, not every call the context made, and
+the UI says so under each table that shows contexts.
+
 On Postgres 18, `pg_stat_statements` drops a leading comment from the query
 text it keeps, while 14 through 17 keep it. Trailing and inline comments
 survive on every version, and Postgres has no setting for this. So on 18,

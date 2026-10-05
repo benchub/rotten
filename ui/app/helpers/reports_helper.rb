@@ -61,6 +61,21 @@ module ReportsHelper
   end
 
   # A job tag, or controller#action.
+  # pg_stat_statements keeps one text per entry, the first it saw, and the
+  # worker credits all the entry's calls to the context in that text. One
+  # fingerprint can span several entries, each with its own context.
+  CONTEXT_CAVEAT = "Contexts are approximate. Postgres keeps one query text for each pg_stat_statements entry (per " \
+                   "user, database and query): the first it saw, which may be from before this time range. All of " \
+                   "an entry's calls are credited to the context in that text, so a count means calls of entries " \
+                   "first seen under that context, not every call the context made."
+  CONTEXT_HEADER_TITLE = "From the first query text of each pg_stat_statements entry, not from each call"
+
+  # The note under a table that shows contexts. Context column headers point
+  # at it with aria-describedby.
+  def context_caveat
+    tag.p(CONTEXT_CAVEAT, id: "context-caveat", class: "context-caveat")
+  end
+
   def report_context_name(context)
     context["job_tag"].presence || "#{context['controller']}##{context['action']}"
   end

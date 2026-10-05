@@ -76,6 +76,30 @@ RSpec.describe "Fingerprint detail", type: :system do
     expect(csp_violations).to be_empty
   end
 
+  it "notes how contexts are credited under the top contexts, and only when there are some" do
+    users_id = @fixture.fingerprint_ids.fetch("users")
+    visit "/fingerprints/#{users_id}?project=canvas&environment=production&cluster=13&range=3h&bucket=10m"
+
+    within("section[aria-labelledby='fingerprint-contexts-heading']") do
+      expect(page).to have_css("table.fingerprint-contexts")
+      expect(page).to have_css("p.context-caveat#context-caveat",
+                               exact_text: "Contexts are approximate. Postgres keeps one query text for each " \
+                                           "pg_stat_statements entry (per user, database and query): the first it " \
+                                           "saw, which may be from before this time range. All of an entry's " \
+                                           "calls are credited to the context in that text, so a count means " \
+                                           "calls of entries first seen under that context, not every call the " \
+                                           "context made.")
+      expect(page).to have_css("th[title='From the first query text of each pg_stat_statements entry, not from each call']" \
+                               "[aria-describedby='context-caveat']", text: /\Acontext\z/i)
+    end
+    expect(page).to have_css(".context-caveat", count: 1)
+
+    # Before a source is picked there are no contexts, so no note.
+    visit "/fingerprints/#{users_id}"
+    expect(page).to have_css("pre.fingerprint-sql")
+    expect(page).to have_no_css(".context-caveat")
+  end
+
   it "narrows the chart, contexts and stats to one role" do
     users_id = @fixture.fingerprint_ids.fetch("users")
     visit "/fingerprints/#{users_id}?project=canvas&environment=production&cluster=13&range=3h&bucket=10m"

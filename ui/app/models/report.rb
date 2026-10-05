@@ -4,9 +4,13 @@
 class Report
   NUMERIC_TYPES = %i[fingerprint count ms percent number].freeze
 
+  # The utilization reports' name columns are contexts too.
+  CONTEXT_KEYS = %w[context controller_action job_tag].freeze
+
   Column = Data.define(:key, :label, :type) do
     def sortable? = type != :context
     def numeric? = NUMERIC_TYPES.include?(type)
+    def context? = CONTEXT_KEYS.include?(key)
   end
 
   attr_reader :key, :title, :description, :file, :kind, :columns
@@ -36,6 +40,10 @@ class Report
   def self.files = (LISTED + INTERNAL).map(&:file)
 
   def column(key) = columns.find { |column| column.key == key }
+
+  # Whether the report shows contexts, so its results carry the caveat on
+  # how they're credited.
+  def contexts? = columns.any?(&:context?)
 
   # Top and outlier reports filter by one optional role. Utilization compares
   # a primary and a replica role instead.

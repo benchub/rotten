@@ -31,6 +31,23 @@ RSpec.describe Report do
     expect(described_class.find(nil)).to be_nil
   end
 
+  it "knows which reports and columns show contexts" do
+    with_contexts = %w[top_by_total_time top_by_calls outliers replica_utilization_by_controller_action
+                       replica_utilization_by_job]
+    expect(described_class.all.select(&:contexts?).map(&:key)).to eq(with_contexts)
+    expect(described_class.internal("fingerprint_contexts")).to be_contexts
+    expect(described_class.internal("fingerprint_sources")).not_to be_contexts
+
+    context_columns = (described_class.all + [described_class.internal("fingerprint_contexts")])
+                      .to_h { |report| [report.key, report.columns.select(&:context?).map(&:key)] }
+    expect(context_columns).to eq(
+      "top_by_total_time" => ["context"], "top_by_calls" => ["context"], "outliers" => ["context"],
+      "replica_utilization_by_controller_action" => ["controller_action"],
+      "replica_utilization_by_job" => ["job_tag"], "fingerprint_timeseries" => [],
+      "fingerprint_contexts" => ["context"]
+    )
+  end
+
   it "refuses to read a file that isn't a known report" do
     expect { ReportSql.read("../config/database.yml") }.to raise_error(ArgumentError)
   end

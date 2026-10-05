@@ -56,7 +56,7 @@
           <table class="report fingerprint-contexts">
             <thead>
               <tr>
-                <th scope="col">Context</th>
+                <th scope="col" title="<%= ReportsHelper::CONTEXT_HEADER_TITLE %>" aria-describedby="context-caveat">Context</th>
                 <th scope="col" class="numeric">Calls</th>
               </tr>
             </thead>
@@ -70,6 +70,7 @@
             </tbody>
           </table>
         </div>
+        <%= context_caveat %>
       <% end %>
     </section>
 
