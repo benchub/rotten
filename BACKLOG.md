@@ -72,4 +72,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** Find the race, for example plan time not always recorded for a re-planned statement or timing-dependent counters, and make the test deterministic without weakening what it checks.
 - **Red test:** Run the case in a loop (e.g. `-count=50`) to reproduce the failure, then make it pass reliably.
 
+### 20261004-224146-1: Built-in SQLCommenter context parsing.
+- **Why (user, 2026-10-04):** SQLCommenter (OpenTelemetry) is the cross-framework standard for query context: Rails `query_log_tags` with the `:sqlcommenter` format, Django, Flask/SQLAlchemy, sqlcommenter-java, Node, Go otel, Laravel. It writes `/*key='url-encoded value',...*/` and appends it to the statement, which PG 18 keeps in `pg_stat_statements` (only leading comments are stripped). The current regex defaults only match marginalia's `key:value` format.
+- **Do:** Add an optional worker config key to choose the context format: `marginalia` (today's regexes, the default), `sqlcommenter`, or `both`. For SQLCommenter, parse quoted, URL-decoded values from the last comment; map `controller`, `action`, `job` (and e.g. `route`, `framework`-specific keys, documented) onto the existing controller/action/job dimensions; ignore `traceparent`/`tracestate`. Keep the three dimensions. Document it in `docs/worker.md`, including that appended comments survive on PG 18 and prepended ones don't. Make the config change small and backward compatible.
+- **Red test:** An integration test on PG 14 and 18 with SQLCommenter-formatted queries (appended, with escaped values and a `traceparent`) that are credited to the right controller/action/job.
+
 ## Phase F: Docs.
