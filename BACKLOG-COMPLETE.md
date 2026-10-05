@@ -1539,3 +1539,11 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Red test:** A test that a report query runs with JIT off (e.g. checks `current_setting('jit')` inside the report transaction, or EXPLAIN shows no JIT section).
 - Completed: 2026-10-04, 4612eef
   - SET LOCAL jit = off in ReportRunner and the perf suite's beginReportTx; specs check it doesn't leak to pooled connections. Equal or faster everywhere (e.g. top_by_calls 24h 925ms -> 190ms custom). Review clean. docs/perf.md Results tables still predate the change.
+
+### 20261004-231500-1: Precompute per-query sample counts for outliers history.
+- **Why (found in 20261005-020000-2):** With adaptive lookback, a 3h outliers range has about 17k of 18k groups short of 30 samples in the default day, so the report reads about 955k older rows (about 2.5s; the outliers budget was raised to 10s). Precomputed per-(logical source, fingerprint) window counts or recent-window summaries would let the report find each group's last 30 windows without scanning.
+- **Do:** Measure first. Options: a rollup table maintained at ingest (per group, per day: window count, and enough to pick the last 30 windows), or a covering index on `events (logical_source_id, fingerprint_id, observed_window_start)` (measured at about 2.7s for the per-group LATERAL version, with slower inserts and more disk). Keep results identical.
+- **Needs:** 20261005-020000-2.
+- **Red test:** Tighten the perf suite's outliers 3h budget back to 2s, so it fails now.
+- Completed: 2026-10-04, edd958c
+  - Covering index (migration 0013) plus per-group WITH TIES read; rollup rejected (1.75s, drift risk). 3h ~0.7-0.8s, 24h ~1.2-1.3s. Costs: index ~table size, ingest inserts +10-20%, SHARE lock ~7s/10M events during build. User approved landing (2026-10-04) and asked for 20261005-123457-1 next. Review clean.

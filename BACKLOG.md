@@ -55,12 +55,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261004-231500-1: Precompute per-query sample counts for outliers history.
-- **Why (found in 20261005-020000-2):** With adaptive lookback, a 3h outliers range has about 17k of 18k groups short of 30 samples in the default day, so the report reads about 955k older rows (about 2.5s; the outliers budget was raised to 10s). Precomputed per-(logical source, fingerprint) window counts or recent-window summaries would let the report find each group's last 30 windows without scanning.
-- **Do:** Measure first. Options: a rollup table maintained at ingest (per group, per day: window count, and enough to pick the last 30 windows), or a covering index on `events (logical_source_id, fingerprint_id, observed_window_start)` (measured at about 2.7s for the per-group LATERAL version, with slower inserts and more disk). Keep results identical.
-- **Needs:** 20261005-020000-2.
-- **Red test:** Tighten the perf suite's outliers 3h budget back to 2s, so it fails now.
-
 ### 20261005-123457-1: Decide whether to drop `events_fingerprint_window`.
 - **Why (found in 20261004-231500-1):** Migration 0013's `events_source_fingerprint_window` on `(logical_source_id, fingerprint_id, observed_window_start)` serves the per-fingerprint reports about as well as 0008's `(fingerprint_id, observed_window_start)` on the perf data: e.g. fingerprint_timeseries 21d typical 3ms / 1ms with only the new index, 3ms / 1ms with both. Dropping 0008's index would save 392 MB per 10M events and one btree insert per event (about 10–30% of insert time, see docs/perf.md).
 - **Do:** List every query that uses `events_fingerprint_window` (the per-fingerprint reports, outliers' worst-window lookup, the UI), and check each with only the new index, including a fingerprint on many sources and Postgres 14–17, which have no btree skip scan. If none regresses, add a migration that drops it, and change the perf suite's index decision to require the new index instead. Note the lock in docs/database.md.
