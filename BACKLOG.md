@@ -67,9 +67,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** Decide with the user whether that's fine. Options: a longer minimum lookback for short ranges, which costs time (7 days of history for a 3h range took about 2.8s in the perf harness with a draft of the query, against a 2s budget), or a lower minimum history.
 - **Red test:** Depends on the choice; for example, an hourly fingerprint with a slow run in a 3h range that's listed.
 
-### 20261004-224146-1: Built-in SQLCommenter context parsing.
-- **Why (user, 2026-10-04):** SQLCommenter (OpenTelemetry) is the cross-framework standard for query context: Rails `query_log_tags` with the `:sqlcommenter` format, Django, Flask/SQLAlchemy, sqlcommenter-java, Node, Go otel, Laravel. It writes `/*key='url-encoded value',...*/` and appends it to the statement, which PG 18 keeps in `pg_stat_statements` (only leading comments are stripped). The current regex defaults only match marginalia's `key:value` format.
-- **Do:** Add an optional worker config key to choose the context format: `marginalia` (today's regexes, the default), `sqlcommenter`, or `both`. For SQLCommenter, parse quoted, URL-decoded values from the last comment; map `controller`, `action`, `job` (and e.g. `route`, `framework`-specific keys, documented) onto the existing controller/action/job dimensions; ignore `traceparent`/`tracestate`. Keep the three dimensions. Document it in `docs/worker.md`, including that appended comments survive on PG 18 and prepended ones don't. Make the config change small and backward compatible.
-- **Red test:** An integration test on PG 14 and 18 with SQLCommenter-formatted queries (appended, with escaped values and a `traceparent`) that are credited to the right controller/action/job.
+### 20261004-225300-1: Disable JIT for report queries.
+- **Why (found in 20261005-020000-1):** Outliers with a match filter plans at about 487k cost, just under the 500k `jit_above_cost` default where JIT compilation adds about 1.5s. More data could push it over and blow the 5s budget.
+- **Do:** Set `jit = off` for report queries in the UI (e.g. `SET LOCAL` in the report transaction) and in the perf suite, so both measure the same thing.
+- **Red test:** A test that a report query runs with JIT off (e.g. checks `current_setting('jit')` inside the report transaction, or EXPLAIN shows no JIT section).
 
 ## Phase F: Docs.
