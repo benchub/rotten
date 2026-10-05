@@ -9,11 +9,13 @@ import (
 
 // TextCache holds query text by Key, so each harvest fetches text only for
 // entries it hasn't seen. Reader.ReadStats returns stats without text
-// (showtext := false); a harvest then calls Retain with every row it read and
-// Fill with the rows it picked:
+// (showtext := false); a harvest then calls Retain with every row it read,
+// Invalidate with the keys whose entry was recreated, and Fill with the rows
+// it picked:
 //
 //	stats, _ := r.ReadStats(ctx)
 //	c.Retain(stats)          // drop text for evicted keys
+//	c.Invalidate(Recreated(prev, stats, info)) // and for recreated ones
 //	picked := topNDeltas(deltas, 100) // the rows to send
 //	c.Fill(ctx, picked)      // set Query, fetching only misses
 //
@@ -105,4 +107,13 @@ select s.userid, s.dbid, s.toplevel, coalesce(s.queryid, 0), coalesce(s.query, '
 		stats[i].Query = c.text[KeyOf(stats[i])]
 	}
 	return nil
+}
+
+// Invalidate drops text for keys, so the next Fill fetches it again. Pass it
+// Recreated's keys: entries reset or evicted and recreated since the last
+// harvest keep their key but have a new first text.
+func (c *TextCache) Invalidate(keys []Key) {
+	for _, k := range keys {
+		delete(c.text, k)
+	}
 }

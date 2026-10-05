@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/testcontainers/testcontainers-go"
 	"google.golang.org/protobuf/proto"
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
@@ -94,9 +95,9 @@ func startObservedForWorker(t *testing.T) *testdb.DB {
 	return startObservedVersionForWorker(t, 16)
 }
 
-func startObservedVersionForWorker(t *testing.T, version int) *testdb.DB {
+func startObservedVersionForWorker(t *testing.T, version int, extra ...testcontainers.ContainerCustomizer) *testdb.DB {
 	t.Helper()
-	db := testdb.StartObserved(t, version)
+	db := testdb.StartObserved(t, version, extra...)
 	if out, err := db.PSQL(t, filepath.Join(testdb.RepoRoot(), "schema", "observer.sql"), nil); err != nil {
 		t.Fatalf("observer.sql: %v\n%s", err, out)
 	}

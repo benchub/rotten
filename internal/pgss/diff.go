@@ -164,8 +164,9 @@ func sameTime(a, b *Stat) bool {
 // (Plans or TotalPlanTime grew while Calls didn't). This is deliberate.
 //
 // On 14 through 16 there's no stats_since, so rule 2 can't fire. An entry
-// that's reset on its own and then grows past its old counters before the
-// next harvest can't be detected there, and its delta comes out too small.
+// that's reset on its own, or evicted and recreated, and then grows past its
+// old counters before the next harvest can't be detected there, and its
+// delta comes out too small.
 //
 // Diff doesn't handle the first-run baseline: an empty prev with a zero
 // StatsReset trips rule 1 and returns everything as new. The caller decides
@@ -180,7 +181,7 @@ func Diff(prev Snapshot, cur []Stat, info Info) ([]Delta, Snapshot) {
 		old, ok := prev.Entries[k]
 		d := Delta{Stat: c}
 		switch {
-		case globalReset, ok && !sameTime(&c, &old), ok && (optMismatch(&c, &old) || anyLower(c, old)), !ok:
+		case entryNew(c, old, ok, globalReset):
 			d.New = true
 		default:
 			o := old
@@ -197,4 +198,34 @@ func Diff(prev Snapshot, cur []Stat, info Info) ([]Delta, Snapshot) {
 		deltas = append(deltas, d)
 	}
 	return deltas, next
+}
+
+// entryNew reports whether c, with snapshot entry old (ok when present),
+// is a new entry by Diff's rules 1 through 4.
+func entryNew(c, old Stat, ok, globalReset bool) bool {
+	return globalReset || !ok || !sameTime(&c, &old) || optMismatch(&c, &old) || anyLower(c, old)
+}
+
+// Recreated returns the keys in cur whose entry may not be the one prev saw,
+// so text cached for them may be stale. That's every key Diff treats as new,
+// plus, when pg_stat_statements_info.dealloc changed, every key without
+// stats_since (14 through 16): an evicted entry that came back and grew past
+// its old counters looks unchanged there, and dealloc doesn't say which
+// entries went. On 17 and later stats_since already marks recreated entries.
+//
+// On 14 through 16, an entry reset on its own
+// (pg_stat_statements_reset(userid, dbid, queryid)) that grows past its old
+// counters before the next harvest still isn't detected.
+func Recreated(prev Snapshot, cur []Stat, info Info) []Key {
+	globalReset := !prev.Info.StatsReset.Equal(info.StatsReset)
+	dealloc := prev.Info.Dealloc != info.Dealloc
+	var keys []Key
+	for _, c := range cur {
+		k := KeyOf(c)
+		old, ok := prev.Entries[k]
+		if entryNew(c, old, ok, globalReset) || (dealloc && c.StatsSince == nil) {
+			keys = append(keys, k)
+		}
+	}
+	return keys
 }

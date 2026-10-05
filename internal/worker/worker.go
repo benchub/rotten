@@ -525,6 +525,7 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.T
 	}
 	deltas, next := pgss.Diff(loaded.Snapshot, stats, info)
 	texts.Retain(stats)
+	texts.Invalidate(pgss.Recreated(loaded.Snapshot, stats, info))
 
 	if loaded.Baseline {
 		log.Println("baseline harvest: saving the snapshot and sending nothing")

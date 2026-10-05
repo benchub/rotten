@@ -119,12 +119,21 @@ credits all of the entry's calls in a window to it, even when that text is
 from before the window. Entries are then merged by fingerprint, so one
 fingerprint can carry several contexts, one per entry (say, one per user).
 After a reset or an eviction, Postgres keeps a new first text for the new
-entry, but the worker caches texts by key and drops a text only when its key
-is missing from a harvest. If the same key is reset or evicted and comes
-back between two harvests, the worker keeps using the old text, so its calls
-stay with the old text's context. So a query that many controllers or jobs
-run under one entry is credited to whichever ran it first, for as long as
-the entry lasts, or longer. Per-context counts in the UI mean calls of
+entry. The worker caches texts by key, and drops a key's text when the key is
+missing from a harvest or its entry looks recreated, then fetches the new
+text in the same harvest. An entry looks recreated when a full reset moved
+`pg_stat_statements_info.stats_reset`, a counter went down, or, on 17 and
+later, its `stats_since` changed. On 14 through 16, which have no
+`stats_since`, any change in `pg_stat_statements_info.dealloc` drops every
+cached text, since Postgres doesn't say which entries it evicted. A server
+that evicts entries between most harvests then fetches text for the sent
+entries every harvest, one query that reads the whole query text file; raise
+`pg_stat_statements.max` to avoid that. One case still slips through on 14
+through 16: an entry reset on its own with
+`pg_stat_statements_reset(userid, dbid, queryid)`, whose counters climb past
+their old values before the next harvest, keeps its old text. So a query
+that many controllers or jobs run under one entry is credited to whichever
+ran it first, for as long as the entry lasts. Per-context counts in the UI mean calls of
 entries first seen under that context, not every call the context made, and
 the UI says so under each table that shows contexts.
 
