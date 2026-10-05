@@ -55,33 +55,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261004-144200-1: Regex filter for report results, with highlighted matches.
-- **Why (user, 2026-10-04):** People need to narrow results to queries matching a pattern, and see where the pattern matched.
-- **Decisions (user, 2026-10-04):**
-  - The filter runs on the server, inside the report SQL, before the top-N limit. So it's the top 50 matching rows, not a narrowing of the 50 already shown.
-  - It matches the query text and the contexts (controller#action, job tag).
-- **Do:**
-  - **Field:** add an optional `match` field to the dataset part of the workbench form. Like the other dataset fields, it carries across reports when you switch with the chips, and the fingerprint page keeps it in its links.
-  - **Matching:** case-insensitive POSIX regex (`~*`), passed only as a bound parameter. A row matches if the query text OR any of its contexts matches.
-    - Utilization reports have no query text, so they match on their name column (controller#action or job).
-    - The time series, which is for a single fingerprint, ignores `match` and says so.
-  - **Validation:**
-    - Cap the length, e.g. 200 characters.
-    - Reject patterns Postgres can't compile with a clear form error and a 422, not a 500. Check them cheaply first, e.g. `SELECT '' ~* $1` in its own statement, within the existing report timeout.
-    - Pathological patterns must stay bounded by the existing 15s statement timeout.
-  - **Highlighting:** highlight the matches in the query text and context cells with `<mark>`.
-    - Do it on the server, in a helper that HTML-escapes everything and wraps only the matched spans.
-    - Ruby and Postgres regex dialects differ. If the pattern doesn't compile in Ruby, or behaves differently there, fall back to no highlight rather than wrong highlights or an error. Use a Ruby `Regexp.timeout` so highlighting can't hang.
-    - Highlight inside the truncated `<details>` query disclosure too.
-  - **Style:** `<mark>` is styled through the Tailwind theme with WCAG AA contrast.
-  - **Docs:** update `ui/README.md` and `docs/ui.md`.
-- **Red test:**
-  - A request spec per report kind: the filter narrows rows before the limit. Seed more than 50 fingerprints with only a few matching, and check the matching ones beyond the top 50 show up.
-  - A request spec that an invalid regex gives a 422 with a message.
-  - A security spec: injection through `match`, and highlighting can't inject HTML (e.g. a pattern matching `<script>` in the query text stays escaped).
-  - A helper spec for the highlighting edge cases: overlapping or empty matches, multibyte text, and a pattern that doesn't compile in Ruby.
-  - A system spec: enter a pattern, run, see highlighted matches, switch reports with a chip, and the pattern is still applied.
-
 ### 20261004-144107-2: Contexts are credited by each entry's first text, not per call.
 - **Decision (user, 2026-10-04):** Do both. Document the limit and add a UI caveat now. Add a separate backlog task to design sampling `pg_stat_activity` per `query_id` so contexts are credited correctly.
 - **Why (found in 20261004-142000-1):** `pg_stat_statements` keeps one text per (userid, dbid, toplevel, queryid) entry, the first it saw. The worker extracts one context from that text and credits all of the entry's calls in a window to it (`buildHarvestBatchFromRows`, `extractContextValue`). A query run by many controllers is credited entirely to whichever ran it first, for the entry's lifetime, so per-context counts in the controller, action and job views can be badly wrong. The views don't say so.
