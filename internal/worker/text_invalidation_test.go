@@ -105,21 +105,30 @@ func TestWorkerCreditsRecreatedEntryToNewText(t *testing.T) {
 					before := countersOf(t, su, qid)
 					ops[name](t, su, query)
 					runWithContext(t, su, query, "beta", 20)
+					betaCalls := 20
 					if name != "full reset" {
-						after := countersOf(t, su, qid)
-						for c := range before {
-							if after[c] < before[c] {
-								t.Fatalf("%s went from %v to %v; the case needs every counter to climb", c, before[c], after[c])
+						// Plan and exec times are wall clock, so a stall during A's one
+						// call can outweigh B's first 20. Keep running B until every
+						// counter has climbed past A's.
+						for {
+							c, below := counterBelow(before, countersOf(t, su, qid))
+							if !below {
+								break
 							}
+							if betaCalls >= 2000 {
+								t.Fatalf("%s still below A's %v after %d calls; the case needs every counter to climb", c, before[c], betaCalls)
+							}
+							runWithContext(t, su, query, "beta", 1)
+							betaCalls++
 						}
 					}
 					h2 := rn.window(t)
 					rn.stop(t)
-					want := uint64(20)
+					want := uint64(betaCalls)
 					if name == "eviction" && tc.version < 17 {
 						// Diff can't see the recreation on 14 through 16, so it
 						// subtracts A's one call (see Diff's doc comment).
-						want = 19
+						want--
 					}
 
 					batches := drainOutboxBatches(t, store)
@@ -199,6 +208,17 @@ func countersOf(t *testing.T, conn *pgx.Conn, qid int64) map[string]float64 {
 		out[c] = vals[i]
 	}
 	return out
+}
+
+// counterBelow returns a counter whose value in after is below its value in
+// before, if there is one.
+func counterBelow(before, after map[string]float64) (string, bool) {
+	for c := range before {
+		if after[c] < before[c] {
+			return c, true
+		}
+	}
+	return "", false
 }
 
 func entriesFor(t *testing.T, conn *pgx.Conn, qid int64) int {
