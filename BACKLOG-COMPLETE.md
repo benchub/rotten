@@ -1509,3 +1509,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - Completed: 2026-10-04, 4a1f499
   - The fallback is `unparsed-` + 16 hex of SHA-256 over the pgss text with leading and trailing comments stripped (text, not queryid, because queryid is OID-based on 14–17).
   - Migration 0012 adds `fingerprints.unparsed`, backfills it and builds a partial index. It holds ACCESS EXCLUSIVE while it runs, so plan for blocking time on large tables. Ingest repairs flags set by older servers.
+
+### 20261004-204751-1: Flaky `TestWorkerCreditsRecreatedEntryToNewText/pg17`.
+- **Why (found in 20261004-161500-1):** One `make test-all` run failed in the pg17 case of `TestWorkerCreditsRecreatedEntryToNewText` (added in 20261004-182844-1): plan time went down where the test needs it to climb. Three reruns passed. There's no CI, so a flaky gate wastes runs and hides real failures.
+- **Do:** Find the race, for example plan time not always recorded for a re-planned statement or timing-dependent counters, and make the test deterministic without weakening what it checks.
+- **Red test:** Run the case in a loop (e.g. `-count=50`) to reproduce the failure, then make it pass reliably.
+- Completed: 2026-10-04, f04aff7
+  - Test-only race: wall-clock plan/exec time comparisons; the test now loops until counters pass the snapshot. Review clean.

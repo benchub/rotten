@@ -67,11 +67,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** Decide with the user whether that's fine. Options: a longer minimum lookback for short ranges, which costs time (7 days of history for a 3h range took about 2.8s in the perf harness with a draft of the query, against a 2s budget), or a lower minimum history.
 - **Red test:** Depends on the choice; for example, an hourly fingerprint with a slow run in a 3h range that's listed.
 
-### 20261004-204751-1: Flaky `TestWorkerCreditsRecreatedEntryToNewText/pg17`.
-- **Why (found in 20261004-161500-1):** One `make test-all` run failed in the pg17 case of `TestWorkerCreditsRecreatedEntryToNewText` (added in 20261004-182844-1): plan time went down where the test needs it to climb. Three reruns passed. There's no CI, so a flaky gate wastes runs and hides real failures.
-- **Do:** Find the race, for example plan time not always recorded for a re-planned statement or timing-dependent counters, and make the test deterministic without weakening what it checks.
-- **Red test:** Run the case in a loop (e.g. `-count=50`) to reproduce the failure, then make it pass reliably.
-
 ### 20261004-224146-1: Built-in SQLCommenter context parsing.
 - **Why (user, 2026-10-04):** SQLCommenter (OpenTelemetry) is the cross-framework standard for query context: Rails `query_log_tags` with the `:sqlcommenter` format, Django, Flask/SQLAlchemy, sqlcommenter-java, Node, Go otel, Laravel. It writes `/*key='url-encoded value',...*/` and appends it to the statement, which PG 18 keeps in `pg_stat_statements` (only leading comments are stripped). The current regex defaults only match marginalia's `key:value` format.
 - **Do:** Add an optional worker config key to choose the context format: `marginalia` (today's regexes, the default), `sqlcommenter`, or `both`. For SQLCommenter, parse quoted, URL-decoded values from the last comment; map `controller`, `action`, `job` (and e.g. `route`, `framework`-specific keys, documented) onto the existing controller/action/job dimensions; ignore `traceparent`/`tracestate`. Keep the three dimensions. Document it in `docs/worker.md`, including that appended comments survive on PG 18 and prepended ones don't. Make the config change small and backward compatible.
