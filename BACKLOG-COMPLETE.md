@@ -1480,3 +1480,20 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - Completed: 2026-10-04, d744cbb
   - Score = (worst window − median) ÷ max(1.4826·MAD, (min ratio − 1)/threshold·median, 0.01 ms). History is the same source's samples before the range, the range's length clamped to 1–7 days. Listed when there are ≥30 history samples and score > 3.
   - Follow-ups: 20261005-020000-1 (7-day match cost), 20261005-020000-2 (rare queries lack history).
+
+### 20261004-150000-1: Design per-call context attribution by sampling pg_stat_activity.
+- **Needs:** 20261004-144107-2.
+- **Why (user, 2026-10-04):** pgss credits all of an entry's calls to the context in its first text, so per-context counts can be badly wrong.
+- **Do:**
+  - Write a design in `docs/decisions/`, and get the user's sign-off before building anything. Cover:
+    - sampling `pg_stat_activity` (`query_id`, query text) at an interval on 14+ with `compute_query_id`;
+    - estimating each context's share of an entry's calls from the samples;
+    - how the shares flow into `event_context` counts;
+    - the bias against short queries, and the sampling rate and cost;
+    - `track_activity_query_size` truncation, which can cut off trailing comments;
+    - the config and proto changes.
+  - Then split the build into tasks.
+- **Red test:** A docscheck that the design doc exists and covers the points above.
+- Completed: 2026-10-04, b5053cb
+  - Design in `docs/decisions/context-sampling.md` after two review rounds. It reframes sampling as activity (time) share, not calls, and recommends two stages: sightings first, then the split.
+  - Build tasks 20261004-204000-1..8 are proposed in the doc. They go into the backlog after user sign-off.
