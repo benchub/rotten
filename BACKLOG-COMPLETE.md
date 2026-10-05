@@ -1516,3 +1516,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Red test:** Run the case in a loop (e.g. `-count=50`) to reproduce the failure, then make it pass reliably.
 - Completed: 2026-10-04, f04aff7
   - Test-only race: wall-clock plan/exec time comparisons; the test now loops until counters pass the snapshot. Review clean.
+
+### 20261005-020000-1: Outliers with a match filter takes 9 to 12 seconds at 7 days.
+- **Why (found in 20261004-221500-1):** In the perf harness, `outliers` with `match` over a 7-day range takes about 9.5s with a custom plan and 11.4s with a generic one, close to the UI's 15s timeout. Master's SQL took about 11 and 12 seconds before the per-window scoring, so the cost isn't the scoring: it's `matched_events`, which reads every in-range `event_context` row of the source and joins controllers, actions and job tags, plus `bool_or(e.id in (...))` over every in-range event.
+- **Do:** Find a cheaper way to keep groups that ran in a matching context, for example matching the controllers, actions and job tags first, then probing `event_context` by those ids, or semi-joining by (logical source, fingerprint) instead of by event id. Keep the semantics in the SQL header.
+- **Red test:** Tighten the perf suite's budget for `outliers 7d match` to 5s, so it fails now.
+- Completed: 2026-10-04, b5e707f
+  - Regex runs once per distinct context; matched events materialized; text match moved out of HAVING. Outliers 7d match 4.3s/4.5s (custom/generic); top_by match cases ~3.5-3.9s. Review clean. JIT follow-up filed as 20261004-225300-1.

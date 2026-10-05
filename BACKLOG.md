@@ -55,11 +55,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261005-020000-1: Outliers with a match filter takes 9 to 12 seconds at 7 days.
-- **Why (found in 20261004-221500-1):** In the perf harness, `outliers` with `match` over a 7-day range takes about 9.5s with a custom plan and 11.4s with a generic one, close to the UI's 15s timeout. Master's SQL took about 11 and 12 seconds before the per-window scoring, so the cost isn't the scoring: it's `matched_events`, which reads every in-range `event_context` row of the source and joins controllers, actions and job tags, plus `bool_or(e.id in (...))` over every in-range event.
-- **Do:** Find a cheaper way to keep groups that ran in a matching context, for example matching the controllers, actions and job tags first, then probing `event_context` by those ids, or semi-joining by (logical source, fingerprint) instead of by event id. Keep the semantics in the SQL header.
-- **Red test:** Tighten the perf suite's budget for `outliers 7d match` to 5s, so it fails now.
-
 ### 20261005-020000-2: Outliers needs 30 earlier samples, which rare queries lack.
 - **Decision (user, 2026-10-05):** Adaptive lookback. Look back further only until 30 samples are found, bounded to 7 days, if it stays within the perf budgets.
 - **Needs:** 20261005-020000-1 (both change `reports/outliers.sql`).
