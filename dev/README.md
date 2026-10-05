@@ -229,9 +229,10 @@ only, and `sleep` (`course_activity`) mostly on the replica (80% for
 
 ### Slow episodes and the outliers report
 
-The outliers report lists a fingerprint whose mean time per call in the
-chosen range is more than 3 standard deviations above its own history (or,
-with no spread, twice its mean). A query that's always slow isn't an
+The outliers report lists a fingerprint if one of its windows in the chosen
+range is much slower per call than its own history on the same source: more
+than 3 robust standard deviations (1.4826 × the median absolute deviation)
+above the history's median, and more than twice that median. A query that's always slow isn't an
 outlier, so each episode makes one usually fast shape much slower, with the
 same SQL and so the same fingerprint:
 
@@ -264,17 +265,20 @@ the container's address, because Docker's forwarded port buffers everything.
 On a compose network (MTU 1500) the small receive buffer is enough.
 
 History builds up one sample per fingerprint per 10-second worker window in
-which the fingerprint ran. The report needs 30 samples outside the chosen
-range, and it counts samples from after the range, too. At the default rate,
+which the fingerprint ran. The report needs 30 samples from before the
+chosen range (in the range's length before it, but at least a day and at most
+7 days), and never counts samples from after it. At the default rate,
 `touch_user` runs in most windows, while `export_enrollments` and
-`course_activity` run in a little under half. So **after about 15 minutes of
-traffic, any finished episode can show up**, including the first one. To see
-an episode, open the outliers report with a custom range from its start to
-its end, as logged, for example `14:15:00` to `14:17:00` UTC. Its shape
-should be at or near the top, several standard deviations above its history. Preset
-ranges (1 hour and up) mostly don't show episodes. They average 2 slow
-minutes with up to hours of normal windows. And once a kind has run twice,
-each of its episodes is in the other's history, which widens the deviation.
+`course_activity` run in a little under half. So **an episode shows up once
+the range starts about 15 minutes after the traffic started**: the 1-hour
+preset after about 75 minutes of traffic, or a custom range sooner. Any
+range that covers an episode shows it, the presets included, because the
+report scores each window on its own instead of averaging the range. The
+**Worst window** column says when the slowest window started, so you can
+match it with the logged episode. Its shape should be at or near the top,
+well above its history. Past episodes don't hide new ones: they're at most
+2 minutes in 15, so they hardly move the median and the median absolute
+deviation.
 
 ### What the worker can attribute
 

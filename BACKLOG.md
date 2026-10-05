@@ -61,6 +61,16 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** Decide with the user whether that's intended. One option is scoring each in-range window (or the worst few) against history, instead of the range's average, possibly with a robust baseline (median/MAD) so past spells don't hide new ones.
 - **Red test:** A report spec with 60 normal windows and 2 slow ones in a 1-hour range, plus history containing one earlier slow spell, that expects the fingerprint to be listed.
 
+### 20261005-020000-1: Outliers with a match filter takes 9 to 12 seconds at 7 days.
+- **Why (found in 20261004-221500-1):** In the perf harness, `outliers` with `match` over a 7-day range takes about 9.5s with a custom plan and 11.4s with a generic one, close to the UI's 15s timeout. Master's SQL took about 11 and 12 seconds before the per-window scoring, so the cost isn't the scoring: it's `matched_events`, which reads every in-range `event_context` row of the source and joins controllers, actions and job tags, plus `bool_or(e.id in (...))` over every in-range event.
+- **Do:** Find a cheaper way to keep groups that ran in a matching context, for example matching the controllers, actions and job tags first, then probing `event_context` by those ids, or semi-joining by (logical source, fingerprint) instead of by event id. Keep the semantics in the SQL header.
+- **Red test:** Tighten the perf suite's budget for `outliers 7d match` to 5s, so it fails now.
+
+### 20261005-020000-2: Outliers needs 30 earlier samples, which rare queries lack.
+- **Why (found in 20261004-221500-1):** History is the range's length before it, at least a day and at most 7 days. At 5-minute windows, a query has to run in about 30 of the 288 windows of the day before a short range, per source, to be scored. An hourly job has at most 24, so it's never an outlier in a range under about 30 hours.
+- **Do:** Decide with the user whether that's fine. Options: a longer minimum lookback for short ranges, which costs time (7 days of history for a 3h range took about 2.8s in the perf harness with a draft of the query, against a 2s budget), or a lower minimum history.
+- **Red test:** Depends on the choice; for example, an hourly fingerprint with a slow run in a 3h range that's listed.
+
 ### 20261004-150000-1: Design per-call context attribution by sampling pg_stat_activity.
 - **Needs:** 20261004-144107-2.
 - **Why (user, 2026-10-04):** pgss credits all of an entry's calls to the context in its first text, so per-context counts can be badly wrong.

@@ -233,6 +233,10 @@ RSpec.describe "Reports", type: :system do
     expect(report_rows("role", "example", "calls", "total_ms", "avg_ms_per_call")).to eq([
       ["primary", "select * from submissions where assignment_id = $1", "20", "800.00", "40.00"]
     ])
+    # Its worst window, against its 40 earlier windows: median 8, spread 8 / 3.
+    worst = (@fixture.anchor - (40 * 60)).utc.strftime("%Y-%m-%d %H:%M")
+    expect(report_rows("worst_window_start", "worst_ms_per_call", "history_samples", "history_median_ms", "history_spread_ms", "score"))
+      .to eq([[worst, "40.00", "40", "8.00", "2.67", "12.00"]])
   end
 
   it "shows replica utilization by job" do

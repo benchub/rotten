@@ -525,7 +525,7 @@ func (g *generator) episodes(ctx context.Context, r *rand.Rand) {
 			case g.cfg.Episode != NoEpisode:
 				g.cfg.Logf("devtraffic: %s episode for the whole run", ep)
 			default:
-				g.cfg.Logf("devtraffic: %s episode from %s to %s UTC; to see it in the outliers report, choose a custom range of exactly those times",
+				g.cfg.Logf("devtraffic: %s episode from %s to %s UTC; the outliers report shows it in any range that covers it",
 					ep, start.Format("2006-01-02 15:04:05"), start.Add(g.cfg.EpisodeLength).Format("15:04:05"))
 			}
 			if ep == LockWait {

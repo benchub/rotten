@@ -338,6 +338,17 @@ dataset: it carries across reports, into the fingerprint links and sort
 links, and through the fingerprint page (which doesn't filter) back to the
 workbench.
 
+**Outliers** scores each of a query's windows in the range against its
+history on the same source: its samples from before the range, going back
+the range's length (at least a day, at most 7 days). The score is the
+window's time per call minus the history's median, divided by 1.4826 × the
+median absolute deviation (floored, so a flat history's jitter doesn't
+score). A query is listed if it has at least 30 history samples and its
+worst window scores above 3, which also means more than twice the median.
+So a two-minute spike shows in a preset range, and a past spike doesn't
+hide a new one. Rows are ranked by score, and **Worst window** says when
+the slowest window started. `reports/outliers.sql` documents the details.
+
 Before the report runs, Postgres compiles the pattern on its own
 (`SELECT '' ~* $1`), within the report timeout. A pattern it can't compile
 gets a 422 with its error, such as `parentheses () not balanced`. A pattern

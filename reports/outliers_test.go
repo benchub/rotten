@@ -20,24 +20,23 @@ const (
 )
 
 type outlierRow struct {
-	LogicalSourceID      int
-	FingerprintID        int64
-	Project              string
-	Environment          string
-	Cluster              string
-	Role                 string
-	Calls                float64
-	TotalMS              float64
-	AvgMSPerCall         float64
-	GlobalMeanMS         float64
-	GlobalDeviationMS    float64
-	SourceMeanMS         float64
-	SourceDeviationMS    float64
-	BaselineMeanMS       float64
-	BaselineDeviationMS  float64
-	DeviationsOverSource float64
-	Example              string
-	ContextJSON          []byte
+	LogicalSourceID  int
+	FingerprintID    int64
+	Project          string
+	Environment      string
+	Cluster          string
+	Role             string
+	Calls            float64
+	TotalMS          float64
+	AvgMSPerCall     float64
+	WorstWindowStart time.Time
+	WorstMSPerCall   float64
+	HistorySamples   int64
+	HistoryMedianMS  float64
+	HistorySpreadMS  float64
+	Score            float64
+	Example          string
+	ContextJSON      []byte
 }
 
 func readOutliers(t *testing.T, conn *pgx.Conn, args ...any) []outlierRow {
@@ -66,13 +65,12 @@ func readOutliers(t *testing.T, conn *pgx.Conn, args ...any) []outlierRow {
 			&r.Calls,
 			&r.TotalMS,
 			&r.AvgMSPerCall,
-			&r.GlobalMeanMS,
-			&r.GlobalDeviationMS,
-			&r.SourceMeanMS,
-			&r.SourceDeviationMS,
-			&r.BaselineMeanMS,
-			&r.BaselineDeviationMS,
-			&r.DeviationsOverSource,
+			&r.WorstWindowStart,
+			&r.WorstMSPerCall,
+			&r.HistorySamples,
+			&r.HistoryMedianMS,
+			&r.HistorySpreadMS,
+			&r.Score,
 			&r.Example,
 			&r.ContextJSON,
 		); err != nil {
@@ -86,27 +84,33 @@ func readOutliers(t *testing.T, conn *pgx.Conn, args ...any) []outlierRow {
 	return out
 }
 
-func TestOutliersUsesSourceHistoryAndReturnsGlobalHistory(t *testing.T) {
-	db := testdb.StartRotten(t)
-	fixture := testdb.SeedReports(t, db)
-	conn := db.Connect(t)
-
-	unrelatedID := insertOutlierFingerprint(t, conn, "unrelated_global_noise", "select unrelated global noise")
-	insertOutlierEvent(t, conn, fixture.SourceIDs["canvas13p"], fixture.PhysicalIDs["canvas13p"], unrelatedID, fixture.Anchor.Add(-20*time.Minute), 1, 1_000_000)
-
-	got := readOutliers(t, conn,
+func readFixtureOutliers(t *testing.T, conn *pgx.Conn, fixture *testdb.Reports, cluster string, limit int) []outlierRow {
+	t.Helper()
+	return readOutliers(t, conn,
 		"canvas",
 		testdb.ReportEnvironment,
-		"7",
+		cluster,
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
-		10,
+		limit,
 		defaultSigma,
 		defaultMinHistory,
 		defaultRatio,
 		nil,
 		nil,
 	)
+}
+
+func TestOutliersScoresWorstWindowAgainstSourceHistory(t *testing.T) {
+	db := testdb.StartRotten(t)
+	fixture := testdb.SeedReports(t, db)
+	conn := db.Connect(t)
+
+	// A huge sample on cluster 13, with no history there, isn't listed.
+	unrelatedID := insertOutlierFingerprint(t, conn, "unrelated_global_noise", "select unrelated global noise")
+	insertOutlierEvent(t, conn, fixture.SourceIDs["canvas13p"], fixture.PhysicalIDs["canvas13p"], unrelatedID, fixture.Anchor.Add(-20*time.Minute), 1, 1_000_000)
+
+	got := readFixtureOutliers(t, conn, fixture, "7", 10)
 	if len(got) != 1 {
 		t.Fatalf("got %d outliers, want exactly planted slow query: %+v", len(got), got)
 	}
@@ -123,17 +127,17 @@ func TestOutliersUsesSourceHistoryAndReturnsGlobalHistory(t *testing.T) {
 	if row.Calls != 20 || row.TotalMS != 800 || row.AvgMSPerCall != 40 {
 		t.Errorf("calls/total/avg = %v/%v/%v, want 20/800/40", row.Calls, row.TotalMS, row.AvgMSPerCall)
 	}
-	if math.Abs(row.GlobalMeanMS-5) > 0.000001 || math.Abs(row.GlobalDeviationMS-1) > 0.000001 {
-		t.Errorf("global mean/deviation = %v/%v, want 5/1", row.GlobalMeanMS, row.GlobalDeviationMS)
+	if want := fixture.Anchor.Add(-40 * time.Minute); !row.WorstWindowStart.Equal(want) || row.WorstMSPerCall != 40 {
+		t.Errorf("worst window = %v at %v ms/call, want %v at 40", row.WorstWindowStart, row.WorstMSPerCall, want)
 	}
-	if math.Abs(row.SourceMeanMS-8) > 0.000001 || math.Abs(row.SourceDeviationMS-0.9) > 0.000001 {
-		t.Errorf("source mean/deviation = %v/%v, want 8/0.9", row.SourceMeanMS, row.SourceDeviationMS)
+	// 40 history samples, median 8, MAD 0.5 (1.4826 × 0.5 = 0.74) under the
+	// ratio floor (2 - 1) / 3 × 8.
+	spread := 8.0 / 3
+	if row.HistorySamples != 40 || row.HistoryMedianMS != 8 || math.Abs(row.HistorySpreadMS-spread) > 1e-9 {
+		t.Errorf("history samples/median/spread = %v/%v/%v, want 40/8/%v", row.HistorySamples, row.HistoryMedianMS, row.HistorySpreadMS, spread)
 	}
-	if math.Abs(row.BaselineMeanMS-8) > 0.000001 || math.Abs(row.BaselineDeviationMS-0.9) > 0.000001 {
-		t.Errorf("baseline mean/deviation = %v/%v, want source-owned 8/0.9", row.BaselineMeanMS, row.BaselineDeviationMS)
-	}
-	if want := (40.0 - 8.0) / 0.9; math.Abs(row.DeviationsOverSource-want) > 0.000001 {
-		t.Errorf("deviations_over_source = %v, want %v", row.DeviationsOverSource, want)
+	if want := (40 - 8) / spread; math.Abs(row.Score-want) > 1e-9 {
+		t.Errorf("score = %v, want %v", row.Score, want)
 	}
 
 	var contexts []topByCallsContext
@@ -146,170 +150,83 @@ func TestOutliersUsesSourceHistoryAndReturnsGlobalHistory(t *testing.T) {
 	}
 }
 
-func TestOutliersSkipsZeroDeviationAndMissingSourceHistory(t *testing.T) {
-	db := testdb.StartRotten(t)
-	fixture := testdb.SeedReports(t, db)
-	conn := db.Connect(t)
-	ctx := context.Background()
-
-	count, mean, deviation := mergedStats(30, 0.4, 0, 0.5)
-	if _, err := conn.Exec(ctx, `insert into rotten.fingerprint_stats
-		(fingerprint_id, logical_source_id, type, count, mean, deviation, last)
-		values ($1,$2,'mean_time',$3,$4,$5,0)`,
-		fixture.FingerprintID["users"], fixture.SourceIDs["canvas7p"], count, mean, deviation); err != nil {
-		t.Fatal(err)
-	}
-
-	got := readOutliers(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"7",
-		fixture.Anchor.Add(-testdb.RecentRange),
-		fixture.Anchor,
-		10,
-		defaultSigma,
-		defaultMinHistory,
-		defaultRatio,
-		nil,
-		nil,
-	)
-	if len(got) != 1 || got[0].FingerprintID != fixture.FingerprintID["slow"] {
-		t.Fatalf("outliers = %+v, want only slow; users with zero deviation and users on replica with no source history must be excluded", got)
-	}
-}
-
-func TestOutliersSubtractsInRangeSamplesFromStoredHistory(t *testing.T) {
+// MAD path: history 4, 7, 10, 13, 16 has median 10 and MAD 3, so the spread
+// is 1.4826 × 3 = 4.4478 (over the ratio floor 10 / 3) and the threshold is
+// 10 + 3 × 4.4478 = 23.34. Ratio path: a flat history of 10 has spread 10 / 3
+// and threshold 20. History on another source doesn't count.
+func TestOutliersThresholdAndSourceOwnedHistory(t *testing.T) {
 	db := testdb.StartRotten(t)
 	fixture := testdb.SeedReports(t, db)
 	conn := db.Connect(t)
 
-	fingerprintID := insertOutlierFingerprint(t, conn, "realistic_slow", "select realistic slow")
-	var samples []float64
-	for i := 0; i < 10; i++ {
-		start := fixture.Anchor.Add(-time.Duration(i+1) * testdb.WindowLength)
-		insertOutlierEvent(t, conn, fixture.SourceIDs["canvas7p"], fixture.PhysicalIDs["canvas7p"], fingerprintID, start, 10, 400)
-		samples = append(samples, 40)
+	start := fixture.Anchor.Add(-testdb.RecentRange)
+	historyStart := start.Add(-2 * time.Hour)
+	inRange := start.Add(time.Hour)
+	spreadCase := func(key string, history []float64, worst float64) int64 {
+		h := newOutlierHistory(t, conn, fixture, "canvas7p", key)
+		h.add(historyStart, time.Minute, history...)
+		h.add(inRange, time.Minute, 10, worst, 10)
+		return h.finish()
 	}
-	count, mean, deviation := mergedStats(30, 8, 0.9, samples...)
-	insertOutlierStat(t, conn, fingerprintID, fixture.SourceIDs["canvas7p"], count, mean, deviation)
-	insertOutlierStat(t, conn, fingerprintID, 0, count, mean, deviation)
+	noisy := repeat(40, 4, 7, 10, 13, 16)
+	flat := repeat(40, 10)
+	madInside := spreadCase("mad_inside", noisy, 23.2)
+	madOver := spreadCase("mad_over", noisy, 23.5)
+	ratioInside := spreadCase("ratio_inside", flat, 19.9)
+	ratioOver := spreadCase("ratio_over", flat, 20.1)
 
-	got := readOutliers(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"7",
-		fixture.Anchor.Add(-testdb.RecentRange),
-		fixture.Anchor,
-		10,
-		defaultSigma,
-		defaultMinHistory,
-		defaultRatio,
-		nil,
-		nil,
-	)
-	for _, row := range got {
-		if row.FingerprintID == fingerprintID {
-			return
+	// Plenty of history, but on the replica.
+	other := newOutlierHistory(t, conn, fixture, "canvas7r", "other_source")
+	other.add(historyStart, time.Minute, flat...)
+	otherSource := other.fingerprID
+	insertOutlierEvent(t, conn, fixture.SourceIDs["canvas7p"], fixture.PhysicalIDs["canvas7p"], otherSource, inRange, 10, 1000)
+
+	seen := map[int64]outlierRow{}
+	for _, row := range readFixtureOutliers(t, conn, fixture, "7", 50) {
+		seen[row.FingerprintID] = row
+	}
+	for _, c := range []struct {
+		name   string
+		id     int64
+		listed bool
+	}{
+		{"mad_inside", madInside, false},
+		{"mad_over", madOver, true},
+		{"ratio_inside", ratioInside, false},
+		{"ratio_over", ratioOver, true},
+		{"other_source", otherSource, false},
+	} {
+		if _, ok := seen[c.id]; ok != c.listed {
+			t.Errorf("%s listed = %v, want %v; rows = %+v", c.name, ok, c.listed, seen)
 		}
 	}
-	t.Fatalf("realistic outlier fingerprint %d was not returned; rows = %+v", fingerprintID, got)
-}
-
-func TestOutliersThresholdAndSourceVsGlobalBaseline(t *testing.T) {
-	db := testdb.StartRotten(t)
-	fixture := testdb.SeedReports(t, db)
-	conn := db.Connect(t)
-
-	insideID := addOutlierCase(t, conn, fixture, "threshold_inside", 12.9, 10, 1, 0, 1)
-	overID := addOutlierCase(t, conn, fixture, "threshold_over", 13.1, 10, 1, 100, 1)
-
-	got := readOutliers(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"7",
-		fixture.Anchor.Add(-testdb.RecentRange),
-		fixture.Anchor,
-		10,
-		defaultSigma,
-		defaultMinHistory,
-		defaultRatio,
-		nil,
-		nil,
-	)
-	seen := map[int64]bool{}
-	for _, row := range got {
-		seen[row.FingerprintID] = true
-	}
-	if seen[insideID] {
-		t.Fatalf("inside-threshold fingerprint %d was returned; source baseline excludes it, global baseline would include it", insideID)
-	}
-	if !seen[overID] {
-		t.Fatalf("over-threshold fingerprint %d was not returned; source baseline includes it, global baseline would exclude it; rows = %+v", overID, got)
-	}
-}
-
-func TestOutliersUsesRatioFallbackForZeroDeviationHistory(t *testing.T) {
-	db := testdb.StartRotten(t)
-	fixture := testdb.SeedReports(t, db)
-	conn := db.Connect(t)
-
-	fingerprintID := addOutlierCase(t, conn, fixture, "steady_then_slow", 17, 8, 0, 8, 0)
-	got := readOutliers(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"7",
-		fixture.Anchor.Add(-testdb.RecentRange),
-		fixture.Anchor,
-		10,
-		defaultSigma,
-		defaultMinHistory,
-		defaultRatio,
-		nil,
-		nil,
-	)
-	for _, row := range got {
-		if row.FingerprintID == fingerprintID {
-			if row.SourceDeviationMS != 0 {
-				t.Fatalf("source deviation = %v, want adjusted zero-deviation history", row.SourceDeviationMS)
-			}
-			return
+	if row, ok := seen[madOver]; ok {
+		if want := 1.4826 * 3; math.Abs(row.HistorySpreadMS-want) > 1e-9 {
+			t.Errorf("mad_over spread = %v, want %v", row.HistorySpreadMS, want)
 		}
 	}
-	t.Fatalf("zero-deviation ratio outlier fingerprint %d was not returned; rows = %+v", fingerprintID, got)
 }
 
 func TestOutliersOrdersBeforeLimit(t *testing.T) {
 	db := testdb.StartRotten(t)
 	fixture := testdb.SeedReports(t, db)
 	conn := db.Connect(t)
-	ctx := context.Background()
 
-	count, mean, deviation := mergedStats(30, 0, 0.01, 0.5)
-	if _, err := conn.Exec(ctx, `insert into rotten.fingerprint_stats
-		(fingerprint_id, logical_source_id, type, count, mean, deviation, last)
-		values ($1,$2,'mean_time',$3,$4,$5,0)`,
-		fixture.FingerprintID["users"], fixture.SourceIDs["canvas7p"], count, mean, deviation); err != nil {
-		t.Fatal(err)
-	}
+	// Slower per call than slow's 40 ms, but a lower score: 100 over a
+	// median of 40 with spread 40 / 3 scores 4.5, under slow's 12.
+	start := fixture.Anchor.Add(-testdb.RecentRange)
+	h := newOutlierHistory(t, conn, fixture, "canvas7p", "slower_lower_score")
+	h.add(start.Add(-2*time.Hour), time.Minute, repeat(40, 40)...)
+	h.add(start.Add(time.Hour), time.Minute, 100)
+	lower := h.finish()
 
-	got := readOutliers(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"7",
-		fixture.Anchor.Add(-testdb.RecentRange),
-		fixture.Anchor,
-		1,
-		defaultSigma,
-		defaultMinHistory,
-		defaultRatio,
-		nil,
-		nil,
-	)
-	if len(got) != 1 {
-		t.Fatalf("got %d rows, want one: %+v", len(got), got)
+	all := readFixtureOutliers(t, conn, fixture, "7", 10)
+	if len(all) != 2 || all[0].FingerprintID != fixture.FingerprintID["slow"] || all[1].FingerprintID != lower {
+		t.Fatalf("outliers = %+v, want slow then %d", all, lower)
 	}
-	if got[0].FingerprintID != fixture.FingerprintID["users"] {
-		t.Fatalf("fingerprint = %d, want higher-deviation users %d before slow %d", got[0].FingerprintID, fixture.FingerprintID["users"], fixture.FingerprintID["slow"])
+	got := readFixtureOutliers(t, conn, fixture, "7", 1)
+	if len(got) != 1 || got[0].FingerprintID != fixture.FingerprintID["slow"] {
+		t.Fatalf("limit 1 = %+v, want higher-score slow %d before %d", got, fixture.FingerprintID["slow"], lower)
 	}
 }
 
@@ -342,18 +259,6 @@ func insertOutlierStat(t *testing.T, conn *pgx.Conn, fingerprintID int64, source
 		fingerprintID, sourceID, count, mean, deviation); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func addOutlierCase(t *testing.T, conn *pgx.Conn, fixture *testdb.Reports, key string, recentMean float64, sourceMean float64, sourceDeviation float64, globalMean float64, globalDeviation float64) int64 {
-	t.Helper()
-	fingerprintID := insertOutlierFingerprint(t, conn, key, "select "+key)
-	start := fixture.Anchor.Add(-20 * time.Minute)
-	insertOutlierEvent(t, conn, fixture.SourceIDs["canvas7p"], fixture.PhysicalIDs["canvas7p"], fingerprintID, start, 10, recentMean*10)
-	sourceCount, sourceStoredMean, sourceStoredDeviation := mergedStats(30, sourceMean, sourceDeviation, recentMean)
-	globalCount, globalStoredMean, globalStoredDeviation := mergedStats(30, globalMean, globalDeviation, recentMean)
-	insertOutlierStat(t, conn, fingerprintID, fixture.SourceIDs["canvas7p"], sourceCount, sourceStoredMean, sourceStoredDeviation)
-	insertOutlierStat(t, conn, fingerprintID, 0, globalCount, globalStoredMean, globalStoredDeviation)
-	return fingerprintID
 }
 
 func mergedStats(n int64, mean float64, deviation float64, samples ...float64) (int64, float64, float64) {

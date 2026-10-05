@@ -406,6 +406,10 @@ type perfCase struct {
 	end    time.Time
 	budget time.Duration
 	runs   int
+	// historyFrom, if set, is where the report's history scan of events
+	// starts, before the range: outliers reads back the range's length,
+	// clamped to between 1 and 7 days.
+	historyFrom time.Time
 }
 
 type planNode struct {
@@ -638,7 +642,11 @@ func assertPerfPruning(t *testing.T, conn *pgx.Conn, c perfCase, r perfResult) {
 	// A partition can stay in a generic plan when pruning happens per
 	// execution of its node; it only costs anything if it's actually scanned.
 	for parent, scanned := range r.summary.scanned {
-		expected := partitionsOverlappingRange(t, conn, parent, c.start, c.end)
+		from := c.start
+		if parent == "rotten.events" && !c.historyFrom.IsZero() {
+			from = c.historyFrom
+		}
+		expected := partitionsOverlappingRange(t, conn, parent, from, c.end)
 		for p := range scanned {
 			if !expected[p] {
 				t.Errorf("%s: scans out-of-range partition %s; want only %v", c.name, p, sortedKeys(expected))
@@ -667,7 +675,12 @@ func perfCases(f perfFixture) []perfCase {
 	const twoS, uiTimeout = 2 * time.Second, 15 * time.Second
 	var cases []perfCase
 	add := func(name, file string, start time.Time, budget time.Duration, runs int, args ...any) {
-		cases = append(cases, perfCase{name: name, file: file, args: args, start: start, end: end, budget: budget, runs: runs})
+		c := perfCase{name: name, file: file, args: args, start: start, end: end, budget: budget, runs: runs}
+		if file == "outliers.sql" {
+			lookback := min(max(end.Sub(start), 24*time.Hour), 7*24*time.Hour)
+			c.historyFrom = start.Add(-lookback)
+		}
+		cases = append(cases, c)
 	}
 	for _, r := range []struct {
 		label  string

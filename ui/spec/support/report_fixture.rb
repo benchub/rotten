@@ -67,7 +67,10 @@ module ReportFixture
     # bridge 13, recent and old.
     Event.new("bridge13p", "courses", 20 * M, 75, 150, [ctx("programs", "show", nil, 75)]),
     Event.new("bridge13p", "users", 100 * M, 25, 10, [ctx(nil, nil, "SyncLearners", 25)]),
-    Event.new("bridge13p", "users", 5 * H, 1000, 400, [])
+    Event.new("bridge13p", "users", 5 * H, 1000, 400, []),
+    # slow's history on canvas 7 primary, for outliers: 40 windows ending at or
+    # before 3 hours ago, cycling 7 to 9 ms/call, so the median is 8.
+    *Array.new(40) { |i| Event.new("canvas7p", "slow", (3 * H) + WINDOW + (i * WINDOW), 20, 20 * [7, 7.5, 8, 8.5, 9][i % 5], []) }
   ].freeze
 
   STATS = [
@@ -230,6 +233,17 @@ module ReportFixture
         fingerprint_id = conn.exec_params("insert into rotten.fingerprints (fingerprint, normalized) values ($1, $2) returning id",
                                           [key, normalized]).getvalue(0, 0).to_i
         add_event.(fingerprint_id, 30 * M, calls, time, contexts)
+        # History for outliers, which reads only the samples before the range:
+        # 30 windows at 1 ms/call before the last 3 hours, and 30 before the
+        # last 7 days (plus an hour, as the range's end is now, not anchor).
+        [3 * H, (7 * 24 * H) + H].each do |before|
+          conn.exec_params(<<~SQL, [fingerprint_id, source_id, physical_id, (anchor - before).iso8601, WINDOW])
+            insert into rotten.events
+              (fingerprint_id, logical_source_id, physical_source_id, observed_window_start, observed_window_end, calls, time)
+            select $1, $2, $3, w, w + make_interval(secs => $5), 10, 10
+            from generate_series(1, 30) i, lateral (select $4::timestamptz - make_interval(secs => i * $5) as w) s
+          SQL
+        end
         conn.exec_params(<<~SQL, [fingerprint_id, source_id])
           insert into rotten.fingerprint_stats (fingerprint_id, logical_source_id, type, count, mean, deviation, last)
           values ($1, $2, 'mean_time', 100000, 1, 1, 1)

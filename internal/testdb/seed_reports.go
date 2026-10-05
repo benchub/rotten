@@ -108,12 +108,13 @@ const (
 //     (75% and 25%), and "ReplicaReport" runs only on the replica (15 calls).
 //   - controller "grades"#"show" runs only on replicas.
 //   - slow on canvas7p is the planted outlier: 40 ms/call recent vs a
-//     history of mean 5 (source 0) or 8 (canvas7p). See ReportStats.
+//     history (slowHistory) of 40 windows before the last 3 hours with
+//     median 8 ms/call and MAD 0.5.
 //   - users on canvas13p (for -47): with 10-minute buckets aligned to Anchor,
 //     recent buckets start 30, 50, and 90 minutes before Anchor, the bucket
 //     70 minutes before is empty, and an older one sits 4 hours back.
 //   - old windows (4h, 5h, and 26h ago) must drop out of "last 3 hours".
-var ReportEvents = []SeedEvent{
+var ReportEvents = append([]SeedEvent{
 	// canvas 13 primary, recent.
 	{"canvas13p", "users", 30 * m, 500, 250, []SeedContext{
 		{"users", "show", "", 200}, {"users", "index", "", 120}, {"courses", "show", "", 80},
@@ -140,6 +141,18 @@ var ReportEvents = []SeedEvent{
 	{"bridge13p", "courses", 20 * m, 75, 150, []SeedContext{{"programs", "show", "", 75}}},
 	{"bridge13p", "users", 100 * m, 25, 10, []SeedContext{{"", "", "SyncLearners", 25}}},
 	{"bridge13p", "users", 5 * h, 1000, 400, nil},
+}, slowHistory()...)
+
+// slowHistory is slow's history on canvas7p for the outliers report: 40
+// windows ending at or before Anchor-3h, cycling 7, 7.5, 8, 8.5 and 9
+// ms/call, so the median is 8 and the MAD 0.5.
+func slowHistory() []SeedEvent {
+	var out []SeedEvent
+	for i := 0; i < 40; i++ {
+		ms := []float64{7, 7.5, 8, 8.5, 9}[i%5]
+		out = append(out, SeedEvent{"canvas7p", "slow", RecentRange + WindowLength + time.Duration(i)*WindowLength, 20, 20 * ms, nil})
+	}
+	return out
 }
 
 // ReportStats is the fixture's fingerprint_stats. The stored slow mean_time

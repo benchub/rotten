@@ -3,10 +3,10 @@ package devtraffic
 import "time"
 
 // Episode is a stretch of time in which one kind of query runs much slower
-// than usual, so rotten's outliers report, which compares a fingerprint's
-// recent time per call with its own history, has something to find. An
-// episode slows its shape without changing its SQL, so the fingerprint
-// stays the same.
+// than usual, so rotten's outliers report, which scores each window's time
+// per call for a fingerprint against its own earlier history, has something
+// to find. An episode slows its shape without changing its SQL, so the
+// fingerprint stays the same.
 type Episode string
 
 const (
