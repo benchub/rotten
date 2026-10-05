@@ -1532,3 +1532,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Red test:** Depends on the choice; for example, an hourly fingerprint with a slow run in a 3h range that's listed.
 - Completed: 2026-10-04, a4dec14
   - Short groups top up from their newest older windows within 7 days. User raised outliers budgets to 10s and required a busy indicator by 2s; added a Stimulus report-busy controller with an accessible status region outside the busy form. 3h ~2.5-2.9s (50 rows vs 4). Review: one a11y finding fixed in round 1, round 2 clean. Follow-up: 20261004-231500-1.
+
+### 20261004-225300-1: Disable JIT for report queries.
+- **Why (found in 20261005-020000-1):** Outliers with a match filter plans at about 487k cost, just under the 500k `jit_above_cost` default where JIT compilation adds about 1.5s. More data could push it over and blow the 5s budget.
+- **Do:** Set `jit = off` for report queries in the UI (e.g. `SET LOCAL` in the report transaction) and in the perf suite, so both measure the same thing.
+- **Red test:** A test that a report query runs with JIT off (e.g. checks `current_setting('jit')` inside the report transaction, or EXPLAIN shows no JIT section).
+- Completed: 2026-10-04, 4612eef
+  - SET LOCAL jit = off in ReportRunner and the perf suite's beginReportTx; specs check it doesn't leak to pooled connections. Equal or faster everywhere (e.g. top_by_calls 24h 925ms -> 190ms custom). Review clean. docs/perf.md Results tables still predate the change.
