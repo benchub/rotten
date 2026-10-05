@@ -38,6 +38,12 @@ type devService struct {
 
 func loadDevService(t testing.TB, name string) devService {
 	t.Helper()
+	return decodeDevService[devService](t, name)
+}
+
+// decodeDevService decodes dev/docker-compose.yaml's service name into T.
+func decodeDevService[T any](t testing.TB, name string) T {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(RepoRoot(), "dev", "docker-compose.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -52,11 +58,20 @@ func loadDevService(t testing.TB, name string) devService {
 	if !ok {
 		t.Fatalf("testdb: dev/docker-compose.yaml has no %s service", name)
 	}
-	var svc devService
+	var svc T
 	if err := node.Decode(&svc); err != nil {
 		t.Fatalf("testdb: parse dev/docker-compose.yaml service %s: %v", name, err)
 	}
 	return svc
+}
+
+// unescapeCompose undoes compose's $$ escapes in a command.
+func unescapeCompose(in []string) []string {
+	out := make([]string, len(in))
+	for i, a := range in {
+		out[i] = strings.ReplaceAll(a, "$$", "$")
+	}
+	return out
 }
 
 // customizers turns svc into container options: its entrypoint and command
@@ -65,13 +80,6 @@ func loadDevService(t testing.TB, name string) devService {
 // copied files, and its observed-network aliases on network.
 func (svc devService) customizers(t testing.TB, network *testcontainers.DockerNetwork, env map[string]string) []testcontainers.ContainerCustomizer {
 	t.Helper()
-	unescape := func(in []string) []string {
-		out := make([]string, len(in))
-		for i, a := range in {
-			out[i] = strings.ReplaceAll(a, "$$", "$")
-		}
-		return out
-	}
 	vars := maps.Clone(svc.Environment)
 	if vars == nil {
 		vars = map[string]string{}
@@ -103,10 +111,10 @@ func (svc devService) customizers(t testing.TB, network *testcontainers.DockerNe
 		testcontainers.WithEnv(vars),
 		testcontainers.WithFiles(files...),
 		tcnetwork.WithNetwork(observed.Aliases, network),
-		testcontainers.WithCmd(unescape(svc.Command)...),
+		testcontainers.WithCmd(unescapeCompose(svc.Command)...),
 	}
 	if len(svc.Entrypoint) > 0 {
-		opts = append(opts, testcontainers.WithEntrypoint(unescape(svc.Entrypoint)...))
+		opts = append(opts, testcontainers.WithEntrypoint(unescapeCompose(svc.Entrypoint)...))
 	}
 	return opts
 }

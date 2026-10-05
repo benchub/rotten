@@ -98,14 +98,14 @@ services:
     image: rotten-dev-go:1.27
     network_mode: none
     working_dir: /src
+    # Every Go service builds its binary under /tmp, which is per container,
+    # then execs it, so the program is PID 1 and gets compose's SIGTERM:
+    # `go run` doesn't pass it on. The shared go-build cache keeps rebuilds
+    # quick.
     command:
-      - go
-      - run
-      - ./dev/cmd/gen-test-certs
-      - -out
-      - /certs
-      - -host
-      - rotten-server,localhost,127.0.0.1
+      - sh
+      - -ec
+      - go build -o /tmp/gen-test-certs ./dev/cmd/gen-test-certs && exec /tmp/gen-test-certs -out /certs -host rotten-server,localhost,127.0.0.1
     volumes:
       - ..:/src:ro
       - go-mod:/go/pkg/mod
@@ -116,10 +116,9 @@ services:
     image: rotten-dev-go:1.27
     working_dir: /src
     command:
-      - go
-      - run
-      - ./cmd/rotten-server
-      - migrate
+      - sh
+      - -ec
+      - go build -o /tmp/rotten-server ./cmd/rotten-server && exec /tmp/rotten-server migrate
     environment:
       ROTTEN_OWNER_DSN: postgres://rotten_owner:rotten_owner@rotten-db:5432/rotten?sslmode=disable
     volumes:
@@ -136,16 +135,9 @@ services:
     image: rotten-dev-go:1.27
     working_dir: /src
     command:
-      - go
-      - run
-      - ./cmd/rotten-server
-      - serve
-      - -listen
-      - :8443
-      - -tls-cert
-      - /certs/server.pem
-      - -tls-key
-      - /certs/server-key.pem
+      - sh
+      - -ec
+      - go build -o /tmp/rotten-server ./cmd/rotten-server && exec /tmp/rotten-server serve -listen :8443 -tls-cert /certs/server.pem -tls-key /certs/server-key.pem
     environment:
       ROTTEN_SERVER_DSN: postgres://rotten_ingest:rotten_ingest@rotten-db:5432/rotten?sslmode=disable
     ports:
@@ -193,7 +185,8 @@ services:
       - -c
       - |
         if [ -s /worker-secrets/pass.key ]; then exit 0; fi
-        go run ./cmd/rotten-server keys create -dsn "$$ROTTEN_ADMIN_DSN" --fqdn observed-postgres dev-worker | tail -n 1 > /worker-secrets/pass.key.new
+        go build -o /tmp/rotten-server ./cmd/rotten-server
+        /tmp/rotten-server keys create -dsn "$$ROTTEN_ADMIN_DSN" --fqdn observed-postgres dev-worker | tail -n 1 > /worker-secrets/pass.key.new
         test -s /worker-secrets/pass.key.new
         mv /worker-secrets/pass.key.new /worker-secrets/pass.key
     environment:
@@ -213,11 +206,9 @@ services:
     image: rotten-dev-go:1.27
     working_dir: /src
     command:
-      - go
-      - run
-      - ./cmd/rotten-worker
-      - -config
-      - /src/dev/worker.json
+      - sh
+      - -ec
+      - go build -o /tmp/rotten-worker ./cmd/rotten-worker && exec /tmp/rotten-worker -config /src/dev/worker.json
     volumes:
       - ..:/src:ro
       - go-mod:/go/pkg/mod
@@ -252,7 +243,8 @@ services:
       - -c
       - |
         if [ -s /worker-secrets/pass.key ]; then exit 0; fi
-        go run ./cmd/rotten-server keys create -dsn "$$ROTTEN_ADMIN_DSN" --fqdn observed-replica dev-worker-replica | tail -n 1 > /worker-secrets/pass.key.new
+        go build -o /tmp/rotten-server ./cmd/rotten-server
+        /tmp/rotten-server keys create -dsn "$$ROTTEN_ADMIN_DSN" --fqdn observed-replica dev-worker-replica | tail -n 1 > /worker-secrets/pass.key.new
         test -s /worker-secrets/pass.key.new
         mv /worker-secrets/pass.key.new /worker-secrets/pass.key
     environment:
@@ -269,8 +261,7 @@ services:
       - core
 
   # The replica's worker (Role replica): same project, environment and
-  # cluster as the primary's, its own FQDN, key and state. Built, then
-  # exec'd, like traffic, so it gets compose's SIGTERM.
+  # cluster as the primary's, its own FQDN, key and state.
   worker-replica:
     image: rotten-dev-go:1.27
     working_dir: /src
@@ -305,9 +296,7 @@ services:
   traffic:
     image: rotten-dev-go:1.27
     working_dir: /src
-    # Build, then exec, so the generator is PID 1 and gets compose's
-    # SIGTERM: `go run` doesn't pass it on, so the generator never shut down
-    # cleanly. The shared go-build cache keeps rebuilds quick.
+    # Built, then exec'd, like the other Go services (see certs).
     command:
       - sh
       - -ec
