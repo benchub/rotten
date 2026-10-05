@@ -55,12 +55,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261004-221500-1: Outliers report misses short slow spells in preset ranges.
-- **Decision (user, 2026-10-04):** Score each in-range window (or the worst few) against a robust baseline (median/MAD) from history, so short spikes show in preset ranges and past spells don't hide new ones.
-- **Why (found in 20261004-142000-1):** `reports/outliers.sql` compares the average of a fingerprint's per-window means over the whole range with its history: every `fingerprint_stats` sample outside the range, including later ones. A 2-minute slow spell in a 1-hour or 3-hour range is averaged with 30 to 90 normal windows. And once a fingerprint has had two spells, each is in the other's history, which widens the deviation. The dev traffic's episodes therefore show only with a custom range covering one episode (dev/README.md, "Slow episodes and the outliers report"). Production spikes behave the same way.
-- **Do:** Decide with the user whether that's intended. One option is scoring each in-range window (or the worst few) against history, instead of the range's average, possibly with a robust baseline (median/MAD) so past spells don't hide new ones.
-- **Red test:** A report spec with 60 normal windows and 2 slow ones in a 1-hour range, plus history containing one earlier slow spell, that expects the fingerprint to be listed.
-
 ### 20261005-020000-1: Outliers with a match filter takes 9 to 12 seconds at 7 days.
 - **Why (found in 20261004-221500-1):** In the perf harness, `outliers` with `match` over a 7-day range takes about 9.5s with a custom plan and 11.4s with a generic one, close to the UI's 15s timeout. Master's SQL took about 11 and 12 seconds before the per-window scoring, so the cost isn't the scoring: it's `matched_events`, which reads every in-range `event_context` row of the source and joins controllers, actions and job tags, plus `bool_or(e.id in (...))` over every in-range event.
 - **Do:** Find a cheaper way to keep groups that ran in a matching context, for example matching the controllers, actions and job tags first, then probing `event_context` by those ids, or semi-joining by (logical source, fingerprint) instead of by event id. Keep the semantics in the SQL header.

@@ -1471,3 +1471,12 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - Completed: 2026-10-04, 69b41c8
   - `pgss.Recreated` plus `TextCache.Invalidate` before `Fill`. On PG 14–16, a dealloc change drops all cached texts.
   - Known limitation (documented): on 14–16, a single-entry reset whose counters climb back past their old values is undetectable.
+
+### 20261004-221500-1: Outliers report misses short slow spells in preset ranges.
+- **Decision (user, 2026-10-04):** Score each in-range window (or the worst few) against a robust baseline (median/MAD) from history, so short spikes show in preset ranges and past spells don't hide new ones.
+- **Why (found in 20261004-142000-1):** `reports/outliers.sql` compares the average of a fingerprint's per-window means over the whole range with its history: every `fingerprint_stats` sample outside the range, including later ones. A 2-minute slow spell in a 1-hour or 3-hour range is averaged with 30 to 90 normal windows. And once a fingerprint has had two spells, each is in the other's history, which widens the deviation. The dev traffic's episodes therefore show only with a custom range covering one episode (dev/README.md, "Slow episodes and the outliers report"). Production spikes behave the same way.
+- **Do:** Decide with the user whether that's intended. One option is scoring each in-range window (or the worst few) against history, instead of the range's average, possibly with a robust baseline (median/MAD) so past spells don't hide new ones.
+- **Red test:** A report spec with 60 normal windows and 2 slow ones in a 1-hour range, plus history containing one earlier slow spell, that expects the fingerprint to be listed.
+- Completed: 2026-10-04, d744cbb
+  - Score = (worst window − median) ÷ max(1.4826·MAD, (min ratio − 1)/threshold·median, 0.01 ms). History is the same source's samples before the range, the range's length clamped to 1–7 days. Listed when there are ≥30 history samples and score > 3.
+  - Follow-ups: 20261005-020000-1 (7-day match cost), 20261005-020000-2 (rare queries lack history).
