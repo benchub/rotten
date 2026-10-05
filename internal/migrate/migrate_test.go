@@ -454,6 +454,61 @@ func TestEventContextCountIsBigintEverywhere(t *testing.T) {
 	}
 }
 
+// Migration 0013 indexes events by (source, fingerprint, window) and
+// includes every other column the outliers report's lookback reads, so it
+// takes a short group's newest older windows with an index-only scan. Every
+// partition gets it, including the default one and partitions made later.
+func TestEventsSourceFingerprintWindowIndex(t *testing.T) {
+	db := testdb.StartRotten(t)
+	conn := db.Connect(t)
+	ctx := context.Background()
+
+	const want = "(logical_source_id, fingerprint_id, observed_window_start) INCLUDE (observed_window_end, calls, \"time\")"
+	var def string
+	if err := conn.QueryRow(ctx, `select pg_get_indexdef('rotten.events_source_fingerprint_window'::regclass)`).Scan(&def); err != nil {
+		t.Fatalf("events_source_fingerprint_window: %v", err)
+	}
+	if !strings.Contains(def, "ON ONLY rotten.events USING btree "+want) && !strings.Contains(def, "ON rotten.events USING btree "+want) {
+		t.Errorf("events_source_fingerprint_window = %s, want it on rotten.events %s", def, want)
+	}
+
+	if _, err := conn.Exec(ctx, `select public.create_partition_time('rotten.events', array[now() + interval '400 days'])`); err != nil {
+		t.Fatalf("create a later partition: %v", err)
+	}
+	rows, err := conn.Query(ctx, `
+		select (c.oid::regclass)::text,
+		       exists (
+		         select from pg_index x
+		         join pg_inherits ii on ii.inhrelid = x.indexrelid
+		         where x.indrelid = c.oid
+		           and ii.inhparent = 'rotten.events_source_fingerprint_window'::regclass)
+		from pg_inherits i
+		join pg_class c on c.oid = i.inhrelid
+		where i.inhparent = 'rotten.events'::regclass`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	partitions := 0
+	for rows.Next() {
+		var name string
+		var indexed bool
+		if err := rows.Scan(&name, &indexed); err != nil {
+			t.Fatal(err)
+		}
+		partitions++
+		if !indexed {
+			t.Errorf("partition %s has no events_source_fingerprint_window", name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if partitions < 2 {
+		t.Fatalf("rotten.events has %d partitions, want the default one and dated ones", partitions)
+	}
+}
+
 const eventContextUtilizationMigration = "0011_event_context_utilization.sql"
 
 // Migration 0011 copies each context's logical source and share of its

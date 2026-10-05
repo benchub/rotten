@@ -61,4 +61,22 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** 20261005-020000-2.
 - **Red test:** Tighten the perf suite's outliers 3h budget back to 2s, so it fails now.
 
+### 20261005-123457-1: Decide whether to drop `events_fingerprint_window`.
+- **Why (found in 20261004-231500-1):** Migration 0013's `events_source_fingerprint_window` on `(logical_source_id, fingerprint_id, observed_window_start)` serves the per-fingerprint reports about as well as 0008's `(fingerprint_id, observed_window_start)` on the perf data: e.g. fingerprint_timeseries 21d typical 3ms / 1ms with only the new index, 3ms / 1ms with both. Dropping 0008's index would save 392 MB per 10M events and one btree insert per event (about 10–30% of insert time, see docs/perf.md).
+- **Do:** List every query that uses `events_fingerprint_window` (the per-fingerprint reports, outliers' worst-window lookup, the UI), and check each with only the new index, including a fingerprint on many sources and Postgres 14–17, which have no btree skip scan. If none regresses, add a migration that drops it, and change the perf suite's index decision to require the new index instead. Note the lock in docs/database.md.
+- **Needs:** 20261004-231500-1.
+- **Red test:** The perf suite fails if `events_fingerprint_window` exists while a per-fingerprint case is no slower without it, or, in the other direction, a case that needs it fails its budget once it's dropped.
+
+### 20261005-123457-2: 7d match reports hit the statement timeout under heavy load.
+- **Why (found in 20261004-231500-1):** In one perf run on master at load average 30–69 (other projects' containers), outliers 7d match (both plans) and top_by_total_time 7d match (generic) were canceled by the 15s statement_timeout. At load average 15–25 they take about 3.5–4.5s. They read 7 days of a cluster's events plus contexts, so a busy database could show users an error page.
+- **Do:** Reproduce under controlled load (for example, run the suite with a CPU-bound container alongside), and find which part of those plans degrades most (hash spills at the default `work_mem`, the context match, parallel workers). Fix it or document the limit.
+- **Needs:** nothing.
+- **Red test:** A perf case that runs the 7d match reports with a concurrent load generator and requires them to finish under the UI's timeout.
+
+### 20261005-123457-3: `TestDevObservedReplicaWaitsForAnActiveSlot` flakes under load.
+- **Why (found in 20261004-231500-1):** It failed once in `make test-all` at high load average with "replica didn't log waiting for the slot", then passed alone. The slot holder is `timeout 8 pg_receivewal`, so if the replica container takes more than 8s to reach its clone, the slot is free and it never waits.
+- **Do:** Hold the slot until the replica has logged that it's waiting (for example, keep `pg_receivewal` running and stop it once the log line appears), instead of for a fixed 8s.
+- **Needs:** nothing.
+- **Red test:** Delay the replica's start past 8s (or shorten the hold) and watch the current test fail; it must pass after the fix.
+
 ## Phase F: Docs.

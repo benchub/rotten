@@ -37,7 +37,9 @@
 --   just the lookback, and one with fewer than $8 even in 7 days isn't
 --   scored. Only samples before the range count, never later ones, so a
 --   later slow spell can't mask this one, and a past range scores the same
---   however much data has arrived since. It reads
+--   however much data has arrived since. The older windows are read per
+--   short group, newest first, from events_source_fingerprint_window (see
+--   migration 0013), so a group stops reading once it has $8. It reads
 --   events only, not fingerprint_stats, so the legacy worker's delayed fingerprint_stats flush doesn't matter.
 --
 -- Baseline:
@@ -162,41 +164,43 @@ with sources as (
   group by h.logical_source_id, h.fingerprint_id
 ), short as (
   -- The kept groups with fewer than $8 samples in the lookback. Ranges of 7
-  -- days or more already look back 7 days.
+  -- days or more already look back 7 days. For a 3h range most groups are
+  -- short: about 17k of 18k in the perf data.
   select a.logical_source_id, a.fingerprint_id, h.samples, coalesce(h.n, 0) as n
   from aggregated a
   left join history h on h.logical_source_id = a.logical_source_id and h.fingerprint_id = a.fingerprint_id
   where $5::timestamptz - $4::timestamptz < interval '7 days'
     and coalesce(h.n, 0) < $8::integer
 ), older as (
-  -- The short groups' samples from 7 days before $4 up to the lookback,
-  -- ranked newest window first. Read by source and window: the + 0 keeps the
-  -- planner, which expects few short groups, from probing the events index
-  -- once per group, which reads each source's rows once per group.
-  select e.logical_source_id, e.fingerprint_id, (e.time / e.calls)::double precision as ms,
-    rank() over (partition by e.logical_source_id, e.fingerprint_id order by e.observed_window_start desc) as n
-  from rotten.events e
-  join sources s on s.id = e.logical_source_id
-  where $5::timestamptz - $4::timestamptz < interval '7 days'
-    and e.observed_window_start >= $4::timestamptz - interval '7 days'
-    and e.observed_window_start < $4::timestamptz - least(greatest($5::timestamptz - $4::timestamptz, interval '1 day'), interval '7 days')
-    and e.observed_window_end <= $4::timestamptz
-    and e.calls > 0
-    and (e.logical_source_id + 0, e.fingerprint_id + 0) in (select logical_source_id, fingerprint_id from short)
+  -- Each short group's newest older windows, from 7 days before $4 up to the
+  -- lookback, until it has $8 samples. WITH TIES keeps every sample of the
+  -- last window, so a window is never split. One index-only scan per group
+  -- on events_source_fingerprint_window, newest first, stopping once it has
+  -- enough; reading the sources' older rows and ranking them read about 1M
+  -- rows for a 3h range.
+  select k.logical_source_id, k.fingerprint_id, array_agg(o.ms) as samples
+  from short k
+  cross join lateral (
+    select (e.time / e.calls)::double precision as ms
+    from rotten.events e
+    where e.logical_source_id = k.logical_source_id
+      and e.fingerprint_id = k.fingerprint_id
+      and e.observed_window_start >= $4::timestamptz - interval '7 days'
+      and e.observed_window_start < $4::timestamptz - least(greatest($5::timestamptz - $4::timestamptz, interval '1 day'), interval '7 days')
+      and e.observed_window_end <= $4::timestamptz
+      and e.calls > 0
+    order by e.observed_window_start desc
+    fetch first ($8::integer - k.n) rows with ties
+  ) o
+  group by k.logical_source_id, k.fingerprint_id
 ), all_history as (
   -- Groups with $8 samples in the lookback, then short groups topped up with
-  -- their newest older windows (rank, so a window is never split) up to $8.
+  -- their newest older windows, if that reaches $8.
   select logical_source_id, fingerprint_id, samples from history where n >= $8::integer
   union all
   select k.logical_source_id, k.fingerprint_id, array_cat(k.samples, o.samples)
   from short k
-  join (
-    select k2.logical_source_id, k2.fingerprint_id, array_agg(o.ms) as samples
-    from short k2
-    join older o on o.logical_source_id = k2.logical_source_id and o.fingerprint_id = k2.fingerprint_id
-    where o.n <= $8::integer - k2.n
-    group by k2.logical_source_id, k2.fingerprint_id
-  ) o on o.logical_source_id = k.logical_source_id and o.fingerprint_id = k.fingerprint_id
+  join older o on o.logical_source_id = k.logical_source_id and o.fingerprint_id = k.fingerprint_id
   where k.n + cardinality(o.samples) >= $8::integer
 ), scored as (
   select

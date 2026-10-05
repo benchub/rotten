@@ -42,15 +42,16 @@ make test-perf PERF_TEST_ARGS='-run TestPerfReports'
      | Every report but outliers | 3h | 2s |
      | The fingerprint reports | 3h, 7d, 21d | 2s |
      | top_by_calls, top_by_total_time, both replica_utilization reports | 24h and 7d | 15s |
-     | outliers, with and without a role or a match | 3h, 24h and 7d | 10s |
+     | outliers, with and without a role or a match | 3h | 2s |
+     | outliers, with and without a role or a match | 24h and 7d | 10s |
      | Both replica_utilization reports | 21d | 15s |
 
-     15s is the UI's `statement_timeout`, so it's the hard failure line: past it, the user gets an error page instead of a report. It's a ceiling, not a target. The 7d numbers below show how much headroom each report has. outliers has 10s at every range (user decision, 2026-10-04, task 20261005-020000-2): its adaptive lookback reads up to 7 days of history for rare fingerprints even at 3h, which can't fit 2s (see "Adaptive lookback" below). The UI shows a busy indicator while a report runs, so the wait is visible. 10s replaces the earlier 2s at 3h and 5s for 7d with a match.
+     15s is the UI's `statement_timeout`, so it's the hard failure line: past it, the user gets an error page instead of a report. It's a ceiling, not a target. The 7d numbers below show how much headroom each report has. outliers had 10s at every range (user decision, 2026-10-04, task 20261005-020000-2): its adaptive lookback read up to 7 days of history for rare fingerprints even at 3h (see "Adaptive lookback" below). Migration 0013's index brought 3h back under 2s (task 20261004-231500-1, see "Outliers history index" below), so 3h is 2s again. 24h and 7d stay at 10s. The UI shows a busy indicator while a report runs, so the wait is visible.
 4. **Decides on the index.**
    - The test fails if `events_fingerprint_window` is missing.
-   - It logs index sizes and times a one-hour insert with and without the index.
-   - It drops the index inside a transaction it rolls back, then reruns the fingerprint reports without it.
-   - It requires the index to be at least 2× faster for the typical fingerprint at 7d and 21d.
+   - It logs index sizes and times a one-hour insert with and without the index, and with and without migration 0013's `events_source_fingerprint_window`, whose build (migration 0013's own Up section, rolled back) it also times.
+   - It drops the index inside a transaction it rolls back, then reruns the fingerprint reports without it, with only `events_source_fingerprint_window` left, and then with neither.
+   - It requires the index to be at least 2× faster than neither index for the typical fingerprint at 7d and 21d. `events_source_fingerprint_window` leads with the source, which these reports filter on too, so it serves them about as well (see "Outliers history index").
    - Last, still inside that transaction, it rebuilds the index with migration 0008's own Up section and times the build.
 
 The UI also offers a 6h preset and custom ranges up to 31 days. Those sit between, or beyond, the measured presets. Retention is 21 days, so a 31-day range covers at most 21 partitions.
@@ -75,9 +76,9 @@ These are medians from the final run, with the index present. "Scanned" means pa
 | top_by_calls match | 3h | 48ms | 102ms | 1/1 | 90 |
 | top_by_total_time | 3h | 31ms | 83ms | 1/1 | 90 |
 | top_by_total_time match | 3h | 46ms | 100ms | 1/1 | 90 |
-| outliers | 3h | 2.89s | 2.45s | 8/8 | 203 |
-| outliers role=primary | 3h | 823ms | 996ms | 8/8 | 203 |
-| outliers match | 3h | 1.29s | 972ms | 8/8 | 203 |
+| outliers | 3h | 976ms | 898ms | 8/8 | 203 |
+| outliers role=primary | 3h | 283ms | 345ms | 8/8 | 203 |
+| outliers match | 3h | 133ms | 252ms | 8/8 | 203 |
 | replica_utilization_by_controller_action | 3h | 16ms | 28ms | 1/1 | 30 |
 | replica_utilization_by_job | 3h | 6ms | 7ms | 1/1 | 30 |
 | top_by_calls | 24h | 175ms | 371ms | 2/2 | 87 |
@@ -85,9 +86,9 @@ These are medians from the final run, with the index present. "Scanned" means pa
 | top_by_calls match | 24h | 244ms | 452ms | 2/2 | 87 |
 | top_by_total_time | 24h | 171ms | 355ms | 2/2 | 87 |
 | top_by_total_time match | 24h | 253ms | 462ms | 2/2 | 87 |
-| outliers | 24h | 3.46s | 3.29s | 9/9 | 198 |
-| outliers role=primary | 24h | 1.21s | 1.22s | 9/9 | 198 |
-| outliers match | 24h | 1.66s | 1.45s | 9/9 | 198 |
+| outliers | 24h | 1.53s | 1.81s | 9/9 | 198 |
+| outliers role=primary | 24h | 473ms | 507ms | 9/9 | 198 |
+| outliers match | 24h | 905ms | 766ms | 9/9 | 198 |
 | replica_utilization_by_controller_action | 24h | 74ms | 207ms | 2/2 | 29 |
 | replica_utilization_by_job | 24h | 36ms | 58ms | 2/2 | 29 |
 | top_by_calls | 7d | 2.05s | 3.21s | 8/8 | 69 |
@@ -95,15 +96,15 @@ These are medians from the final run, with the index present. "Scanned" means pa
 | top_by_calls match | 7d | 3.49s | 3.87s | 8/8 | 69 |
 | top_by_total_time | 7d | 2.09s | 3.24s | 8/8 | 69 |
 | top_by_total_time match | 7d | 3.64s | 3.74s | 8/8 | 69 |
-| outliers | 7d | 5.21s | 4.84s | 15/15 | 168 |
-| outliers role=primary | 7d | 1.50s | 2.96s | 15/15 | 168 |
-| outliers match | 7d | 4.59s | 4.81s | 15/15 | 168 |
+| outliers | 7d | 4.51s | 4.36s | 15/15 | 168 |
+| outliers role=primary | 7d | 879ms | 1.28s | 15/15 | 168 |
+| outliers match | 7d | 3.81s | 4.16s | 15/15 | 168 |
 | replica_utilization_by_controller_action | 7d | 517ms | 1.88s | 8/8 | 23 |
 | replica_utilization_by_job | 7d | 269ms | 548ms | 8/8 | 23 |
 | replica_utilization_by_controller_action | 21d | 2.09s | **5.42s** | 21/21 | 10 |
 | replica_utilization_by_job | 21d | 967ms | 1.71s | 21/21 | 10 |
 
-The replica_utilization rows are from task 20261003-190000-1's final run, after migration 0011. Since they read only `event_context`, their Scanned and Removed columns count event_context partitions. The top_by_calls and top_by_total_time rows are from task 20261005-020000-1's final run, which rewrote their match filter. The machine was busier than in earlier runs (load average 7–17 from other containers), so compare those rows with the interleaved before-and-after numbers under "Match filter" below rather than with older rows. More partitions are premade now, so Removed counts are higher. The outliers rows are from task 20261005-020000-2's final run (load average about 16), which added the adaptive lookback. Compare them with the interleaved numbers under "Adaptive lookback" below. The outliers Scanned column counts events partitions, including the history before the range: 7 days before it, since a fingerprint short of samples can look back that far.
+The replica_utilization rows are from task 20261003-190000-1's final run, after migration 0011. Since they read only `event_context`, their Scanned and Removed columns count event_context partitions. The top_by_calls and top_by_total_time rows are from task 20261005-020000-1's final run, which rewrote their match filter. The machine was busier than in earlier runs (load average 7–17 from other containers), so compare those rows with the interleaved before-and-after numbers under "Match filter" below rather than with older rows. More partitions are premade now, so Removed counts are higher. The outliers rows are from task 20261004-231500-1's final run (load average about 15–20), which added migration 0013 for the adaptive lookback's history. Compare them with the interleaved numbers under "Outliers history index" below. The outliers Scanned column counts events partitions, including the history before the range: 7 days before it, since a fingerprint short of samples can look back that far.
 
 Plan shapes:
 
@@ -116,12 +117,12 @@ Plan shapes:
   - The same scan of events for the range, grouped by (logical source, fingerprint) only, with the source's text columns joined after. Grouping by them too made generic plans sort every in-range event by four text keys.
   - A second scan of events for the history before the range, grouped into one array of samples per (logical source, fingerprint), hash-joined to the range's groups. The median and the median absolute deviation come from `percentile_cont` over each array. Joining to the range's groups first invited one index probe per fingerprint, which was far slower.
   - The worst window's start is looked up only for the at most 50 limited rows, through `events_fingerprint_window`. Carrying it through the aggregation (an ordered `array_agg`) sorted every in-range event, about 8s at 7d.
-  - A 7d range reads 7 days of history, so it scans 15 partitions. That's most of the time at 7d. A 3h range reads a day of history, then up to 7 days for fingerprints short of samples (see "Adaptive lookback" below).
+  - A 7d range reads 7 days of history, so it scans 15 partitions. That's most of the time at 7d. A 3h range reads a day of history, then up to 7 days for fingerprints short of samples, one index-only probe per short group (see "Outliers history index" below).
   - With a match, see "Match filter" below.
 - **Adaptive lookback (outliers, task 20261005-020000-2):**
   - A fingerprint needs $8 (30) history samples to be scored. At 5-minute windows an hourly job has at most 24 in the day before a short range, so it was never scored. Now a (source, fingerprint) group with fewer than 30 samples in the default lookback (the range's length, 1 to 7 days) tops up with its newest older windows, up to 7 days before the range, until it has 30. A group with 30 in the default lookback is unchanged, and so is every 7d range.
-  - On the perf data at 3h, 17,105 of the cluster's 17,975 groups in the range are short, and their older rows are about 955k, more than half of the source's rows in those 6 days. So the extension can't be a per-group index probe: one ordered probe per group through `events_fingerprint_window` (which has no source column, and visits every daily partition) took about 7.5s at 3h, and its plan cost (7M at 3h, 56M at 24h) added about 0.8s of JIT. The `older` CTE instead reads the 6 older days of the sources' rows once (bitmap scans on `(logical_source_id, calls)`), hash-semi-joins them to the short groups, and ranks each group's windows newest first. The `+ 0` on the join keys stops the planner, which expects about one short group, from choosing a nested loop that rereads the source per group. Scanning and joining those rows, with the rest of the report, is already about 1.65s at 3h, and sorting and ranking them takes about 1s more, so 2s couldn't hold, and the user set outliers' budget to 10s at every range.
-  - A covering index on `events (logical_source_id, fingerprint_id, observed_window_start) INCLUDE (time, calls)` made the per-group probe about 2.7s at 3h, still not better. It's not added; a backlog task covers it and precomputed per-group counts.
+  - On the perf data at 3h, 17,105 of the cluster's 17,975 groups in the range are short, and their older rows are about 955k, more than half of the source's rows in those 6 days. So the extension can't be a per-group index probe: one ordered probe per group through `events_fingerprint_window` (which has no source column, and visits every daily partition) took about 7.5s at 3h, and its plan cost (7M at 3h, 56M at 24h) added about 0.8s of JIT. So the `older` CTE read the 6 older days of the sources' rows once (bitmap scans on `(logical_source_id, calls)`), hash-semi-joined them to the short groups, and ranked each group's windows newest first. A `+ 0` on the join keys stopped the planner, which expects about one short group, from choosing a nested loop that reread the source per group. Scanning and joining those rows, with the rest of the report, is already about 1.65s at 3h, and sorting and ranking them takes about 1s more, so 2s couldn't hold, and the user set outliers' budget to 10s at every range.
+  - A covering index on `events (logical_source_id, fingerprint_id, observed_window_start) INCLUDE (time, calls)` made the per-group probe about 2.7s at 3h, still not better. It wasn't added then. Task 20261004-231500-1 replaced this scan with per-group probes that stop early; see "Outliers history index" below.
   - More fingerprints are scored, so more are listed: 50 rows at 3h instead of 4, 22 for the primary instead of 1.
   - Before and after, interleaved in one run (load average about 12), cluster 13, median (custom / generic):
 
@@ -303,6 +304,57 @@ Medians in the same run, with the index dropped inside a rolled-back transaction
 
 The `global_range_samples` CTE in `outliers.sql` used the new index. Task 20261004-221500-1 replaced it: outliers now builds its baseline from the events before the range. It uses `events_fingerprint_window` only to find the worst window of each listed row.
 
+## Outliers history index (migration 0013)
+
+Task 20261004-231500-1. **Decision: add `events_source_fingerprint_window`** on `events (logical_source_id, fingerprint_id, observed_window_start) INCLUDE (observed_window_end, calls, time)`, and read each short group's older windows through it.
+
+**The query.** `older` is now a `LATERAL` per short group: an index-only scan of that (source, fingerprint), newest window first, `FETCH FIRST (30 - n) ROWS WITH TIES`. `WITH TIES` keeps the whole last window, exactly like the old `rank() <= 30 - n`, and the scan stops as soon as it has enough. At 3h, the 17,105 short groups (14,842 of which can reach 30) read about 295k index entries instead of 955k heap rows, with no sort or rank. It's still a Merge Append over the 7 older daily partitions per group, because `$4 - interval` can't prune at plan time.
+
+**Measured alternatives** (3h, cluster 13, custom / generic):
+
+| Option | 3h |
+|---|---|
+| Before: scan the sources' older rows, hash-semi-join, rank | 1.52s / 2.11s |
+| Per-group probe through `events_fingerprint_window` (no source column) | about 7.5s |
+| Rollup per (logical source, fingerprint, day) of window counts, then probes through `events_fingerprint_window` | 7.8s |
+| Rollup, then probes through the new index without `observed_window_end` | 1.75s / 1.70s |
+| The new index without `observed_window_end`, `WITH TIES`, no rollup | 1.35s / 1.23s |
+| **The new index with `observed_window_end`, `WITH TIES` (index-only)** | **0.79s / 0.84s** |
+
+The rollup (1.83M rows, 162 MB at 10M events; about 370ms to read on its own) only says how far back to go; the report still has to read the samples from events, so it can't beat the index on its own. It'd also need an upsert per event at ingest, contended across the hosts of one logical source, and it could drift from events: pg_partman's moves out of the default partition and partition drops don't decrement it. An index can't drift.
+
+**Before and after**, interleaved in one session (load average 20–27), cluster 13, median (custom / generic). Results were identical (see below).
+
+| Case | Before | After |
+|---|---|---|
+| outliers 3h | 1.52s / 2.11s | 726ms / 804ms |
+| outliers 3h role=primary | 447ms / 540ms | 266ms / 277ms |
+| outliers 3h match | 476ms / 729ms | 125ms / 143ms |
+| outliers 24h | 2.27s / 3.35s | 1.21s / 1.31s |
+| outliers 24h role=primary | 718ms / 925ms | 459ms / 494ms |
+| outliers 24h match | 963ms / 1.10s | 625ms / 631ms |
+| outliers 7d | 3.00s / 5.03s | 2.63s / 4.94s |
+| outliers 7d role=primary | 805ms / 1.25s | 787ms / 1.29s |
+| outliers 7d match | 3.40s / 3.89s | 3.58s / 4.22s |
+
+7d has no short groups, so it doesn't change. In the suite, the red run on master took 2.10s / 1.82s at 3h (load average 30–69), and the final run 976ms / 898ms at 3h and 1.53s / 1.81s at 24h (load average about 15–20). 24h's budget stays at 10s.
+
+**Same results.** On the perf data, the old and new SQL returned identical output at 3h (all roles, primary, a context match, a job match), 1h, 6h mid-data, and 24h, and, with a threshold of -1e12 so every scored group is listed, at 3h (15,712 rows), 24h replica and two matches. `outliers_history_test.go` checks the report against a Go implementation of its header on generated data: short and frequent groups, two replica hosts sharing windows (ties at the last window), windows exactly on the 7-day and lookback bounds, windows straddling the range's start, `calls = 0`, another cluster and the three kinds of match. It passes on both versions, and fails if `WITH TIES` becomes `ONLY` or the 7-day bound becomes exclusive.
+
+### Cost
+
+- **Size:** 846 MB as the seed's inserts grew it, 647 MB freshly built, against an 891 MB heap. Without `observed_window_end` it was 564 MB, but then each probe visits the heap.
+- **Ingest:** one hour of windows for every stream (about 20k events), median of 5 rolled-back runs, without the index and with it: 490ms and 595ms in an interleaved harness (10 runs), 506ms and 562ms in the suite's final run. About 10–20% more insert time, from one more btree per event. (Another suite run measured 813ms and 712ms, so take single runs as noisy.)
+- **Build time:** migration 0013's own statement took 6.5–7.8s over 10M events on this busy machine, about twice 0008's 3.4s, since the entries are wider.
+
+### Migration lock
+
+The same as 0008's: a plain `CREATE INDEX` on the partitioned parent, so a SHARE lock on `rotten.events` and every partition blocks ingest inserts for the build, while reads go on. `CONCURRENTLY` would need an `ON ONLY` index, a concurrent build and `ATTACH` per partition, in a non-transactional migration; `internal/migrate` runs SQL migrations in a transaction. It needs no grants. New partitions get the index.
+
+### Effect on the per-fingerprint reports
+
+The new index leads with the source, which the per-fingerprint reports filter on too, so with `events_fingerprint_window` dropped they're about as fast as with it (the suite's last table: e.g. fingerprint_timeseries 21d typical 3ms / 1ms with only the new index, 3ms / 1ms with both, 732ms / 1.21s with neither). A backlog task covers whether to drop `events_fingerprint_window`.
+
 ## Red notes
 
 - **Original budgets passed from the start.** The first full run had 3h and 24h cases only, and passed every pruning and latency budget.
@@ -311,6 +363,7 @@ The `global_range_samples` CTE in `outliers.sql` used the new index. Task 202610
 - **Outliers red (task 20261004-221500-1).** Per-window scoring with a fixed 7-day history timed out at 3h (over 15s, as one index probe per fingerprint) and then took about 2.8s at 3h against the 2s budget. The history is now the range's length, at least a day. Later, the 7d generic plans timed out: the planner joined the range's groups twice, once matching on the source only. Scoring in one join and grouping by ids only fixed them.
 - **Adaptive lookback (task 20261005-020000-2).** No version of the extension fit the old 2s budget at 3h: per-group probes took about 7.5s, and the scan in `outliers.sql` about 2.5s. The user raised outliers' budget to 10s at every range.
 - **Match red (task 20261005-020000-1).** Tightening the outliers 7d match budget to 5s failed on time, not on an error: 7.45s custom and 8.57s generic. It passed after the match filter rewrite above.
+- **Outliers history index (task 20261004-231500-1).** Tightening the outliers 3h budgets back to 2s failed on time: outliers 3h took 2.10s custom (and 1.82s generic) at load average 30–69. It passed after migration 0013 and the per-group `older` CTE.
 - **21d red (task 20261003-190000-1).** Adding 21d replica_utilization cases timed out replica_utilization_by_controller_action in both plans. It passed after migration 0011.
 
 ## Known limits
@@ -318,7 +371,7 @@ The `global_range_samples` CTE in `outliers.sql` used the new index. Task 202610
 - **replica_utilization reads every in-range context row of the cluster.** At 21d that's about 2.1s custom and 5.4s generic for controller_action on cluster 13, which holds most of the seeded rows. Cost is still linear in the cluster's context rows in the range, but it no longer joins events or sorts for a per-event total.
 - **The other source-wide reports at 7d** take 0.5–2.1s with custom plans and up to 3.2s with generic plans, and up to 3.9s with a match. They grow linearly too.
 - **outliers at 7d** takes about 3.5–5.2s custom and 4.8s generic without a match, and about 4.6s and 4.8s with one, because it also reads 7 days of history. It grows linearly in the range's events plus the history's.
-- **outliers at 3h and 24h** takes 2.5–3.5s, not well under a second, because fingerprints short of samples read up to 7 days of history (see "Adaptive lookback"). Its budget is 10s at every range.
+- **outliers at 3h and 24h** takes about 0.8s and 1.3s, because fingerprints short of samples look up to 7 days back, one index probe per short group (see "Outliers history index"). 24h's budget stays at 10s.
 - **JIT** is off for reports (see "JIT off" above), so plan costs crossing `jit_above_cost` or `jit_optimize_above_cost` as data grows no longer add compile time. Other queries on the rotten database keep the server's JIT settings.
 - **Not covered:**
   - `fingerprint_stats` is seeded with `mean_time` rows only.

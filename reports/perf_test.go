@@ -664,10 +664,12 @@ func perfCases(f perfFixture) []perfCase {
 	h3, h24, d7, d21 := end.Add(-3*time.Hour), end.Add(-24*time.Hour), end.AddDate(0, 0, -7), end.Truncate(24*time.Hour).AddDate(0, 0, -(perfDays-1))
 	src := []any{perfProject, perfEnvironment, perfCluster}
 	with := func(xs ...any) []any { return append(slices.Clone(src), xs...) }
-	// Outliers gets its own budget at every range (user decision, 2026-10-04):
-	// the adaptive lookback (task 20261005-020000-2) reads up to 7 days of
-	// history for rare queries, even for a 3h range.
-	const twoS, uiTimeout, outliersBudget = 2 * time.Second, 15 * time.Second, 10 * time.Second
+	// Outliers gets 10s at 24h and 7d (user decision, 2026-10-04): the
+	// adaptive lookback (task 20261005-020000-2) reads up to 7 days of
+	// history for rare queries. At 3h it's back to 2s, like the other
+	// reports: each short group reads only its newest older windows, through
+	// events_source_fingerprint_window (task 20261004-231500-1).
+	const twoS, uiTimeout, outliersLongBudget = 2 * time.Second, 15 * time.Second, 10 * time.Second
 	var cases []perfCase
 	add := func(name, file string, start time.Time, budget time.Duration, runs int, args ...any) {
 		c := perfCase{name: name, file: file, args: args, start: start, end: end, budget: budget, runs: runs}
@@ -682,6 +684,10 @@ func perfCases(f perfFixture) []perfCase {
 		budget time.Duration
 		runs   int
 	}{{"3h", h3, twoS, 5}, {"24h", h24, uiTimeout, 3}, {"7d", d7, uiTimeout, 3}} {
+		outliersBudget := outliersLongBudget
+		if r.label == "3h" {
+			outliersBudget = twoS
+		}
 		add("top_by_calls "+r.label, "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, nil)...)
 		add("top_by_calls "+r.label+" role=replica", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, testdb.ReportReplicaRole, nil)...)
 		add("top_by_total_time "+r.label, "top_by_total_time.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, nil)...)
@@ -762,15 +768,20 @@ func TestPerfReports(t *testing.T) {
 
 	// The index decision. events (fingerprint_id, observed_window_start)
 	// is for the per-fingerprint reports, so rerun those with it dropped in
-	// a transaction that's rolled back, and require it to win clearly for a
-	// typical fingerprint on the longer ranges. The hot fingerprint, which
-	// has an event in nearly every window, gains less; it's logged.
+	// a transaction that's rolled back, and require an index on the
+	// fingerprint to win clearly for a typical fingerprint on the longer
+	// ranges. The hot fingerprint, which has an event in nearly every
+	// window, gains less; it's logged. Migration 0013's index, (source,
+	// fingerprint, window) for outliers, serves these reports too, so the
+	// reports are rerun with only it, which is logged, and then with
+	// neither, which is what the requirement compares against.
 	if !hasIndex {
 		t.Fatalf("index %s is missing; the per-fingerprint reports read every page of the source's partitions without it", perfIndex)
 	}
 	ctx := context.Background()
 	logPerfIndexSizes(t, conn)
 	insertWith, inserted := timePerfInserts(t, conn, f.anchor)
+	logOutliersIndexCost(t, conn, f, insertWith, inserted)
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -781,31 +792,47 @@ func TestPerfReports(t *testing.T) {
 	}
 	insertWithout, _ := timePerfInserts(t, tx, f.anchor)
 	t.Logf("inserting one hour of windows (%d events): %s with %s, %s without", inserted, insertWith.Round(time.Millisecond), perfIndex, insertWithout.Round(time.Millisecond))
-	if _, err := tx.Exec(ctx, "set local role "+testdb.UIRole); err != nil {
+	rerun := func() map[string]perfResult {
+		t.Helper()
+		if _, err := tx.Exec(ctx, "set local role "+testdb.UIRole); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]perfResult{}
+		for _, c := range perfCases(f) {
+			if strings.HasPrefix(c.name, "fingerprint_") {
+				for _, mode := range perfModes {
+					out[c.name+" "+mode] = runPerfCase(t, tx, c, mode, partitionsOf)
+				}
+			}
+		}
+		if _, err := tx.Exec(ctx, "reset role"); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	only0013 := rerun()
+	if _, err := tx.Exec(ctx, "drop index rotten.events_source_fingerprint_window"); err != nil {
 		t.Fatal(err)
 	}
+	neither := rerun()
 	lines = nil
 	for _, c := range perfCases(f) {
 		if !strings.HasPrefix(c.name, "fingerprint_") {
 			continue
 		}
 		for _, mode := range perfModes {
-			without := runPerfCase(t, tx, c, mode, partitionsOf)
-			with := withIndex[c.name+" "+mode]
-			lines = append(lines, fmt.Sprintf("| %s | %s | %s | %s |", c.name, strings.TrimSuffix(strings.TrimPrefix(mode, "force_"), "_plan"),
-				without.median.Round(time.Millisecond), with.median.Round(time.Millisecond)))
+			without, other, with := neither[c.name+" "+mode], only0013[c.name+" "+mode], withIndex[c.name+" "+mode]
+			lines = append(lines, fmt.Sprintf("| %s | %s | %s | %s | %s |", c.name, strings.TrimSuffix(strings.TrimPrefix(mode, "force_"), "_plan"),
+				without.median.Round(time.Millisecond), other.median.Round(time.Millisecond), with.median.Round(time.Millisecond)))
 			if strings.Contains(c.name, " typical") && !strings.Contains(c.name, " 3h ") && with.median*2 > without.median {
-				t.Errorf("%s (%s): with %s %s, without %s; want at least twice as fast", c.name, mode, perfIndex, with.median, without.median)
+				t.Errorf("%s (%s): with %s %s, without either index %s; want at least twice as fast", c.name, mode, perfIndex, with.median, without.median)
 			}
 		}
 	}
-	t.Logf("per-fingerprint reports without and with %s:\n| case | plan | without | with |\n%s", perfIndex, strings.Join(lines, "\n"))
+	t.Logf("per-fingerprint reports without either index, with only events_source_fingerprint_window, and with both:\n| case | plan | neither | 0013's only | both |\n%s", strings.Join(lines, "\n"))
 
 	// What migration 0008 costs on a database this size: rebuild the index
 	// with the migration's own statement, still inside the transaction.
-	if _, err := tx.Exec(ctx, "reset role"); err != nil {
-		t.Fatal(err)
-	}
 	build := perfMigrationUp(t, "../migrations/0008_events_fingerprint_window.sql")
 	began := time.Now()
 	if _, err := tx.Exec(ctx, build); err != nil {
@@ -813,6 +840,33 @@ func TestPerfReports(t *testing.T) {
 	}
 	t.Logf("building %s (migration 0008) on %d events took %s, holding a SHARE lock on rotten.events and its partitions throughout",
 		perfIndex, f.events, time.Since(began).Round(time.Millisecond))
+}
+
+// logOutliersIndexCost logs what migration 0013's index costs: inserts
+// without it, then its build with the migration's own statement, in a
+// transaction that's rolled back. insertWith is the insert time with every
+// index.
+func logOutliersIndexCost(t *testing.T, conn *pgx.Conn, f perfFixture, insertWith time.Duration, inserted int64) {
+	t.Helper()
+	const index = "events_source_fingerprint_window"
+	ctx := context.Background()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "drop index rotten."+index); err != nil {
+		t.Fatalf("index %s, which outliers' history reads, is missing: %v", index, err)
+	}
+	without, _ := timePerfInserts(t, tx, f.anchor)
+	t.Logf("inserting one hour of windows (%d events): %s with %s, %s without", inserted, insertWith.Round(time.Millisecond), index, without.Round(time.Millisecond))
+	build := perfMigrationUp(t, "../migrations/0013_events_source_fingerprint_window.sql")
+	began := time.Now()
+	if _, err := tx.Exec(ctx, build); err != nil {
+		t.Fatalf("rebuild %s: %v", index, err)
+	}
+	t.Logf("building %s (migration 0013) on %d events took %s, holding a SHARE lock on rotten.events and its partitions throughout",
+		index, f.events, time.Since(began).Round(time.Millisecond))
 }
 
 // perfMigrationUp returns a goose migration's Up section.

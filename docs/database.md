@@ -91,6 +91,20 @@ took about 3 seconds for every 10 million events. Run it at a quiet time.
 Workers keep their harvests in their outbox while the server waits, and
 resend them afterwards. See `docs/perf.md` for the measurements.
 
+**Migration 0013 blocks ingest while it runs.** It builds the
+`events_source_fingerprint_window` index, on `(logical_source_id,
+fingerprint_id, observed_window_start)` including `observed_window_end`,
+`calls` and `time`, for the outliers report's history. Like 0008 it's a plain
+`CREATE INDEX` on the partitioned table (`CONCURRENTLY` isn't supported
+there), so it holds a `SHARE` lock on `rotten.events` and all its partitions:
+reads keep working, but the server's inserts wait until it's built. In
+testing, that took about 8 seconds for every 10 million events, on a busy
+machine. Run it at a quiet time. Workers keep their harvests in their outbox
+while the server waits, and resend them afterwards. It needs no new grants,
+and new partitions get the index automatically. Afterwards each insert
+maintains one more index, and the index takes about 70% of the events heap's
+size on disk. See `docs/perf.md` for the measurements.
+
 **Migration 0009 stops if two users share an OIDC identity.** It adds
 `users_provider_uid_key`, a unique index on `rotten.users (provider,
 provider_uid)` for rows with a `provider_uid`. If any pair already belongs to
