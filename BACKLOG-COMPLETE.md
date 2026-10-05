@@ -1523,3 +1523,12 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Red test:** Tighten the perf suite's budget for `outliers 7d match` to 5s, so it fails now.
 - Completed: 2026-10-04, b5e707f
   - Regex runs once per distinct context; matched events materialized; text match moved out of HAVING. Outliers 7d match 4.3s/4.5s (custom/generic); top_by match cases ~3.5-3.9s. Review clean. JIT follow-up filed as 20261004-225300-1.
+
+### 20261005-020000-2: Outliers needs 30 earlier samples, which rare queries lack.
+- **Decision (user, 2026-10-05):** Adaptive lookback. Look back further only until 30 samples are found, bounded to 7 days, if it stays within the perf budgets.
+- **Needs:** 20261005-020000-1 (both change `reports/outliers.sql`).
+- **Why (found in 20261004-221500-1):** History is the range's length before it, at least a day and at most 7 days. At 5-minute windows, a query has to run in about 30 of the 288 windows of the day before a short range, per source, to be scored. An hourly job has at most 24, so it's never an outlier in a range under about 30 hours.
+- **Do:** Decide with the user whether that's fine. Options: a longer minimum lookback for short ranges, which costs time (7 days of history for a 3h range took about 2.8s in the perf harness with a draft of the query, against a 2s budget), or a lower minimum history.
+- **Red test:** Depends on the choice; for example, an hourly fingerprint with a slow run in a 3h range that's listed.
+- Completed: 2026-10-04, a4dec14
+  - Short groups top up from their newest older windows within 7 days. User raised outliers budgets to 10s and required a busy indicator by 2s; added a Stimulus report-busy controller with an accessible status region outside the busy form. 3h ~2.5-2.9s (50 rows vs 4). Review: one a11y finding fixed in round 1, round 2 clean. Follow-up: 20261004-231500-1.

@@ -55,13 +55,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261005-020000-2: Outliers needs 30 earlier samples, which rare queries lack.
-- **Decision (user, 2026-10-05):** Adaptive lookback. Look back further only until 30 samples are found, bounded to 7 days, if it stays within the perf budgets.
-- **Needs:** 20261005-020000-1 (both change `reports/outliers.sql`).
-- **Why (found in 20261004-221500-1):** History is the range's length before it, at least a day and at most 7 days. At 5-minute windows, a query has to run in about 30 of the 288 windows of the day before a short range, per source, to be scored. An hourly job has at most 24, so it's never an outlier in a range under about 30 hours.
-- **Do:** Decide with the user whether that's fine. Options: a longer minimum lookback for short ranges, which costs time (7 days of history for a 3h range took about 2.8s in the perf harness with a draft of the query, against a 2s budget), or a lower minimum history.
-- **Red test:** Depends on the choice; for example, an hourly fingerprint with a slow run in a 3h range that's listed.
-
 ### 20261004-225300-1: Disable JIT for report queries.
 - **Why (found in 20261005-020000-1):** Outliers with a match filter plans at about 487k cost, just under the 500k `jit_above_cost` default where JIT compilation adds about 1.5s. More data could push it over and blow the 5s budget.
 - **Do:** Set `jit = off` for report queries in the UI (e.g. `SET LOCAL` in the report transaction) and in the perf suite, so both measure the same thing.
