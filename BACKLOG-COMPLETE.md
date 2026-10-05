@@ -1382,3 +1382,12 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
   - **Outliers:** episodes every 15 minutes, 2 minutes long: slow_read, lock_wait and sleep. They can show after about 15 minutes of traffic.
   - **Shutdown:** the binary is PID 1 via `exec`, so `docker compose stop` shuts it down cleanly.
   - **Review:** two rounds. Round 1 found the `go run` SIGTERM problem and an episode test that depended on how many calls completed in time. Round 2 was clean.
+
+### 20261004-144107-1: Postgres 18 drops leading marginalia, so contexts vanish on 18.
+- **Decision (user, 2026-10-04):** Do both. Document that 18 needs trailing marginalia (marginalia `prepend_comment = false`, Rails `query_log_tags_prepend_comment = false`), and have the worker warn when it observes an 18 server, has context regexes, and sees no matches.
+- **Why (found in 20261004-142000-1):** On Postgres 18, the query text `pg_stat_statements` keeps has no leading comment; 14 to 17 keep it (pinned by `TestPostgres18DropsLeadingComments` in `internal/devtraffic`). Production's comments are leading, so on an observed 18 server the worker extracts no controller, action or job tag at all, silently. Trailing and inline comments survive on every version.
+- **Do:** Decide with the user. Options: document in `docs/observed.md` and `docs/worker.md` that 18 needs trailing marginalia (e.g. Rails' `prepend_comment = false` / marginalia's append mode); have the worker log a warning when it observes an 18 server and has context regexes but sees no matches; or both.
+- **Red test:** A real-Postgres 18 test for whichever behavior is chosen, e.g. the warning appears once with leading comments and not with trailing ones.
+- Completed: 2026-10-04, 79419ae
+  - Warns once after 1,000 calls and 3 non-baseline windows with no matches. Only top-level statements from non-observer roles count.
+  - Docs: docs/worker.md, docs/observed.md, README.md.

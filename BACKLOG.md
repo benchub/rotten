@@ -101,12 +101,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - A helper spec for the highlighting edge cases: overlapping or empty matches, multibyte text, and a pattern that doesn't compile in Ruby.
   - A system spec: enter a pattern, run, see highlighted matches, switch reports with a chip, and the pattern is still applied.
 
-### 20261004-144107-1: Postgres 18 drops leading marginalia, so contexts vanish on 18.
-- **Decision (user, 2026-10-04):** Do both. Document that 18 needs trailing marginalia (marginalia `prepend_comment = false`, Rails `query_log_tags_prepend_comment = false`), and have the worker warn when it observes an 18 server, has context regexes, and sees no matches.
-- **Why (found in 20261004-142000-1):** On Postgres 18, the query text `pg_stat_statements` keeps has no leading comment; 14 to 17 keep it (pinned by `TestPostgres18DropsLeadingComments` in `internal/devtraffic`). Production's comments are leading, so on an observed 18 server the worker extracts no controller, action or job tag at all, silently. Trailing and inline comments survive on every version.
-- **Do:** Decide with the user. Options: document in `docs/observed.md` and `docs/worker.md` that 18 needs trailing marginalia (e.g. Rails' `prepend_comment = false` / marginalia's append mode); have the worker log a warning when it observes an 18 server and has context regexes but sees no matches; or both.
-- **Red test:** A real-Postgres 18 test for whichever behavior is chosen, e.g. the warning appears once with leading comments and not with trailing ones.
-
 ### 20261004-144107-2: Contexts are credited by each entry's first text, not per call.
 - **Decision (user, 2026-10-04):** Do both. Document the limit and add a UI caveat now. Add a separate backlog task to design sampling `pg_stat_activity` per `query_id` so contexts are credited correctly.
 - **Why (found in 20261004-142000-1):** `pg_stat_statements` keeps one text per (userid, dbid, toplevel, queryid) entry, the first it saw. The worker extracts one context from that text and credits all of the entry's calls in a window to it (`buildHarvestBatchFromRows`, `extractContextValue`). A query run by many controllers is credited entirely to whichever ran it first, for the entry's lifetime, so per-context counts in the controller, action and job views can be badly wrong. The views don't say so.
