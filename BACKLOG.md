@@ -61,6 +61,8 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** Tighten the perf suite's budget for `outliers 7d match` to 5s, so it fails now.
 
 ### 20261005-020000-2: Outliers needs 30 earlier samples, which rare queries lack.
+- **Decision (user, 2026-10-05):** Adaptive lookback. Look back further only until 30 samples are found, bounded to 7 days, if it stays within the perf budgets.
+- **Needs:** 20261005-020000-1 (both change `reports/outliers.sql`).
 - **Why (found in 20261004-221500-1):** History is the range's length before it, at least a day and at most 7 days. At 5-minute windows, a query has to run in about 30 of the 288 windows of the day before a short range, per source, to be scored. An hourly job has at most 24, so it's never an outlier in a range under about 30 hours.
 - **Do:** Decide with the user whether that's fine. Options: a longer minimum lookback for short ranges, which costs time (7 days of history for a 3h range took about 2.8s in the perf harness with a draft of the query, against a 2s budget), or a lower minimum history.
 - **Red test:** Depends on the choice; for example, an hourly fingerprint with a slow run in a 3h range that's listed.
@@ -80,6 +82,7 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** A docscheck that the design doc exists and covers the points above.
 
 ### 20261004-161500-1: Statements the fingerprinter rejects are dropped from batches.
+- **Decision (user, 2026-10-05):** Ship such entries under a fallback fingerprint derived from the pgss `queryid`, marked as unparsed, plus a visible count of what fell back.
 - **Why (found in 20261004-144107-1):** The worker fingerprints with the pinned Postgres 17 parser (pg_query_go), which rejects some valid Postgres 18 syntax, e.g. `UPDATE … RETURNING WITH (OLD AS o, NEW AS n)`. Those entries are counted and sampled as parse failures only. Their calls, time and contexts never reach the server, so reports silently undercount on 18.
 - **Do:**
   - Decide with the user: wait for the pg_query_go 18 parser (see the working agreement; don't upgrade until the user confirms the release is out), or ship such entries under a fallback fingerprint, e.g. one derived from the pgss `queryid`, with a marker.
