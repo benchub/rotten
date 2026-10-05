@@ -39,14 +39,15 @@ func TestParseDefaults(t *testing.T) {
 
 func TestParseEnvThenFlags(t *testing.T) {
 	e := env(map[string]string{
-		"TRAFFIC_ADMIN_DSN": "postgres://a@h/db",
-		"TRAFFIC_RATE":      "5",
-		"TRAFFIC_CONNS":     "3",
-		"TRAFFIC_SHARDS":    "2",
-		"TRAFFIC_SCALE":     "0.5",
-		"TRAFFIC_COMMENTS":  "leading",
-		"TRAFFIC_SEED":      "42",
-		"TRAFFIC_DURATION":  "10s",
+		"TRAFFIC_ADMIN_DSN":   "postgres://a@h/db",
+		"TRAFFIC_REPLICA_DSN": "postgres://a@replica/db",
+		"TRAFFIC_RATE":        "5",
+		"TRAFFIC_CONNS":       "3",
+		"TRAFFIC_SHARDS":      "2",
+		"TRAFFIC_SCALE":       "0.5",
+		"TRAFFIC_COMMENTS":    "leading",
+		"TRAFFIC_SEED":        "42",
+		"TRAFFIC_DURATION":    "10s",
 
 		"TRAFFIC_EPISODE_EVERY":  "5m",
 		"TRAFFIC_EPISODE_LENGTH": "30s",
@@ -58,15 +59,16 @@ func TestParseEnvThenFlags(t *testing.T) {
 	}
 	if cfg.AdminDSN != "postgres://a@h/db" || cfg.Rate != 5 || cfg.Conns != 3 || cfg.Shards != 2 ||
 		cfg.Scale != 0.5 || cfg.Comments != devtraffic.Leading || cfg.Seed != 42 || cfg.Duration != 10*time.Second ||
-		cfg.EpisodeEvery != 5*time.Minute || cfg.EpisodeLength != 30*time.Second || cfg.Episode != devtraffic.LockWait {
+		cfg.EpisodeEvery != 5*time.Minute || cfg.EpisodeLength != 30*time.Second || cfg.Episode != devtraffic.LockWait ||
+		cfg.ReplicaDSN != "postgres://a@replica/db" {
 		t.Fatalf("from env: %+v", cfg)
 	}
-	cfg, err = parse(io.Discard, []string{"-rate", "0.5", "-comments", "trailing", "-shards", "6", "-episode-every", "0", "-episode", "sleep"}, e)
+	cfg, err = parse(io.Discard, []string{"-replica-dsn", "", "-rate", "0.5", "-comments", "trailing", "-shards", "6", "-episode-every", "0", "-episode", "sleep"}, e)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Rate != 0.5 || cfg.Comments != devtraffic.Trailing || cfg.Shards != 6 || cfg.Conns != 3 ||
-		cfg.EpisodeEvery != 0 || cfg.Episode != devtraffic.SlowSleep {
+		cfg.EpisodeEvery != 0 || cfg.Episode != devtraffic.SlowSleep || cfg.ReplicaDSN != "" {
 		t.Fatalf("flags over env: %+v", cfg)
 	}
 }

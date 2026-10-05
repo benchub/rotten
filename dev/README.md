@@ -4,8 +4,8 @@
 
 | Network | Services |
 | --- | --- |
-| `observed` | `observed-postgres`, `worker`, `traffic` |
-| `edge` | `worker`, `server` |
+| `observed` | `observed-postgres`, `observed-replica`, `worker`, `worker-replica`, `traffic` |
+| `edge` | `worker`, `worker-replica`, `server` |
 | `core` | `server`, `rotten-db` |
 
 Start it from the repository root:
@@ -34,8 +34,15 @@ running `rotten-worker -config /src/dev/worker.json`. `observed-postgres` is
 Postgres 18 with `pg_stat_statements` preloaded. The worker is on `observed`
 and `edge` only; it reaches the rotten DB only through `rotten-server`.
 
-`traffic` runs application-like load on `observed-postgres` so the
-controller, action and job views have something to show; see
+`observed-replica` is a streaming replica of `observed-postgres`, watched by
+`worker-replica` (`dev/worker-replica.json`, role `replica`) with its own
+FQDN (`observed-replica`), pass key (`worker-replica-key`,
+`worker-replica-secrets`) and state volume, and the same project,
+environment and cluster as `worker`. See [Replica](#replica).
+
+`traffic` runs application-like load on `observed-postgres` and
+`observed-replica` so the controller, action and job views, and the role and
+replica utilization reports, have something to show; see
 [Traffic](#traffic).
 
 The topology tests assert isolation by probing container IPs on the Docker
@@ -54,6 +61,47 @@ worker pass key, worker state, and database volumes.
 The UI runs at `http://localhost:3000` in `ROTTEN_UI_AUTH=oidc` mode with
 `OMNIAUTH_FAKE=1`, so `/login` offers offline "fake viewer" and "fake admin"
 sign-ins with no identity provider. See `ui/README.md`.
+
+## Replica
+
+`observed-replica` runs `dev/observed-replica-entrypoint.sh` before the
+postgres image's own entrypoint. On every start it waits for the primary,
+then, as `postgres` on the primary, creates the `replicator` role and the
+`observed_replica` physical slot if they're missing. That's idempotent and
+doesn't need `observed-init.sql`, so it works on an `observed-data` volume
+that predates the replica. It clones the primary with `pg_basebackup` (into
+a scratch directory, then renamed) when the replica has no data yet, isn't a
+standby, has data from another primary (say, after `observed-data` was
+removed), or when the slot was missing, never used (an interrupted
+bootstrap; it's reused) or had lost WAL. Otherwise it just resumes
+streaming. Before cloning, it waits up to 60 seconds, logging the holder's
+PID, while the primary still has the slot in use (as after an interrupted
+clone), and it retries `pg_basebackup` up to 5 times.
+
+The primary needed two settings, both in its compose `command`, so they
+apply to an existing volume too: `hba_file` points at
+`dev/observed-pg_hba.conf`, which is the image's default plus `host
+replication replicator all scram-sha-256` (the default allows replication
+from localhost only), and `max_slot_wal_keep_size=1GB` caps the WAL the
+slot holds while the replica is stopped. `wal_level=replica`,
+`max_wal_senders=10` and `max_replication_slots=10` are already Postgres
+18's defaults. The replica runs with `hot_standby_feedback=on`.
+
+Each worker's `SanityCheck` checks it's pointed at the right server:
+`select not pg_is_in_recovery()` for `worker` and `select
+pg_is_in_recovery()` for `worker-replica`. A mis-pointed worker exits.
+
+`pg_stat_statements` and `observed-init.sql`'s minmax reset function and
+`rotten_observer` role reach the replica by replication. The reset works on
+a standby, since `pg_stat_statements_reset` only touches the replica's own
+shared memory and writes no WAL. `internal/testdb`'s
+`TestDevObservedReplicaReplaysFromPrimary` runs this compose file's two
+services and checks that, plus replay, recovery and each worker's sanity
+check on both servers.
+
+If you remove `observed-data` while the replica is running, restart the
+replica (`docker compose -f dev/docker-compose.yaml restart
+observed-replica`) so it re-clones.
 
 The dev services share named Go module and build-cache volumes. After changing
 `go.mod` or `go.sum`, run `docker compose -f dev/docker-compose.yaml down -v`
@@ -119,6 +167,7 @@ service, set `TRAFFIC_RATE` or `TRAFFIC_EPISODE_EVERY` in your shell or
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
 | `-admin-dsn` | `TRAFFIC_ADMIN_DSN` | local `postgres` on `observed` | superuser DSN used for setup; the load reuses its host |
+| `-replica-dsn` | `TRAFFIC_REPLICA_DSN` | empty (no replica) | superuser DSN on a streaming replica of the primary; the routed load reuses its host. Compose sets it to `observed-replica` |
 | `-rate` | `TRAFFIC_RATE` | `1` | requests and jobs started per second, on average |
 | `-conns` | `TRAFFIC_CONNS` | `1` | most connections per role per shard database |
 | `-shards` | `TRAFFIC_SHARDS` | `4` | shard databases |
@@ -133,6 +182,51 @@ service, set `TRAFFIC_RATE` or `TRAFFIC_EPISODE_EVERY` in your shell or
 If setup or connecting fails, for example while Postgres restarts, it logs
 the error and retries every 5 seconds.
 
+### Primary and replica routing
+
+Setup runs on the primary only; the shard databases, roles and seed data
+reach the replica by replication, and with `-replica-dsn` set the generator
+waits for the replica to replay setup before starting. Each shape in
+`internal/devtraffic`'s table has a route:
+
+| Route | Shapes |
+| --- | --- |
+| primary only | every write, plus the reads `user_by_email`, `favorites_for_user` and `submission_for_user` (read-your-writes) |
+| replica only | `search_users`, `enrollment_counts`, `course_grade_summary`, `page_view_report`, `export_enrollments` |
+| split | `user_by_id`, `users_in_list`, `course_by_id`, `courses_in_list`, `courses_for_user`, `favorite_courses`, `enrollments_for_course`, `assignments_for_course`, `assignment_by_id`, `submissions_for_assignment`, `course_activity`, `recent_page_views` |
+
+A split shape runs on the replica with its context's percentage, otherwise on
+the primary, statement by statement:
+
+| Context | Split shapes on the replica | All its statements on the replica |
+| --- | --- | --- |
+| `gradebooks#export`, `users#search`, `Reports::CourseActivity.generate`, `Reports::GradeExport.generate` | 100% | 100% |
+| `enrollments_api#index` | 90% | about 92% |
+| `gradebooks#show` | 80% | about 84% |
+| `favorites#list_favorite_courses` | 70% | about 52% |
+| `Course.sync_enrollments` | 60% | about 60% |
+| `courses#index` | 50% | about 38% |
+| `Submission.auto_grade` | 50% | about 33% |
+| `Enrollment.recompute_final_score` | none (one of its two shapes is replica only) | about 50% |
+| `assignments#show` | 40% | about 24% |
+| `courses#show` | 30% | about 24% |
+| `users#dashboard` | 20% | about 13% |
+| the rest (`favorites#create`, `login#create`, `submissions#create`, `PageView.flush_buffer`, `SisImport`, ...) | 0% | 0% |
+
+Only read-only shapes may go to the replica; the table is checked when the
+package loads, and `internal/devtraffic`'s tests check the routes and the
+ratios. Marginalia comments are the same on both sides. Each side has its
+own `pg_stat_statements`, and the warm-up runs a shape on a side only under
+contexts that run it there, so a 100% context has no primary entries and a
+0% one no replica entries: the replica utilization reports show true 0% and
+100% rows. Mixed contexts are approximate, since each entry credits its calls
+to its first context (see [What the worker can attribute](#what-the-worker-can-attribute)).
+
+Episodes: `slow_read` (`export_enrollments`) runs on the replica only,
+`lock_wait` (`touch_user` and the lock holders, which write) on the primary
+only, and `sleep` (`course_activity`) mostly on the replica (80% for
+`gradebooks#show`, 100% for `Reports::CourseActivity.generate`).
+
 ### Slow episodes and the outliers report
 
 The outliers report lists a fingerprint whose mean time per call in the
@@ -146,6 +240,9 @@ same SQL and so the same fingerprint:
 | `slow_read` | `export_enrollments` (`gradebooks#export`, `Reports::GradeExport.generate`) | 10 to 20 ms | about 1.1 s | The client reads the export's 6,000 rows (about 1 MB) with a 10 ms pause every 50 rows. Once the socket buffers fill, Postgres blocks sending rows, and that counts as execution time. |
 | `lock_wait` | `touch_user` (`users#dashboard`, `login#create`, `User.touch_last_seen`) | under 0.1 ms | about 0.5 s | A `SisImport.process_users` job on each shard updates users 1 to 20 in a transaction that it keeps open for 1.5 s, then pauses 0.3 s, and repeats. `touch_user` picks only those users, so it waits on their row locks. |
 | `sleep` | `course_activity` (`gradebooks#show`, `Reports::CourseActivity.generate`) | about 1 ms | 0.3 to 0.6 s | Its `pg_sleep($2)` argument is 0 outside the episode. |
+
+With the replica, `slow_read`'s shape shows up under the replica's server,
+`lock_wait`'s under the primary's, and `sleep`'s mostly under the replica's.
 
 Episodes start at each multiple of `-episode-every` since the Unix epoch
 (by default at :00, :15, :30 and :45 past each hour, UTC), last

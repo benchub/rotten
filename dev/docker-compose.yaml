@@ -7,12 +7,19 @@ services:
       - shared_preload_libraries=pg_stat_statements
       - -c
       - pg_stat_statements.track_planning=on
+      # Lets observed-replica stream from here; see observed-pg_hba.conf.
+      - -c
+      - hba_file=/etc/rotten/observed-pg_hba.conf
+      # Caps the WAL the replica's slot holds while the replica is stopped.
+      - -c
+      - max_slot_wal_keep_size=1GB
     environment:
       POSTGRES_DB: observed
       POSTGRES_PASSWORD: postgres
     volumes:
       - observed-data:/var/lib/postgresql
       - ./observed-init.sql:/docker-entrypoint-initdb.d/001-observed.sql:ro
+      - ./observed-pg_hba.conf:/etc/rotten/observed-pg_hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d observed"]
       interval: 2s
@@ -22,6 +29,46 @@ services:
       observed:
         aliases:
           - observed-db
+
+  # A streaming replica of observed-postgres. Its entrypoint sets up the
+  # replication role and slot on the primary and clones it when needed, so
+  # it works on an existing observed-data volume. See dev/README.md.
+  observed-replica:
+    image: postgres:18
+    entrypoint:
+      - sh
+      - /rotten/observed-replica-entrypoint.sh
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track_planning=on
+      - -c
+      - hot_standby_feedback=on
+      - -c
+      - primary_conninfo=host=observed-db port=5432 user=replicator password=replicator application_name=observed-replica
+      - -c
+      - primary_slot_name=observed_replica
+    environment:
+      POSTGRES_PASSWORD: postgres
+      REPLICA_PRIMARY_HOST: observed-db
+      REPLICA_PRIMARY_PASSWORD: postgres
+    volumes:
+      - observed-replica-data:/var/lib/postgresql
+      - ./observed-replica-entrypoint.sh:/rotten/observed-replica-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d observed"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    depends_on:
+      observed-postgres:
+        condition: service_healthy
+    networks:
+      observed:
+        aliases:
+          - observed-replica-db
 
   rotten-db:
     build:
@@ -193,6 +240,66 @@ services:
         aliases:
           - rotten-worker
 
+  # The replica's pass key, pinned to the replica worker's FQDN.
+  worker-replica-key:
+    image: rotten-dev-go:1.27
+    working_dir: /src
+    command:
+      - bash
+      - -e
+      - -o
+      - pipefail
+      - -c
+      - |
+        if [ -s /worker-secrets/pass.key ]; then exit 0; fi
+        go run ./cmd/rotten-server keys create -dsn "$$ROTTEN_ADMIN_DSN" --fqdn observed-replica dev-worker-replica | tail -n 1 > /worker-secrets/pass.key.new
+        test -s /worker-secrets/pass.key.new
+        mv /worker-secrets/pass.key.new /worker-secrets/pass.key
+    environment:
+      ROTTEN_ADMIN_DSN: postgres://postgres:postgres@rotten-db:5432/rotten?sslmode=disable
+    volumes:
+      - ..:/src:ro
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+      - worker-replica-secrets:/worker-secrets
+    depends_on:
+      server-migrate:
+        condition: service_completed_successfully
+    networks:
+      - core
+
+  # The replica's worker (Role replica): same project, environment and
+  # cluster as the primary's, its own FQDN, key and state. Built, then
+  # exec'd, like traffic, so it gets compose's SIGTERM.
+  worker-replica:
+    image: rotten-dev-go:1.27
+    working_dir: /src
+    command:
+      - sh
+      - -ec
+      - go build -o /tmp/rotten-worker ./cmd/rotten-worker && exec /tmp/rotten-worker -config /src/dev/worker-replica.json
+    volumes:
+      - ..:/src:ro
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+      - test-certs:/certs:ro
+      - worker-replica-secrets:/worker-secrets:ro
+      - worker-replica-state:/state
+    depends_on:
+      observed-replica:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+      worker-replica-key:
+        condition: service_completed_successfully
+    networks:
+      observed:
+        aliases:
+          - rotten-worker-replica
+      edge:
+        aliases:
+          - rotten-worker-replica
+
   # Application-like load with marginalia comments on the observed Postgres,
   # so the controller, action and job views have data. See dev/README.md.
   traffic:
@@ -209,12 +316,15 @@ services:
       TRAFFIC_ADMIN_DSN: postgres://postgres:postgres@observed-db:5432/observed?sslmode=disable
       TRAFFIC_RATE: ${TRAFFIC_RATE:-1}
       TRAFFIC_EPISODE_EVERY: ${TRAFFIC_EPISODE_EVERY:-15m}
+      TRAFFIC_REPLICA_DSN: postgres://postgres:postgres@observed-replica-db:5432/observed?sslmode=disable
     volumes:
       - ..:/src:ro
       - go-mod:/go/pkg/mod
       - go-build:/root/.cache/go-build
     depends_on:
       observed-postgres:
+        condition: service_healthy
+      observed-replica:
         condition: service_healthy
     networks:
       - observed
@@ -299,3 +409,6 @@ volumes:
   test-certs:
   worker-secrets:
   worker-state:
+  observed-replica-data:
+  worker-replica-secrets:
+  worker-replica-state:

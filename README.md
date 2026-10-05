@@ -47,8 +47,9 @@ you can run it yourself in psql as `rotten_readonly`.
 Quick start
 -----------
 
-The dev stack runs everything in Docker: an observed Postgres 18, a worker,
-the server, the rotten database and the UI.
+The dev stack runs everything in Docker: an observed Postgres 18 and a
+streaming replica, a worker for each, the server, the rotten database and
+the UI.
 
 ```sh
 docker compose -f dev/docker-compose.yaml up
@@ -75,7 +76,8 @@ remove it all.
 
 The `traffic` service plays a small made-up LMS against the observed
 database: a few queries a second, with production-style marginalia comments,
-so the controller, action and job views have data, with a slow episode every
+split between the primary and the replica, so the controller, action, job,
+role and replica utilization views have data, with a slow episode every
 15 minutes for the outliers report. To start it in a stack
 that's already running, use
 `docker compose -f dev/docker-compose.yaml up -d traffic`. See

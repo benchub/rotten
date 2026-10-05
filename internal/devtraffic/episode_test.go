@@ -60,7 +60,7 @@ func TestEpisodesSlowTheirShapeInPgss(t *testing.T) {
 			if ep == LockWait {
 				waitForLockHolder(t, ctx, admin)
 			}
-			g.run(ctx, c, 1, []string{shape}, r)
+			g.runOn(ctx, c, 1, []string{shape}, []Target{Primary}, r)
 		}
 		stop()
 		<-done

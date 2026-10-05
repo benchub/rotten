@@ -22,14 +22,15 @@ const defaultAdminDSN = "postgres://postgres:postgres@localhost:5432/observed?ss
 
 // envFor maps each flag to the environment variable that sets its default.
 var envFor = map[string]string{
-	"admin-dsn": "TRAFFIC_ADMIN_DSN",
-	"rate":      "TRAFFIC_RATE",
-	"conns":     "TRAFFIC_CONNS",
-	"shards":    "TRAFFIC_SHARDS",
-	"scale":     "TRAFFIC_SCALE",
-	"comments":  "TRAFFIC_COMMENTS",
-	"seed":      "TRAFFIC_SEED",
-	"duration":  "TRAFFIC_DURATION",
+	"admin-dsn":   "TRAFFIC_ADMIN_DSN",
+	"replica-dsn": "TRAFFIC_REPLICA_DSN",
+	"rate":        "TRAFFIC_RATE",
+	"conns":       "TRAFFIC_CONNS",
+	"shards":      "TRAFFIC_SHARDS",
+	"scale":       "TRAFFIC_SCALE",
+	"comments":    "TRAFFIC_COMMENTS",
+	"seed":        "TRAFFIC_SEED",
+	"duration":    "TRAFFIC_DURATION",
 
 	"episode-every":  "TRAFFIC_EPISODE_EVERY",
 	"episode-length": "TRAFFIC_EPISODE_LENGTH",
@@ -82,6 +83,7 @@ func (v episode) Set(s string) error {
 func register(fs *flag.FlagSet, cfg *devtraffic.Config, getenv func(string) string) error {
 	cfg.Comments = devtraffic.Auto
 	fs.StringVar(&cfg.AdminDSN, "admin-dsn", defaultAdminDSN, "DSN of a superuser on the observed Postgres, used to create the app roles, shard databases and tables")
+	fs.StringVar(&cfg.ReplicaDSN, "replica-dsn", "", "DSN of a superuser on a streaming replica of the observed Postgres; read-only query shapes then run there by the routing table. Empty runs everything on the primary")
 	fs.Float64Var(&cfg.Rate, "rate", 1, "web requests and jobs started per second, on average; each runs 1 to 6 statements")
 	fs.IntVar(&cfg.Conns, "conns", 1, "most connections per role per shard database")
 	fs.IntVar(&cfg.Shards, "shards", 4, "shard databases (lms_shard_1 ...)")

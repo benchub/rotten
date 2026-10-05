@@ -21,6 +21,12 @@ type Config struct {
 	// load itself connects as WebRole and JobRole to the same host's shard
 	// databases, with the password Setup gives them.
 	AdminDSN string
+	// ReplicaDSN, if set, is a streaming replica of AdminDSN's server. The
+	// load connects to its host and port with the app roles, and runs each
+	// shape on the primary or the replica as its Route says. It must be
+	// able to call pg_last_wal_replay_lsn(), as any role can. Empty runs
+	// everything on the primary.
+	ReplicaDSN string
 	// Shards is the number of shard databases (default 4).
 	Shards int
 	// Scale multiplies each shard's seeded size (default 1).
@@ -56,14 +62,16 @@ type Config struct {
 // Stats counts what a run did.
 type Stats struct {
 	Requests, Statements, Errors int64
+	// ReplicaStatements is how many of Statements ran on the replica.
+	ReplicaStatements int64
 }
 
 type counters struct {
-	requests, statements, errors atomic.Int64
+	requests, statements, errors, replica atomic.Int64
 }
 
 func (c *counters) snapshot() Stats {
-	return Stats{Requests: c.requests.Load(), Statements: c.statements.Load(), Errors: c.errors.Load()}
+	return Stats{Requests: c.requests.Load(), Statements: c.statements.Load(), Errors: c.errors.Load(), ReplicaStatements: c.replica.Load()}
 }
 
 func (cfg *Config) defaults() {
@@ -135,7 +143,7 @@ func Run(ctx context.Context, cfg Config) (Stats, error) {
 	g.loop(ctx)
 	wg.Wait()
 	st := g.n.snapshot()
-	g.cfg.Logf("devtraffic: stopped after %d requests, %d statements, %d errors", st.Requests, st.Statements, st.Errors)
+	g.cfg.Logf("devtraffic: stopped after %d requests, %d statements (%d on the replica), %d errors", st.Requests, st.Statements, st.ReplicaStatements, st.Errors)
 	return st, nil
 }
 
@@ -146,19 +154,35 @@ func newGenerator(ctx context.Context, cfg Config) (*generator, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.ReplicaDSN != "" {
+		if err := waitForReplay(ctx, cfg.AdminDSN, cfg.ReplicaDSN, cfg.Logf); err != nil {
+			return nil, err
+		}
+	}
 	g := &generator{cfg: cfg, sz: sz, rnd: rand.New(rand.NewPCG(cfg.Seed, cfg.Seed^0x9e3779b97f4a7c15)), started: time.Now()}
-	// pools[shard-1][0] is WebRole's, [1] JobRole's.
-	g.pools = make([][2]*pgxpool.Pool, cfg.Shards)
-	for i := range g.pools {
-		for j, role := range []string{WebRole, JobRole} {
-			if g.pools[i][j], err = shardPool(ctx, cfg, ShardSchema(i+1), role); err != nil {
-				g.close()
-				return nil, err
+	// pools[target][shard-1][0] is WebRole's, [1] JobRole's. There are no
+	// replica pools without a ReplicaDSN.
+	targets := []Target{Primary}
+	if cfg.ReplicaDSN != "" {
+		targets = append(targets, Replica)
+	}
+	for _, target := range targets {
+		dsn := cfg.AdminDSN
+		if target == Replica {
+			dsn = cfg.ReplicaDSN
+		}
+		g.pools[target] = make([][2]*pgxpool.Pool, cfg.Shards)
+		for i := range g.pools[target] {
+			for j, role := range []string{WebRole, JobRole} {
+				if g.pools[target][i][j], err = shardPool(ctx, cfg, dsn, ShardSchema(i+1), role); err != nil {
+					g.close()
+					return nil, fmt.Errorf("%w (%s)", err, target)
+				}
 			}
 		}
 	}
 	var version int
-	if err := g.pools[0][0].QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&version); err != nil {
+	if err := g.pools[Primary][0][0].QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&version); err != nil {
 		g.close()
 		return nil, fmt.Errorf("devtraffic: server version: %w", err)
 	}
@@ -166,6 +190,11 @@ func newGenerator(ctx context.Context, cfg Config) (*generator, error) {
 	g.hosts = NewHostPool(g.rnd)
 	cfg.Logf("devtraffic: %d shards of %d users and %d courses, %.2g requests/s, up to %d connections per role per shard, %s comments (server %d), seed %d",
 		cfg.Shards, sz.Users, sz.Courses, cfg.Rate, cfg.Conns, g.pos, version, cfg.Seed)
+	if g.hasReplica() {
+		cfg.Logf("devtraffic: splitting reads between the primary and the replica; see dev/README.md")
+	} else {
+		cfg.Logf("devtraffic: no replica, so everything runs on the primary")
+	}
 	if g.pos == Leading && version >= 180000 {
 		cfg.Logf("devtraffic: Postgres 18 drops leading comments from pg_stat_statements, so rotten will see no contexts")
 	}
@@ -173,20 +202,69 @@ func newGenerator(ctx context.Context, cfg Config) (*generator, error) {
 }
 
 func (g *generator) close() {
-	for _, p := range g.pools {
-		for _, pool := range p {
-			if pool != nil {
-				pool.Close()
+	for _, side := range g.pools {
+		for _, p := range side {
+			for _, pool := range p {
+				if pool != nil {
+					pool.Close()
+				}
 			}
 		}
 	}
 }
 
+func (g *generator) hasReplica() bool { return g.pools[Replica] != nil }
+
+// waitForReplay waits until the replica has replayed the primary's WAL as of
+// now, so the shard databases and roles Setup just made are there.
+func waitForReplay(ctx context.Context, primaryDSN, replicaDSN string, logf func(string, ...any)) error {
+	primary, err := pgx.Connect(ctx, primaryDSN)
+	if err != nil {
+		return fmt.Errorf("devtraffic: connect to the primary: %w", err)
+	}
+	defer primary.Close(context.Background())
+	var lsn string
+	if err := primary.QueryRow(ctx, `SELECT pg_current_wal_lsn()::text`).Scan(&lsn); err != nil {
+		return fmt.Errorf("devtraffic: primary WAL position: %w", err)
+	}
+	replica, err := pgx.Connect(ctx, replicaDSN)
+	if err != nil {
+		return fmt.Errorf("devtraffic: connect to the replica: %w", err)
+	}
+	defer replica.Close(context.Background())
+	start := time.Now()
+	logged := false
+	for {
+		var caughtUp bool
+		if err := replica.QueryRow(ctx, `SELECT coalesce(pg_last_wal_replay_lsn() >= $1::pg_lsn, false)`, lsn).Scan(&caughtUp); err != nil {
+			return fmt.Errorf("devtraffic: replica replay position: %w", err)
+		}
+		if caughtUp {
+			return nil
+		}
+		if time.Since(start) > replayWait {
+			return fmt.Errorf("devtraffic: the replica hasn't replayed the primary's setup (to %s) after %v", lsn, replayWait)
+		}
+		if !logged && time.Since(start) > 5*time.Second {
+			logf("devtraffic: waiting for the replica to replay to %s", lsn)
+			logged = true
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// replayWait is how long waitForReplay waits for the replica.
+const replayWait = 2 * time.Minute
+
 // receiveBuffer is the load's socket receive buffer size, in bytes.
 const receiveBuffer = 16 << 10
 
-func shardPool(ctx context.Context, cfg Config, database, role string) (*pgxpool.Pool, error) {
-	pc, err := pgxpool.ParseConfig(cfg.AdminDSN)
+func shardPool(ctx context.Context, cfg Config, dsn, database, role string) (*pgxpool.Pool, error) {
+	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("devtraffic: parse DSN: %w", err)
 	}
@@ -221,7 +299,7 @@ type generator struct {
 	cfg   Config
 	sz    Sizes
 	pos   Position
-	pools [][2]*pgxpool.Pool
+	pools [2][][2]*pgxpool.Pool
 	hosts *HostPool
 	rnd   *rand.Rand // only the dispatching goroutine uses it
 	// started is when the load started, after setup.
@@ -230,36 +308,52 @@ type generator struct {
 }
 
 // warmup runs every shape once in each shard database as each role that
-// runs it. pg_stat_statements keeps the first text it sees for an entry, and
-// each (shard, role) pair is its own entry, so warmup picks that first text's
-// context: the shard's turn in the list of contexts that run the shape as
-// that role. This spreads a shape's attributed contexts across its entries.
+// runs it, on each server it runs on. pg_stat_statements keeps the first
+// text it sees for an entry, and each (server, shard, role) is its own
+// entry, so warmup picks that first text's context: the shard's turn in the
+// list of contexts that run the shape as that role on that server. This
+// spreads a shape's attributed contexts across its entries, and credits
+// each server's entries only to contexts that really run the shape there.
 func (g *generator) warmup(ctx context.Context) {
-	for shard := 1; shard <= g.cfg.Shards; shard++ {
-		for _, shape := range shapes {
-			for _, job := range []bool{false, true} {
-				runners := runnersOf(shape.Name, job)
-				if len(runners) == 0 {
-					continue
+	targets := []Target{Primary}
+	if g.hasReplica() {
+		targets = append(targets, Replica)
+	}
+	for _, target := range targets {
+		for shard := 1; shard <= g.cfg.Shards; shard++ {
+			for _, shape := range shapes {
+				for _, job := range []bool{false, true} {
+					runners := runnersOf(shape.Name, job, target, g.hasReplica())
+					if len(runners) == 0 {
+						continue
+					}
+					if ctx.Err() != nil {
+						return
+					}
+					c := runners[(shard-1)%len(runners)]
+					g.runOn(ctx, c, shard, []string{shape.Name}, []Target{target}, g.childRand())
 				}
-				if ctx.Err() != nil {
-					return
-				}
-				c := runners[(shard-1)%len(runners)]
-				g.run(ctx, c, shard, []string{shape.Name}, g.childRand())
 			}
 		}
 	}
 }
 
-// runnersOf lists the job or web contexts that run the named shape.
-func runnersOf(name string, job bool) []Context {
+// runnersOf lists the job or web contexts that run the named shape on
+// target. Without a replica, that's every context that runs it.
+func runnersOf(name string, job bool, target Target, replica bool) []Context {
 	shape, _ := ShapeByName(name)
 	var out []Context
 	for _, c := range shape.RunBy() {
-		if c.IsJob() == job {
-			out = append(out, c)
+		if c.IsJob() != job {
+			continue
 		}
+		if replica {
+			p := ReplicaPercent(c, shape)
+			if (target == Replica && p == 0) || (target == Primary && p == 100) {
+				continue
+			}
+		}
+		out = append(out, c)
 	}
 	return out
 }
@@ -282,7 +376,7 @@ func (g *generator) loop(ctx context.Context) {
 		}
 		if now := time.Now(); now.After(nextLog) {
 			st := g.n.snapshot()
-			g.cfg.Logf("devtraffic: %d requests, %d statements, %d errors so far", st.Requests, st.Statements, st.Errors)
+			g.cfg.Logf("devtraffic: %d requests, %d statements (%d on the replica), %d errors so far", st.Requests, st.Statements, st.ReplicaStatements, st.Errors)
 			nextLog = now.Add(g.cfg.LogEvery)
 		}
 		pick := g.rnd.IntN(total)
@@ -322,32 +416,59 @@ func (g *generator) childRand() *rand.Rand {
 	return rand.New(rand.NewPCG(g.rnd.Uint64(), g.rnd.Uint64()))
 }
 
-// request runs one web request or job: c's shapes in order on one
-// connection, all with the same comment.
+// request runs one web request or job: c's shapes in order, each on the
+// primary or the replica as PickTarget chooses, all with the same comment.
 func (g *generator) request(ctx context.Context, c Context, shard int, r *rand.Rand) {
-	g.run(ctx, c, shard, c.Shapes, r)
+	targets := make([]Target, len(c.Shapes))
+	if g.hasReplica() {
+		for i, name := range c.Shapes {
+			shape, _ := ShapeByName(name)
+			targets[i] = PickTarget(c, shape, r)
+		}
+	}
+	g.runOn(ctx, c, shard, c.Shapes, targets, r)
 }
 
-// run runs the named shapes in order on one connection to shard, as c's
-// role, all with one fresh comment for c.
-func (g *generator) run(ctx context.Context, c Context, shard int, names []string, r *rand.Rand) {
-	pool := g.pools[shard-1][0]
+// runOn runs the named shapes in order in shard, as c's role, all with one
+// fresh comment for c: names[i] on targets[i], or on targets[0] if there's
+// just one. It holds at most one connection per server, for the whole run,
+// and takes the primary's before the replica's, so two runs can't each hold
+// the one the other waits for.
+func (g *generator) runOn(ctx context.Context, c Context, shard int, names []string, targets []Target, r *rand.Rand) {
+	role := 0
 	if c.IsJob() {
-		pool = g.pools[shard-1][1]
+		role = 1
 	}
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		g.fail(ctx, c, "acquire", err)
-		return
+	targetOf := func(i int) Target {
+		if len(targets) == 1 {
+			return targets[0]
+		}
+		return targets[i]
 	}
-	defer conn.Release()
+	var conns [2]*pgxpool.Conn
+	for _, target := range []Target{Primary, Replica} {
+		for i := range names {
+			if targetOf(i) != target {
+				continue
+			}
+			conn, err := g.pools[target][shard-1][role].Acquire(ctx)
+			if err != nil {
+				g.fail(ctx, c, "acquire "+target.String(), err)
+				return
+			}
+			defer conn.Release()
+			conns[target] = conn
+			break
+		}
+	}
 	g.n.requests.Add(1)
 	meta := g.hosts.NewRequest(r, c)
 	schema := ShardSchema(shard)
 	ep, _ := g.episodeAt(time.Now())
-	for _, name := range names {
+	for i, name := range names {
 		shape, _ := ShapeByName(name)
 		sql, args := shape.RenderIn(c, meta, schema, g.pos, r, g.sz, ep)
+		conn := conns[targetOf(i)]
 		var err error
 		if name == ExportShape {
 			err = export(ctx, conn.Conn(), sql, args, ep == SlowRead)
@@ -355,10 +476,13 @@ func (g *generator) run(ctx context.Context, c Context, shard int, names []strin
 			_, err = conn.Exec(ctx, sql, args...)
 		}
 		if err != nil {
-			g.fail(ctx, c, name, err)
+			g.fail(ctx, c, name+" on the "+targetOf(i).String(), err)
 			return
 		}
 		g.n.statements.Add(1)
+		if targetOf(i) == Replica {
+			g.n.replica.Add(1)
+		}
 	}
 }
 
@@ -438,7 +562,7 @@ func (g *generator) startHolders(ctx context.Context, r *rand.Rand) func() {
 // and lets go for lockGap. It has its own connection, so it doesn't starve
 // the shard's job pool.
 func (g *generator) holdLocks(ctx context.Context, shard int, r *rand.Rand) {
-	conn, err := pgx.ConnectConfig(ctx, g.pools[shard-1][1].Config().ConnConfig.Copy())
+	conn, err := pgx.ConnectConfig(ctx, g.pools[Primary][shard-1][1].Config().ConnConfig.Copy())
 	if err != nil {
 		g.fail(ctx, lockHolder, "connect", err)
 		return

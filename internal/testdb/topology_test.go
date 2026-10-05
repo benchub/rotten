@@ -3,9 +3,11 @@ package testdb
 import (
 	"context"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,6 +22,8 @@ func TestDevTopologyReachability(t *testing.T) {
 	server := topology.StartServerProbe(t)
 	worker := topology.StartWorkerProbe(t)
 	traffic := topology.StartTrafficProbe(t)
+	replica := topology.StartReplicaProbe(t)
+	workerReplica := topology.StartWorkerReplicaProbe(t)
 
 	ctx := context.Background()
 	rottenIP := containerIPOnNetwork(t, ctx, rotten.Container(), topology.CoreNetwork.Name)
@@ -49,6 +53,28 @@ func TestDevTopologyReachability(t *testing.T) {
 		}
 	}
 
+	// The replica worker is on observed and edge, like the primary's: it
+	// reaches the replica, and the server only through edge.
+	replicaIP := containerIPOnNetwork(t, ctx, replica.Container, topology.ObservedNetwork.Name)
+	serverCoreIP := containerIPOnNetwork(t, ctx, server.Container, topology.CoreNetwork.Name)
+	assertExecOK(t, ctx, workerReplica.Container, []string{"pg_isready", "-h", replicaIP, "-p", "5432", "-t", "2"})
+	assertExecOK(t, ctx, workerReplica.Container, []string{"pg_isready", "-h", replica.Alias, "-p", "5432", "-t", "2"})
+	assertExecOK(t, ctx, workerReplica.Container, []string{"pg_isready", "-h", server.Alias, "-p", "5432", "-t", "2"})
+	assertExecOK(t, ctx, workerReplica.Container, []string{"pg_isready", "-h", serverEdgeIP, "-p", "5432", "-t", "2"})
+	for _, target := range []struct{ name, ip string }{{"rotten DB", rottenIP}, {"server on core", serverCoreIP}} {
+		code, out = execCombined(t, ctx, workerReplica.Container, []string{"pg_isready", "-h", target.ip, "-p", "5432", "-t", "2"})
+		if code == 0 {
+			t.Fatalf("replica worker reached %s, expected isolation; output:\n%s", target.name, out)
+		}
+	}
+	// The replica is on observed only: the server can't reach it, and
+	// traffic can.
+	code, out = execCombined(t, ctx, server.Container, []string{"pg_isready", "-h", replicaIP, "-p", "5432", "-t", "2"})
+	if code == 0 {
+		t.Fatalf("server reached the observed replica, expected isolation; output:\n%s", out)
+	}
+	assertExecOK(t, ctx, traffic.Container, []string{"pg_isready", "-h", replicaIP, "-p", "5432", "-t", "2"})
+
 	if !strings.Contains(topology.RottenInternalDSN(IngestRole), "rotten-db:5432") {
 		t.Fatalf("RottenInternalDSN does not use rotten-db:5432: %s", topology.RottenInternalDSN(IngestRole))
 	}
@@ -72,47 +98,99 @@ func TestDevTopologyReachability(t *testing.T) {
 	}
 }
 
-// TestDevComposeTrafficOnObservedOnly checks dev/docker-compose.yaml puts the
-// traffic service on the observed network and nothing else, matching
-// Topology.TrafficNetworkOptions.
-func TestDevComposeTrafficOnObservedOnly(t *testing.T) {
+// devComposeService is the part of a dev/docker-compose.yaml service these
+// tests check.
+type devComposeService struct {
+	Networks    yaml.Node `yaml:"networks"`
+	NetworkMode string    `yaml:"network_mode"`
+	Ports       []any     `yaml:"ports"`
+	Volumes     []string  `yaml:"volumes"`
+}
+
+func (s devComposeService) networkNames() []string {
+	var names []string
+	switch s.Networks.Kind {
+	case yaml.SequenceNode:
+		for _, n := range s.Networks.Content {
+			names = append(names, n.Value)
+		}
+	case yaml.MappingNode:
+		for i := 0; i < len(s.Networks.Content); i += 2 {
+			names = append(names, s.Networks.Content[i].Value)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+func loadDevCompose(t *testing.T) map[string]devComposeService {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(RepoRoot(), "dev", "docker-compose.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var compose struct {
-		Services map[string]struct {
-			Networks    yaml.Node `yaml:"networks"`
-			NetworkMode string    `yaml:"network_mode"`
-			Ports       []any     `yaml:"ports"`
-		} `yaml:"services"`
+		Services map[string]devComposeService `yaml:"services"`
 	}
 	if err := yaml.Unmarshal(raw, &compose); err != nil {
 		t.Fatal(err)
 	}
-	svc, ok := compose.Services["traffic"]
-	if !ok {
-		t.Fatal("dev/docker-compose.yaml has no traffic service")
-	}
-	if svc.NetworkMode != "" {
-		t.Fatalf("traffic network_mode = %q, want the observed network", svc.NetworkMode)
-	}
-	if len(svc.Ports) != 0 {
-		t.Fatalf("traffic publishes ports %v, want none", svc.Ports)
-	}
-	var names []string
-	switch svc.Networks.Kind {
-	case yaml.SequenceNode:
-		for _, n := range svc.Networks.Content {
-			names = append(names, n.Value)
+	return compose.Services
+}
+
+// TestDevComposeServiceNetworks checks dev/docker-compose.yaml puts each
+// observed-side service on the networks the Topology helpers model: the
+// observed databases and traffic on observed only, each worker on observed
+// and edge only (never core), and the key services on core only. None of
+// them publishes a port.
+func TestDevComposeServiceNetworks(t *testing.T) {
+	services := loadDevCompose(t)
+	for name, want := range map[string][]string{
+		"observed-postgres":  {"observed"},
+		"observed-replica":   {"observed"},
+		"traffic":            {"observed"},
+		"worker":             {"edge", "observed"},
+		"worker-replica":     {"edge", "observed"},
+		"worker-key":         {"core"},
+		"worker-replica-key": {"core"},
+	} {
+		svc, ok := services[name]
+		if !ok {
+			t.Errorf("dev/docker-compose.yaml has no %s service", name)
+			continue
 		}
-	case yaml.MappingNode:
-		for i := 0; i < len(svc.Networks.Content); i += 2 {
-			names = append(names, svc.Networks.Content[i].Value)
+		if svc.NetworkMode != "" {
+			t.Errorf("%s network_mode = %q, want networks %v", name, svc.NetworkMode, want)
+		}
+		if len(svc.Ports) != 0 {
+			t.Errorf("%s publishes ports %v, want none", name, svc.Ports)
+		}
+		if got := svc.networkNames(); !slices.Equal(got, want) {
+			t.Errorf("%s networks = %v, want %v", name, got, want)
 		}
 	}
-	if len(names) != 1 || names[0] != "observed" {
-		t.Fatalf("traffic networks = %v, want [observed]", names)
+}
+
+// TestDevComposeWorkersKeepTheirOwnSecrets checks each worker mounts its own
+// pass key and state volumes, and not the other worker's.
+func TestDevComposeWorkersKeepTheirOwnSecrets(t *testing.T) {
+	services := loadDevCompose(t)
+	for name, want := range map[string]map[string]string{
+		"worker":             {"worker-secrets": "/worker-secrets", "worker-state": "/state"},
+		"worker-replica":     {"worker-replica-secrets": "/worker-secrets", "worker-replica-state": "/state"},
+		"worker-key":         {"worker-secrets": "/worker-secrets"},
+		"worker-replica-key": {"worker-replica-secrets": "/worker-secrets"},
+	} {
+		got := map[string]string{}
+		for _, v := range services[name].Volumes {
+			parts := strings.Split(v, ":")
+			if len(parts) >= 2 && strings.HasPrefix(parts[0], "worker") {
+				got[parts[0]] = parts[1]
+			}
+		}
+		if !maps.Equal(got, want) {
+			t.Errorf("%s mounts worker volumes %v, want %v", name, got, want)
+		}
 	}
 }
 

@@ -20,6 +20,10 @@ const (
 	WorkerAlias   = "rotten-worker"
 	RottenAlias   = "rotten-db"
 	TrafficAlias  = "rotten-traffic"
+	// ReplicaAlias and WorkerReplicaAlias are the dev stack's observed
+	// replica and its worker.
+	ReplicaAlias       = "observed-replica-db"
+	WorkerReplicaAlias = "rotten-worker-replica"
 )
 
 // Topology is the three-network dev/test layout from docs/plan.md.
@@ -201,17 +205,37 @@ func (topology *Topology) StartServerProbe(t testing.TB) TopologyContainer {
 // not on core.
 func (topology *Topology) StartWorkerProbe(t testing.TB) TopologyContainer {
 	t.Helper()
+	return topology.startWorkerProbe(t, topology.WorkerAlias)
+}
+
+// StartWorkerReplicaProbe starts a probe for the replica's worker: like the
+// primary's, on observed and edge only.
+func (topology *Topology) StartWorkerReplicaProbe(t testing.TB) TopologyContainer {
+	t.Helper()
+	return topology.startWorkerProbe(t, WorkerReplicaAlias)
+}
+
+func (topology *Topology) startWorkerProbe(t testing.TB, alias string) TopologyContainer {
+	t.Helper()
 	ctx := context.Background()
 	opts := []testcontainers.ContainerCustomizer{
 		testcontainers.WithEntrypoint("sleep", "infinity"),
 	}
-	opts = append(opts, topology.WorkerNetworkOptions(topology.WorkerAlias)...)
+	opts = append(opts, topology.WorkerNetworkOptions(alias)...)
 	c, err := testcontainers.Run(ctx, "postgres:18", opts...)
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
-		t.Fatalf("testdb: start worker probe: %v", err)
+		t.Fatalf("testdb: start %s probe: %v", alias, err)
 	}
-	return TopologyContainer{Alias: topology.WorkerAlias, Container: c}
+	return TopologyContainer{Alias: alias, Container: c}
+}
+
+// StartReplicaProbe starts a Postgres probe on observed only, where the dev
+// stack's observed replica runs. StartDevObservedPair runs a real replica.
+func (topology *Topology) StartReplicaProbe(t testing.TB) TopologyContainer {
+	t.Helper()
+	c := runPostgresProbe(t, ReplicaAlias, tcnetwork.WithNetwork([]string{ReplicaAlias}, topology.ObservedNetwork))
+	return TopologyContainer{Alias: ReplicaAlias, Container: c}
 }
 
 func (c TopologyContainer) Exec(ctx context.Context, cmd []string, options ...tcexec.ProcessOption) (int, io.Reader, error) {

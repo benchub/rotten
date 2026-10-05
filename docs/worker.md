@@ -44,7 +44,8 @@ redirect output yourself, redirect both.
 ## Configuration
 
 The config is a JSON file. `conf` in the repository root is an example with
-every key, and `dev/worker.json` is the one the dev stack uses.
+every key, and `dev/worker.json` and `dev/worker-replica.json` are the dev
+stack's primary and replica workers' configs.
 
 ### Connections
 

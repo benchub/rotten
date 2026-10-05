@@ -64,7 +64,10 @@ type Context struct {
 	Controller, Action string
 	JobTag             string
 	Weight             int
-	Shapes             []string
+	// SplitReplicaPercent is the percentage of this context's runs of
+	// Split shapes that go to the replica. See ReplicaPercent.
+	SplitReplicaPercent int
+	Shapes              []string
 }
 
 // IsJob reports whether c is a background job rather than a web request.
@@ -173,13 +176,16 @@ func uuid4(r *rand.Rand) string {
 
 // Shape is one query shape: one fingerprint. The shapes table and the
 // contexts table together say, per shape, its SQL (build), which contexts
-// run it (RunBy), and whether it only reads (ReadOnly), which is what
-// routing shapes between a primary and a replica would need.
+// run it (RunBy), whether it only reads (ReadOnly), and where it runs when
+// there's a replica (Route, with the contexts' SplitReplicaPercent).
 type Shape struct {
 	Name string
 	// ReadOnly is true if the shape runs in a read-only transaction, as on
-	// a hot standby.
+	// a hot standby. Only read-only shapes may route to the replica.
 	ReadOnly bool
+	// Route is where the shape runs when there's a replica; empty means
+	// OnPrimary.
+	Route Route
 	// build returns the SQL, with {s} standing for the shard schema, and its
 	// arguments, during episode ep.
 	build func(r *rand.Rand, sz Sizes, ep Episode) (string, []any)
@@ -238,7 +244,7 @@ func episodeSleep(r *rand.Rand, ep Episode) float64 {
 }
 
 var shapes = []Shape{
-	{Name: "user_by_id", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "user_by_id", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT id, name, sortable_name, email, workflow_state, last_seen_at FROM {s}.users WHERE id = $1 LIMIT 1`, []any{userID(r, sz)}
 	}},
 	{Name: "user_by_email", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
@@ -252,27 +258,27 @@ var shapes = []Shape{
 		}
 		return `UPDATE {s}.users SET last_seen_at = now() WHERE id = $1`, []any{id}
 	}},
-	{Name: "users_in_list", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "users_in_list", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT id, name, sortable_name FROM {s}.users WHERE id IN (` + idList(r, sz.Users, 20) + `) ORDER BY sortable_name`, nil
 	}},
-	{Name: "search_users", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "search_users", ReadOnly: true, Route: OnReplica, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT id, name, email FROM {s}.users WHERE name ILIKE $1 OR email ILIKE $1 ORDER BY sortable_name LIMIT 20`,
 			[]any{fmt.Sprintf("%%%d%%", r.IntN(100))}
 	}},
-	{Name: "course_by_id", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "course_by_id", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT id, name, course_code, workflow_state FROM {s}.courses WHERE id = $1 LIMIT 1`, []any{courseID(r, sz)}
 	}},
-	{Name: "courses_in_list", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "courses_in_list", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT id, name, course_code FROM {s}.courses WHERE id IN (` + idList(r, sz.Courses, 12) + `) AND workflow_state = 'available'`, nil
 	}},
-	{Name: "courses_for_user", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "courses_for_user", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT c.id, c.name, c.course_code, e.type FROM {s}.courses c JOIN {s}.enrollments e ON e.course_id = c.id WHERE e.user_id = $1 AND e.workflow_state = 'active' ORDER BY c.name`,
 			[]any{userID(r, sz)}
 	}},
 	{Name: "favorites_for_user", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT id, course_id, created_at FROM {s}.favorites WHERE user_id = $1 ORDER BY created_at`, []any{userID(r, sz)}
 	}},
-	{Name: "favorite_courses", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "favorite_courses", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT c.id, c.name, c.course_code FROM {s}.courses c JOIN {s}.favorites f ON f.course_id = c.id WHERE f.user_id = $1 AND c.workflow_state = 'available' ORDER BY c.name`,
 			[]any{userID(r, sz)}
 	}},
@@ -283,25 +289,25 @@ var shapes = []Shape{
 	{Name: "delete_favorite", build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `DELETE FROM {s}.favorites WHERE user_id = $1 AND course_id = $2`, []any{userID(r, sz), courseID(r, sz)}
 	}},
-	{Name: "enrollments_for_course", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "enrollments_for_course", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT e.id, e.type, e.workflow_state, u.id, u.sortable_name FROM {s}.enrollments e JOIN {s}.users u ON u.id = e.user_id WHERE e.course_id = $1 AND e.workflow_state <> 'deleted' ORDER BY u.sortable_name LIMIT 50`,
 			[]any{courseID(r, sz)}
 	}},
-	{Name: "enrollment_counts", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "enrollment_counts", ReadOnly: true, Route: OnReplica, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT type, workflow_state, count(*) FROM {s}.enrollments WHERE course_id = $1 GROUP BY type, workflow_state`, []any{courseID(r, sz)}
 	}},
 	{Name: "recompute_final_scores", build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `UPDATE {s}.enrollments e SET computed_final_score = sub.score, updated_at = now() FROM (SELECT s.user_id, avg(s.score) AS score FROM {s}.submissions s JOIN {s}.assignments a ON a.id = s.assignment_id WHERE a.course_id = $1 AND s.score IS NOT NULL GROUP BY s.user_id) sub WHERE e.course_id = $1 AND e.user_id = sub.user_id`,
 			[]any{courseID(r, sz)}
 	}},
-	{Name: "assignments_for_course", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "assignments_for_course", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT id, title, points_possible, due_at FROM {s}.assignments WHERE course_id = $1 AND workflow_state = 'published' ORDER BY due_at NULLS LAST`,
 			[]any{courseID(r, sz)}
 	}},
-	{Name: "assignment_by_id", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "assignment_by_id", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT id, course_id, title, points_possible, due_at, workflow_state FROM {s}.assignments WHERE id = $1 LIMIT 1`, []any{assignmentID(r, sz)}
 	}},
-	{Name: "submissions_for_assignment", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "submissions_for_assignment", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT s.id, s.user_id, s.score, s.workflow_state, u.sortable_name FROM {s}.submissions s JOIN {s}.users u ON u.id = s.user_id WHERE s.assignment_id = $1 ORDER BY u.sortable_name`,
 			[]any{assignmentID(r, sz)}
 	}},
@@ -317,12 +323,12 @@ var shapes = []Shape{
 		return `UPDATE {s}.submissions SET score = $1, workflow_state = 'graded', graded_at = now() WHERE assignment_id = $2 AND user_id = $3`,
 			[]any{float64(r.IntN(101)), assignmentID(r, sz), userID(r, sz)}
 	}},
-	{Name: "course_grade_summary", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "course_grade_summary", ReadOnly: true, Route: OnReplica, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT a.id, count(s.id), avg(s.score), max(s.score) FROM {s}.assignments a LEFT JOIN {s}.submissions s ON s.assignment_id = a.id WHERE a.course_id = $1 GROUP BY a.id ORDER BY a.id`,
 			[]any{courseID(r, sz)}
 	}},
 	// Slow only in a SlowSleep episode: see episodeSleep.
-	{Name: "course_activity", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "course_activity", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `WITH pause AS (SELECT pg_sleep($2)) SELECT count(DISTINCT pv.user_id), count(*) FROM {s}.page_views pv, pause WHERE pv.course_id = $1 AND pv.created_at > now() - interval '7 days'`,
 			[]any{courseID(r, sz), episodeSleep(r, ep)}
 	}},
@@ -342,18 +348,18 @@ var shapes = []Shape{
 		}
 		return `INSERT INTO {s}.page_views (user_id, course_id, url, created_at) VALUES ` + strings.Join(rows, ", "), args
 	}},
-	{Name: "recent_page_views", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "recent_page_views", ReadOnly: true, Route: Split, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT url, course_id, created_at FROM {s}.page_views WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`, []any{userID(r, sz)}
 	}},
 	// Deliberately slow: a sequential scan and three aggregates over a day
 	// of page views.
-	{Name: "page_view_report", ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: "page_view_report", ReadOnly: true, Route: OnReplica, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT date_trunc('hour', created_at) AS hour, count(*), count(DISTINCT user_id), count(DISTINCT course_id), count(DISTINCT url) FROM {s}.page_views WHERE created_at > now() - $1::interval GROUP BY 1 ORDER BY 1`,
 			[]any{"1 day"}
 	}},
 	// About 6000 rows and 1 MB at scale 1. The generator reads it slowly in
 	// a SlowRead episode.
-	{Name: ExportShape, ReadOnly: true, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
+	{Name: ExportShape, ReadOnly: true, Route: OnReplica, build: func(r *rand.Rand, sz Sizes, ep Episode) (string, []any) {
 		return `SELECT u.id, u.name, u.sortable_name, u.email, c.name, c.course_code, e.type, e.workflow_state, e.computed_final_score FROM {s}.enrollments e JOIN {s}.users u ON u.id = e.user_id JOIN {s}.courses c ON c.id = e.course_id ORDER BY c.id, u.sortable_name`, nil
 	}},
 	// The LockWait episode's holder runs this in a transaction it keeps
@@ -371,32 +377,32 @@ var shapes = []Shape{
 var lockHolder = Context{JobTag: "SisImport.process_users", Weight: 0, Shapes: []string{LockShape}}
 
 var contexts = []Context{
-	{Controller: "favorites", Action: "list_favorite_courses", Weight: 5, Shapes: []string{"user_by_id", "favorites_for_user", "favorite_courses", "courses_in_list"}},
+	{Controller: "favorites", Action: "list_favorite_courses", Weight: 5, SplitReplicaPercent: 70, Shapes: []string{"user_by_id", "favorites_for_user", "favorite_courses", "courses_in_list"}},
 	{Controller: "favorites", Action: "create", Weight: 2, Shapes: []string{"user_by_id", "course_by_id", "insert_favorite", "favorites_for_user"}},
 	{Controller: "favorites", Action: "destroy", Weight: 1, Shapes: []string{"user_by_id", "delete_favorite"}},
-	{Controller: "courses", Action: "index", Weight: 4, Shapes: []string{"user_by_id", "courses_for_user", "favorites_for_user", "courses_in_list"}},
-	{Controller: "courses", Action: "show", Weight: 5, Shapes: []string{"user_by_id", "course_by_id", "assignments_for_course", "recent_page_views", "insert_page_view"}},
-	{Controller: "users", Action: "dashboard", Weight: 6, Shapes: []string{"user_by_id", "touch_user", "courses_for_user", "favorite_courses", "recent_page_views", "insert_page_view"}},
-	{Controller: "users", Action: "search", Weight: 1, Shapes: []string{"search_users", "users_in_list"}},
+	{Controller: "courses", Action: "index", Weight: 4, SplitReplicaPercent: 50, Shapes: []string{"user_by_id", "courses_for_user", "favorites_for_user", "courses_in_list"}},
+	{Controller: "courses", Action: "show", Weight: 5, SplitReplicaPercent: 30, Shapes: []string{"user_by_id", "course_by_id", "assignments_for_course", "recent_page_views", "insert_page_view"}},
+	{Controller: "users", Action: "dashboard", Weight: 6, SplitReplicaPercent: 20, Shapes: []string{"user_by_id", "touch_user", "courses_for_user", "favorite_courses", "recent_page_views", "insert_page_view"}},
+	{Controller: "users", Action: "search", Weight: 1, SplitReplicaPercent: 100, Shapes: []string{"search_users", "users_in_list"}},
 	{Controller: "login", Action: "create", Weight: 2, Shapes: []string{"user_by_email", "touch_user", "insert_page_view"}},
-	{Controller: "enrollments_api", Action: "index", Weight: 2, Shapes: []string{"course_by_id", "enrollments_for_course", "users_in_list", "enrollment_counts"}},
-	{Controller: "assignments", Action: "show", Weight: 4, Shapes: []string{"user_by_id", "assignment_by_id", "course_by_id", "submission_for_user", "insert_page_view"}},
+	{Controller: "enrollments_api", Action: "index", Weight: 2, SplitReplicaPercent: 90, Shapes: []string{"course_by_id", "enrollments_for_course", "users_in_list", "enrollment_counts"}},
+	{Controller: "assignments", Action: "show", Weight: 4, SplitReplicaPercent: 40, Shapes: []string{"user_by_id", "assignment_by_id", "course_by_id", "submission_for_user", "insert_page_view"}},
 	{Controller: "submissions", Action: "create", Weight: 2, Shapes: []string{"user_by_id", "assignment_by_id", "upsert_submission", "submission_for_user"}},
-	{Controller: "gradebooks", Action: "show", Weight: 2, Shapes: []string{"course_by_id", "assignments_for_course", "users_in_list", "course_grade_summary", "course_activity"}},
-	{Controller: "gradebooks", Action: "export", Weight: 1, Shapes: []string{"course_by_id", ExportShape}},
+	{Controller: "gradebooks", Action: "show", Weight: 2, SplitReplicaPercent: 80, Shapes: []string{"course_by_id", "assignments_for_course", "users_in_list", "course_grade_summary", "course_activity"}},
+	{Controller: "gradebooks", Action: "export", Weight: 1, SplitReplicaPercent: 100, Shapes: []string{"course_by_id", ExportShape}},
 	{Controller: "gradebooks", Action: "update_submission", Weight: 2, Shapes: []string{"assignment_by_id", "grade_submission", "submission_for_user"}},
 
 	{JobTag: "Enrollment.recompute_final_score", Weight: 3, Shapes: []string{"course_by_id", "course_grade_summary", "recompute_final_scores", "enrollment_counts"}},
-	{JobTag: "Submission.auto_grade", Weight: 2, Shapes: []string{"assignment_by_id", "submissions_for_assignment", "grade_submission"}},
+	{JobTag: "Submission.auto_grade", Weight: 2, SplitReplicaPercent: 50, Shapes: []string{"assignment_by_id", "submissions_for_assignment", "grade_submission"}},
 	{JobTag: "PageView.flush_buffer", Weight: 3, Shapes: []string{"bulk_insert_page_views"}},
 	{JobTag: "PageView.prune", Weight: 1, Shapes: []string{"prune_page_views"}},
-	{JobTag: "Reports::CourseActivity.generate", Weight: 1, Shapes: []string{"page_view_report", "course_activity", "enrollment_counts"}},
+	{JobTag: "Reports::CourseActivity.generate", Weight: 1, SplitReplicaPercent: 100, Shapes: []string{"page_view_report", "course_activity", "enrollment_counts"}},
 	{JobTag: "Favorite.cleanup_concluded", Weight: 1, Shapes: []string{"favorites_for_user", "courses_in_list", "delete_favorite"}},
 	{JobTag: "User.touch_last_seen", Weight: 1, Shapes: []string{"users_in_list", "touch_user"}},
-	{JobTag: "Reports::GradeExport.generate", Weight: 2, Shapes: []string{"courses_in_list", ExportShape}},
+	{JobTag: "Reports::GradeExport.generate", Weight: 2, SplitReplicaPercent: 100, Shapes: []string{"courses_in_list", ExportShape}},
 	// Weight 0: only the LockWait episode runs it (and warmup, once).
 	lockHolder,
-	{JobTag: "Course.sync_enrollments", Weight: 1, Shapes: []string{"course_by_id", "enrollments_for_course", "users_in_list", "user_by_id"}},
+	{JobTag: "Course.sync_enrollments", Weight: 1, SplitReplicaPercent: 60, Shapes: []string{"course_by_id", "enrollments_for_course", "users_in_list", "user_by_id"}},
 }
 
 // Shapes returns the query shapes.

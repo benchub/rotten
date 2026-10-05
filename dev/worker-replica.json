@@ -1,20 +1,20 @@
 {
   "ObservedDBConn": [
-    "postgres://rotten_observer:rotten_observer@observed-db:5432/observed?sslmode=disable"
+    "postgres://rotten_observer:rotten_observer@observed-replica-db:5432/observed?sslmode=disable"
   ],
   "ServerURL": "https://rotten-server:8443",
   "PassKeyFile": "/worker-secrets/pass.key",
   "ServerCAFile": "/certs/ca.pem",
   "StateDir": "/state",
   "MaxSnapshotAge": 30,
-  "SanityCheck": "select not pg_is_in_recovery()",
+  "SanityCheck": "select pg_is_in_recovery()",
   "StatusInterval": 10,
   "ObservationInterval": 10,
-  "FQDN": "observed-postgres",
+  "FQDN": "observed-replica",
   "Project": "dev",
   "Environment": "local",
   "Cluster": "compose",
-  "Role": "primary",
+  "Role": "replica",
   "ContextController": "/\\*.*controller(_with_namespace)?:([^,]+).*\\*/",
   "ContextAction": "/\\*.*action:([^,]+).*\\*/",
   "ContextJob": "/\\*.*job(_tag)?:([^,]+).*\\*/",
