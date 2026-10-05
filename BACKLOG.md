@@ -89,4 +89,9 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - Meanwhile, make the gap visible: a per-window count of the calls dropped, shown in the UI or the worker status.
 - **Red test:** A real-PG18 test with an unparseable statement, asserting the chosen behaviour.
 
+### 20261004-204751-1: Flaky `TestWorkerCreditsRecreatedEntryToNewText/pg17`.
+- **Why (found in 20261004-161500-1):** One `make test-all` run failed in the pg17 case of `TestWorkerCreditsRecreatedEntryToNewText` (added in 20261004-182844-1): plan time went down where the test needs it to climb. Three reruns passed. There's no CI, so a flaky gate wastes runs and hides real failures.
+- **Do:** Find the race, for example plan time not always recorded for a re-planned statement or timing-dependent counters, and make the test deterministic without weakening what it checks.
+- **Red test:** Run the case in a loop (e.g. `-count=50`) to reproduce the failure, then make it pass reliably.
+
 ## Phase F: Docs.
