@@ -1452,3 +1452,12 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - Completed: 2026-10-04, 5c10909
   - server, worker, certs and server-migrate now build and exec. The key generators build, then run in their pipelines. Tests require clean SIGTERM shutdown and no `go run` in services.
   - Existing dev stacks pick it up with `docker compose -f dev/docker-compose.yaml up -d`.
+
+### 20261004-144107-2: Contexts are credited by each entry's first text, not per call.
+- **Decision (user, 2026-10-04):** Do both. Document the limit and add a UI caveat now. Add a separate backlog task to design sampling `pg_stat_activity` per `query_id` so contexts are credited correctly.
+- **Why (found in 20261004-142000-1):** `pg_stat_statements` keeps one text per (userid, dbid, toplevel, queryid) entry, the first it saw. The worker extracts one context from that text and credits all of the entry's calls in a window to it (`buildHarvestBatchFromRows`, `extractContextValue`). A query run by many controllers is credited entirely to whichever ran it first, for the entry's lifetime, so per-context counts in the controller, action and job views can be badly wrong. The views don't say so.
+- **Do:** Decide with the user. At least document the limitation where the UI shows contexts and in `docs/worker.md` (counts are "calls of entries first seen under this context"). A real fix needs another source (e.g. sampling `pg_stat_activity` query texts per queryid on 14+, where `compute_query_id` exposes `query_id`), which is a design change.
+- **Red test:** Depends on the choice; for docs only, a docscheck that the caveat is present.
+- Completed: 2026-10-04, b502966
+  - A caveat under context results (reports and the fingerprint's Top contexts), titles on context headers, and a Match hint sentence. A docscheck covers docs/worker.md and ui/README.md.
+  - The real fix is design task 20261004-150000-1. The stale text cache across reset is 20261004-182844-1.

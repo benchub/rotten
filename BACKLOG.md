@@ -55,12 +55,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261004-144107-2: Contexts are credited by each entry's first text, not per call.
-- **Decision (user, 2026-10-04):** Do both. Document the limit and add a UI caveat now. Add a separate backlog task to design sampling `pg_stat_activity` per `query_id` so contexts are credited correctly.
-- **Why (found in 20261004-142000-1):** `pg_stat_statements` keeps one text per (userid, dbid, toplevel, queryid) entry, the first it saw. The worker extracts one context from that text and credits all of the entry's calls in a window to it (`buildHarvestBatchFromRows`, `extractContextValue`). A query run by many controllers is credited entirely to whichever ran it first, for the entry's lifetime, so per-context counts in the controller, action and job views can be badly wrong. The views don't say so.
-- **Do:** Decide with the user. At least document the limitation where the UI shows contexts and in `docs/worker.md` (counts are "calls of entries first seen under this context"). A real fix needs another source (e.g. sampling `pg_stat_activity` query texts per queryid on 14+, where `compute_query_id` exposes `query_id`), which is a design change.
-- **Red test:** Depends on the choice; for docs only, a docscheck that the caveat is present.
-
 ### 20261004-221500-1: Outliers report misses short slow spells in preset ranges.
 - **Decision (user, 2026-10-04):** Score each in-range window (or the worst few) against a robust baseline (median/MAD) from history, so short spikes show in preset ranges and past spells don't hide new ones.
 - **Why (found in 20261004-142000-1):** `reports/outliers.sql` compares the average of a fingerprint's per-window means over the whole range with its history: every `fingerprint_stats` sample outside the range, including later ones. A 2-minute slow spell in a 1-hour or 3-hour range is averaged with 30 to 90 normal windows. And once a fingerprint has had two spells, each is in the other's history, which widens the deviation. The dev traffic's episodes therefore show only with a custom range covering one episode (dev/README.md, "Slow episodes and the outliers report"). Production spikes behave the same way.
