@@ -111,6 +111,28 @@ application doesn't add comments, use a pattern that never matches, such as
 `a^`, since the keys can't be blank. An invalid pattern stops the worker at
 startup with an error that names the key.
 
+On Postgres 18, `pg_stat_statements` drops a leading comment from the query
+text it keeps, while 14 through 17 keep it. Trailing and inline comments
+survive on every version, and Postgres has no setting for this. So on 18,
+have your application append its comments instead of prepending them:
+
+- `marginalia` gem: `Marginalia::Comment.prepend_comment = false`
+- Rails query logs: `config.active_record.query_log_tags_prepend_comment = false`
+
+Both append by default. If the observed server is 18 or later, the worker
+watches for context matches on each connection. After at least 3 harvest
+windows and 1,000 calls without a single match, it logs this warning:
+
+```
+No marginalia contexts found in sampled calls on PostgreSQL 18+. If your application emits leading comments, PostgreSQL 18 removes them from pg_stat_statements; configure it to append them (e.g. prepend_comment = false)
+```
+
+Only top-level statements count, and not the ones run by the worker's
+observer role, such as its own reads and sanity check. One match on the connection ends the
+check. It warns at most once per worker process, and checks again only after
+a restart. It doesn't warn if all three patterns can never match, such as
+`a^`.
+
 ### Fingerprinting
 
 | Key | Required | Meaning |

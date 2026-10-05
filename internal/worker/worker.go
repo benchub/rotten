@@ -203,6 +203,10 @@ type Worker struct {
 	// is behind what was sent. Only Run's goroutine touches it.
 	staleState bool
 
+	// ctxWatch backs the Postgres 18 leading-marginalia warning. Only Run's
+	// goroutine touches it.
+	ctxWatch contextWatch
+
 	// How many event-processing goroutines are running. The server-outbox
 	// worker path never starts any; this remains for progress log continuity.
 	processing atomic.Uint32
@@ -276,6 +280,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			w.markAlive("connected")
 			observed = conn
+			w.observedConnected(w.observedServerInfo(ctx, observed))
 			reader = pgss.NewReader(observed)
 			texts = pgss.NewTextCache(reader)
 			connectAttempt = 0
@@ -526,6 +531,7 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.T
 	} else if cfg.ServerOutbox != nil {
 		var batch *rottenv1.SubmitHarvestRequest
 		batch, next = w.buildHarvestBatchAndSnapshot(ctx, texts, loaded.Snapshot, next, deltas, loaded.TakenAt, now)
+		w.maybeWarnNoContexts()
 		result, err := cfg.ServerOutbox.SaveSnapshotAndEnqueue(ctx, next, now, batch)
 		if err != nil {
 			log.Println("couldn't save the snapshot and outbox batch, so the next harvest is a baseline:", err)
@@ -713,17 +719,17 @@ func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat
 		event.observationTimeStart = PoorMansTime{sec: start.Unix()}
 		event.observationTimeEnd = PoorMansTime{sec: end.Unix()}
 		w.eventCount.Add(1)
+		controller := extractContextValue(event.query, cfg.ReController)
+		action := extractContextValue(event.query, cfg.ReAction)
+		jobTag := extractContextValue(event.query, cfg.ReJobTag)
+		w.noteContext(d.UserID, d.TopLevel, wholeCount(event.calls), controller != "" || action != "" || jobTag != "")
 		fingerprint, err := fingerprinting.Normalized(event.query, cfg.Fingerprint)
 		if err != nil {
 			w.recordParseFailure(event.query)
 			continue
 		}
 		event.context = map[string]uint64{
-			serverContextKey(
-				extractContextValue(event.query, cfg.ReController),
-				extractContextValue(event.query, cfg.ReAction),
-				extractContextValue(event.query, cfg.ReJobTag),
-			): wholeCount(event.calls),
+			serverContextKey(controller, action, jobTag): wholeCount(event.calls),
 		}
 		if existing, ok := events[fingerprint]; ok {
 			events[fingerprint] = mergeEvent(existing, event)

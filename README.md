@@ -124,6 +124,10 @@ Known issues
   environment, cluster and role combination that doesn't exist.
 - **Postgres 14 through 16** keep min and max times for each statement's
   whole lifetime, since they can't reset them on their own.
+- **Postgres 18 drops leading comments** from `pg_stat_statements` query
+  text, so contexts on an observed 18 server need marginalia appended, not
+  prepended. The worker warns if it sees none. See "Query context" in
+  `docs/worker.md`.
 - **The fingerprinter doesn't have the Postgres 18 parser yet.** It uses
   `pg_query_go`'s Postgres 17 parser until a release with 18 ships.
 - **A test flake:** testcontainers sometimes times out inspecting a port when

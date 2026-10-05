@@ -73,5 +73,12 @@ statistics.
   planning plus execution.
 - It reads the most interesting statements, not all of them: the top 100 by
   each of 19 metrics.
+- On 18, `pg_stat_statements` drops a leading comment from the query text,
+  so controller, action and job contexts only come from comments your
+  application appends. 14 through 17 keep leading comments. Set
+  `Marginalia::Comment.prepend_comment = false` (marginalia gem) or
+  `config.active_record.query_log_tags_prepend_comment = false` (Rails query
+  logs); both append by default. See "Query context" in
+  [worker.md](worker.md).
 
 Then configure the worker; see [worker.md](worker.md).
