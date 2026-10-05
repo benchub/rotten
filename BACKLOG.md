@@ -67,11 +67,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** Decide with the user whether that's intended. One option is scoring each in-range window (or the worst few) against history, instead of the range's average, possibly with a robust baseline (median/MAD) so past spells don't hide new ones.
 - **Red test:** A report spec with 60 normal windows and 2 slow ones in a 1-hour range, plus history containing one earlier slow spell, that expects the fingerprint to be listed.
 
-### 20261004-163000-1: Dev services don't get SIGTERM under `go run`.
-- **Why (found in 20261004-142000-1 review):** `rotten-server` (migrate and serve), `rotten-worker` and `gen-test-certs` in `dev/docker-compose.yaml` run under `go run`, which is PID 1. On SIGTERM, Docker signals only PID 1, and `go run` doesn't pass the signal on, so `docker compose stop` waits the grace period and then kills them without their graceful shutdown (the worker's final harvest, the server's drain). The `traffic` service now builds its binary and `exec`s it, and `dev/cmd/traffic`'s `TestComposeStopShutsDownCleanly` checks that.
-- **Do:** Launch them the same way (`sh -ec 'go build -o /tmp/<name> ./cmd/<name> && exec /tmp/<name> ...'`), keeping their arguments.
-- **Red test:** Like `TestComposeStopShutsDownCleanly`, for the worker and the server: run the compose command, send SIGTERM to the started process, and require the shutdown log line and exit 0 within 10 s.
-
 ### 20261004-150000-1: Design per-call context attribution by sampling pg_stat_activity.
 - **Needs:** 20261004-144107-2.
 - **Why (user, 2026-10-04):** pgss credits all of an entry's calls to the context in its first text, so per-context counts can be badly wrong.
