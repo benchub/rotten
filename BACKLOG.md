@@ -67,4 +67,10 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** Set `jit = off` for report queries in the UI (e.g. `SET LOCAL` in the report transaction) and in the perf suite, so both measure the same thing.
 - **Red test:** A test that a report query runs with JIT off (e.g. checks `current_setting('jit')` inside the report transaction, or EXPLAIN shows no JIT section).
 
+### 20261004-231500-1: Precompute per-query sample counts for outliers history.
+- **Why (found in 20261005-020000-2):** With adaptive lookback, a 3h outliers range has about 17k of 18k groups short of 30 samples in the default day, so the report reads about 955k older rows (about 2.5s; the outliers budget was raised to 10s). Precomputed per-(logical source, fingerprint) window counts or recent-window summaries would let the report find each group's last 30 windows without scanning.
+- **Do:** Measure first. Options: a rollup table maintained at ingest (per group, per day: window count, and enough to pick the last 30 windows), or a covering index on `events (logical_source_id, fingerprint_id, observed_window_start)` (measured at about 2.7s for the per-group LATERAL version, with slower inserts and more disk). Keep results identical.
+- **Needs:** 20261005-020000-2.
+- **Red test:** Tighten the perf suite's outliers 3h budget back to 2s, so it fails now.
+
 ## Phase F: Docs.
