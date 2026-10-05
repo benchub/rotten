@@ -672,7 +672,7 @@ func perfCases(f perfFixture) []perfCase {
 	h3, h24, d7, d21 := end.Add(-3*time.Hour), end.Add(-24*time.Hour), end.AddDate(0, 0, -7), end.Truncate(24*time.Hour).AddDate(0, 0, -(perfDays-1))
 	src := []any{perfProject, perfEnvironment, perfCluster}
 	with := func(xs ...any) []any { return append(slices.Clone(src), xs...) }
-	const twoS, uiTimeout = 2 * time.Second, 15 * time.Second
+	const twoS, uiTimeout, matchBudget7d = 2 * time.Second, 15 * time.Second, 5 * time.Second
 	var cases []perfCase
 	add := func(name, file string, start time.Time, budget time.Duration, runs int, args ...any) {
 		c := perfCase{name: name, file: file, args: args, start: start, end: end, budget: budget, runs: runs}
@@ -697,10 +697,16 @@ func perfCases(f perfFixture) []perfCase {
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
 		add("replica_utilization_by_job "+r.label, "replica_utilization_by_job.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
-		// A match on a few controller#action contexts and no query text, so the context
-		// EXISTS does real work.
+		// A match on a few controller#action contexts and no query text, so
+		// matching the contexts does real work. At 7d, outliers with a match
+		// must stay well under the UI's timeout (task 20261005-020000-1).
+		outliersMatchBudget := r.budget
+		if r.label == "7d" {
+			outliersMatchBudget = matchBudget7d
+		}
 		add("top_by_calls "+r.label+" match", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, "^controller1[0-9]#")...)
-		add("outliers "+r.label+" match", "outliers.sql", r.start, r.budget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, "^controller1[0-9]#")...)
+		add("top_by_total_time "+r.label+" match", "top_by_total_time.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, "^controller1[0-9]#")...)
+		add("outliers "+r.label+" match", "outliers.sql", r.start, outliersMatchBudget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, "^controller1[0-9]#")...)
 		add("replica_utilization_by_controller_action "+r.label+" match", "replica_utilization_by_controller_action.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, "^controller1[0-9]#")...)
 	}

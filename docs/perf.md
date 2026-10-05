@@ -42,9 +42,10 @@ make test-perf PERF_TEST_ARGS='-run TestPerfReports'
      | Every report | 3h | 2s |
      | The fingerprint reports | 3h, 7d, 21d | 2s |
      | top_by_calls, top_by_total_time, outliers, both replica_utilization reports | 24h and 7d | 15s |
+     | outliers with a match | 7d | 5s |
      | Both replica_utilization reports | 21d | 15s |
 
-     15s is the UI's `statement_timeout`, so it's the hard failure line: past it, the user gets an error page instead of a report. It's a ceiling, not a target. The 7d numbers below show how much headroom each report has.
+     15s is the UI's `statement_timeout`, so it's the hard failure line: past it, the user gets an error page instead of a report. It's a ceiling, not a target. The 7d numbers below show how much headroom each report has. The tighter 5s budget for outliers 7d with a match is from task 20261005-020000-1, which made it about as cheap as the unfiltered report.
 4. **Decides on the index.**
    - The test fails if `events_fingerprint_window` is missing.
    - It logs index sizes and times a one-hour insert with and without the index.
@@ -69,34 +70,40 @@ These are medians from the final run, with the index present. "Scanned" means pa
 
 | Report | Range | Custom | Generic | Scanned | Removed (generic) |
 |---|---|---|---|---|---|
-| top_by_calls | 3h | 28ms | 57ms | 1/1 | 60 |
-| top_by_calls role=replica | 3h | 17ms | 48ms | 1/1 | 60 |
-| top_by_total_time | 3h | 26ms | 60ms | 1/1 | 60 |
-| outliers | 3h | 259ms | 409ms | 2/2 | 149 |
-| outliers role=primary | 3h | 89ms | 151ms | 2/2 | 149 |
-| outliers match | 3h | 356ms | 453ms | 2/2 | 149 |
+| top_by_calls | 3h | 32ms | 84ms | 1/1 | 90 |
+| top_by_calls role=replica | 3h | 22ms | 70ms | 1/1 | 90 |
+| top_by_calls match | 3h | 48ms | 102ms | 1/1 | 90 |
+| top_by_total_time | 3h | 31ms | 83ms | 1/1 | 90 |
+| top_by_total_time match | 3h | 46ms | 100ms | 1/1 | 90 |
+| outliers | 3h | 257ms | 345ms | 2/2 | 179 |
+| outliers role=primary | 3h | 87ms | 159ms | 2/2 | 179 |
+| outliers match | 3h | 128ms | 213ms | 2/2 | 179 |
 | replica_utilization_by_controller_action | 3h | 16ms | 28ms | 1/1 | 30 |
 | replica_utilization_by_job | 3h | 6ms | 7ms | 1/1 | 30 |
-| top_by_calls | 24h | 162ms | 331ms | 2/2 | 58 |
-| top_by_calls role=replica | 24h | 111ms | 226ms | 2/2 | 58 |
-| top_by_total_time | 24h | 158ms | 324ms | 2/2 | 58 |
-| outliers | 24h | 437ms | 665ms | 3/3 | 145 |
-| outliers role=primary | 24h | 140ms | 225ms | 3/3 | 145 |
-| outliers match | 24h | 1.57s | 1.12s | 3/3 | 145 |
+| top_by_calls | 24h | 175ms | 371ms | 2/2 | 87 |
+| top_by_calls role=replica | 24h | 125ms | 263ms | 2/2 | 87 |
+| top_by_calls match | 24h | 244ms | 452ms | 2/2 | 87 |
+| top_by_total_time | 24h | 171ms | 355ms | 2/2 | 87 |
+| top_by_total_time match | 24h | 253ms | 462ms | 2/2 | 87 |
+| outliers | 24h | 447ms | 557ms | 3/3 | 174 |
+| outliers role=primary | 24h | 155ms | 240ms | 3/3 | 174 |
+| outliers match | 24h | 568ms | 571ms | 3/3 | 174 |
 | replica_utilization_by_controller_action | 24h | 74ms | 207ms | 2/2 | 29 |
 | replica_utilization_by_job | 24h | 36ms | 58ms | 2/2 | 29 |
-| top_by_calls | 7d | 1.40s | 2.93s | 8/8 | 46 |
-| top_by_calls role=replica | 7d | 940ms | 1.99s | 8/8 | 46 |
-| top_by_total_time | 7d | 1.39s | 2.86s | 8/8 | 46 |
-| outliers | 7d | 3.88s | 5.58s | 15/15 | 115 |
-| outliers role=primary | 7d | 1.34s | 1.68s | 15/15 | 115 |
-| outliers match | 7d | 8.09s | 8.37s | 15/15 | 115 |
+| top_by_calls | 7d | 2.05s | 3.21s | 8/8 | 69 |
+| top_by_calls role=replica | 7d | 1.39s | 2.10s | 8/8 | 69 |
+| top_by_calls match | 7d | 3.49s | 3.87s | 8/8 | 69 |
+| top_by_total_time | 7d | 2.09s | 3.24s | 8/8 | 69 |
+| top_by_total_time match | 7d | 3.64s | 3.74s | 8/8 | 69 |
+| outliers | 7d | 3.20s | 4.68s | 15/15 | 138 |
+| outliers role=primary | 7d | 1.17s | 1.63s | 15/15 | 138 |
+| outliers match | 7d | 4.28s | 4.54s | 15/15 | 138 |
 | replica_utilization_by_controller_action | 7d | 517ms | 1.88s | 8/8 | 23 |
 | replica_utilization_by_job | 7d | 269ms | 548ms | 8/8 | 23 |
 | replica_utilization_by_controller_action | 21d | 2.09s | **5.42s** | 21/21 | 10 |
 | replica_utilization_by_job | 21d | 967ms | 1.71s | 21/21 | 10 |
 
-The replica_utilization rows are from task 20261003-190000-1's final run, after migration 0011. Since they read only `event_context`, their Scanned and Removed columns count event_context partitions. The outliers rows are from task 20261004-221500-1's final run, after per-window scoring. Their Scanned column counts events partitions, including the history before the range (the range's length, at least a day and at most 7 days).
+The replica_utilization rows are from task 20261003-190000-1's final run, after migration 0011. Since they read only `event_context`, their Scanned and Removed columns count event_context partitions. The top_by_calls, top_by_total_time and outliers rows are from task 20261005-020000-1's final run, which rewrote their match filter. The machine was busier than in earlier runs (load average 7–17 from other containers), so compare those rows with the interleaved before-and-after numbers under "Match filter" below rather than with older rows. More partitions are premade now, so Removed counts are higher. The outliers Scanned column counts events partitions, including the history before the range (the range's length, at least a day and at most 7 days).
 
 Plan shapes:
 
@@ -104,12 +111,28 @@ Plan shapes:
   - Custom plans use a bitmap scan on `(logical_source_id, calls)` up to 24h, then a seq scan of the 8 partitions at 7d.
   - Generic plans BitmapAnd `observed_window_start` with `(logical_source_id, calls)`.
   - Contexts come from `event_context` by `event_id` for the top 50 only.
+  - With a match, see "Match filter" below.
 - **outliers:**
   - The same scan of events for the range, grouped by (logical source, fingerprint) only, with the source's text columns joined after. Grouping by them too made generic plans sort every in-range event by four text keys.
   - A second scan of events for the history before the range, grouped into one array of samples per (logical source, fingerprint), hash-joined to the range's groups. The median and the median absolute deviation come from `percentile_cont` over each array. Joining to the range's groups first invited one index probe per fingerprint, which was far slower.
   - The worst window's start is looked up only for the at most 50 limited rows, through `events_fingerprint_window`. Carrying it through the aggregation (an ordered `array_agg`) sorted every in-range event, about 8s at 7d.
   - A 7d range reads 7 days of history, so it scans 15 partitions. That's most of the time at 7d. A 3h range reads a day of history.
-  - The match cases spend most of their time in `matched_events`, as before per-window scoring: master's SQL took about 11s custom and 12s generic for 7d match in the same harness. Backlog task 20261005-020000-1 covers it.
+  - With a match, see "Match filter" below.
+- **Match filter (top_by_calls, top_by_total_time and outliers, task 20261005-020000-1):**
+  - `context_events` reads the range's `event_context` rows once, through `event_context_source_window`, grouped by (controller_id, action_id, job_tag_id) with an `array_agg` of event ids. On cluster 13 at 7d that's about 2.5M rows but only 340 distinct contexts, so the regex runs 340 times instead of once per row. `matched_events` (materialized) unnests the matching contexts' event ids: 16 contexts and about 100k events at 7d. Before, the regex ran on every row, after joining every row to controllers, actions and job tags.
+  - The range's aggregate flags each group with `bool_or` over a left join to `matched_events` (one hash, built once). Before, `bool_or(e.id in (select ...))` probed a hashed subplan for every in-range event.
+  - The text match moved out of the aggregate's HAVING into `text_matched`, which probes `fingerprints` by id (`= any(array(...))`) for the groups without a matching context. At run time, the correlated lookup per group cost about the same. But the planner priced it per estimated group (about 100k), which pushed the custom plan's total cost past `jit_optimize_above_cost` (500k). That added 1.4–1.7s of JIT inlining and optimization at 7d. outliers' custom plan now costs about 487k, just under the line. See Known limits.
+  - outliers no longer carries an `array_agg` of event ids through its aggregate, which made the planner sort every in-range event. It looks up the event ids for the at most 50 limited rows through `events_fingerprint_window`, and it joins `sources` for the text columns last. When matching, its history scan is restricted to the matching (source, fingerprint) groups. top_by_calls and top_by_total_time keep the `array_agg`: their limited rows are the hottest fingerprints, so a second lookup costs more than carrying the arrays (about +0.4s at 7d without a match).
+  - Results are unchanged. On the perf data, outliers returned the same rows as before the rewrite for context, job tag, text, no-match and NULL regexes. top_by_calls and top_by_total_time returned the same rows for the controller#action regex at 3h and 7d. `match_filter_test.go`, which covers each kind of match, passes.
+  - Before and after, interleaved in one run, cluster 13, 7d, median (custom / generic):
+
+    | Report | Before | After |
+    |---|---|---|
+    | top_by_calls match | 8.8–11.9s / 4.8–5.7s | 3.4–4.6s / 3.7–3.8s |
+    | top_by_calls (no match) | 2.04–2.08s / 3.09–3.72s | 2.16–2.24s / 3.19–3.23s |
+    | outliers (no match) | 3.99–4.06s / 5.79–5.99s | 3.36–3.44s / 4.73–4.79s |
+
+    top_by_total_time has the same shape as top_by_calls. Before the rewrite, it took about 12.5s / 7.8s at 7d with a match on a busier machine. outliers 7d match took 7.45s / 8.57s in this task's red run, and 8.1s / 8.4s in the table this page had before.
 - **replica_utilization:**
   - Reads only `event_context`, through `event_context_source_window` on `(logical_source_id, observed_window_start)`: a bitmap heap scan in custom plans, an index scan in generic plans. There's no join to events and no window function (migration 0011, see below).
 
@@ -240,13 +263,15 @@ The `global_range_samples` CTE in `outliers.sql` used the new index. Task 202610
 - **Index-decision red.** The test was extended to require `events_fingerprint_window` and to prove it pays off. It failed with "index events_fingerprint_window is missing" until migration 0008 was added.
 - **7d red (review round 1).** Adding the 7d cases timed out replica_utilization_by_controller_action's generic plan, the "canceling statement due to statement timeout" error. It passed after the rewrite above.
 - **Outliers red (task 20261004-221500-1).** Per-window scoring with a fixed 7-day history timed out at 3h (over 15s, as one index probe per fingerprint) and then took about 2.8s at 3h against the 2s budget. The history is now the range's length, at least a day. Later, the 7d generic plans timed out: the planner joined the range's groups twice, once matching on the source only. Scoring in one join and grouping by ids only fixed them.
+- **Match red (task 20261005-020000-1).** Tightening the outliers 7d match budget to 5s failed on time, not on an error: 7.45s custom and 8.57s generic. It passed after the match filter rewrite above.
 - **21d red (task 20261003-190000-1).** Adding 21d replica_utilization cases timed out replica_utilization_by_controller_action in both plans. It passed after migration 0011.
 
 ## Known limits
 
 - **replica_utilization reads every in-range context row of the cluster.** At 21d that's about 2.1s custom and 5.4s generic for controller_action on cluster 13, which holds most of the seeded rows. Cost is still linear in the cluster's context rows in the range, but it no longer joins events or sorts for a per-event total.
-- **The other source-wide reports at 7d** take 0.6–1.4s with custom plans and up to 2.9s with generic plans. They grow linearly too.
-- **outliers at 7d** takes about 3.9s custom and 5.6s generic without match, and about 8s with it, because it also reads 7 days of history. It grows linearly in the range's events plus the history's.
+- **The other source-wide reports at 7d** take 0.5–2.1s with custom plans and up to 3.2s with generic plans, and up to 3.9s with a match. They grow linearly too.
+- **outliers at 7d** takes about 3.2s custom and 4.7s generic without a match, and about 4.3s and 4.5s with one, because it also reads 7 days of history. It grows linearly in the range's events plus the history's.
+- **JIT.** Postgres JIT-compiles a plan whose total cost passes `jit_above_cost` (100k), and also inlines and optimizes past 500k. That's about 1.5s at 7d, and the rotten database runs the default settings. outliers' custom plan with a match costs about 487k at 7d on the perf data, so more data or different statistics could push it over and add that time back. A possible follow-up is `set local jit = off` (or a higher `jit_optimize_above_cost`) for report queries in the UI's report runner and in this suite.
 - **Not covered:**
   - `fingerprint_stats` is seeded with `mean_time` rows only.
   - The source-wide reports other than replica_utilization aren't measured past 7d.

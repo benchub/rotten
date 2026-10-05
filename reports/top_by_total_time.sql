@@ -19,44 +19,70 @@ with sources as (
     and environment = $2
     and cluster = $3
     and ($7::text is null or role = $7::text)
-), matched_events as (
-  -- Events in the range with a context matching $8: controller#action, or
-  -- job tag. Empty when $8 is NULL.
-  select ec.event_id
+), context_events as (
+  -- In-range events with a context, grouped by context, so $8 runs once per
+  -- distinct controller, action and job tag rather than once per
+  -- event_context row. One read of event_context; a first pass for the
+  -- distinct contexts and a second for their events reads it twice.
+  select ec.controller_id, ec.action_id, ec.job_tag_id, array_agg(ec.event_id) as event_ids
   from rotten.event_context ec
   join sources s on s.id = ec.logical_source_id
-  left join rotten.controllers c on c.id = ec.controller_id
-  left join rotten.actions ac on ac.id = ec.action_id
-  left join rotten.job_tags jt on jt.id = ec.job_tag_id
   where $8::text is not null
     and ec.observed_window_start >= $4::timestamptz
     and ec.observed_window_start < $5::timestamptz
     and ec.observed_window_end <= $5::timestamptz
-    and (
-      ((ec.controller_id is not null or ec.action_id is not null)
-        and coalesce(c.controller, '') || '#' || coalesce(ac.action, '') ~* $8::text)
-      or jt.job_tag ~* $8::text
-    )
-), aggregated as (
+    and (ec.controller_id is not null or ec.action_id is not null or ec.job_tag_id is not null)
+  group by ec.controller_id, ec.action_id, ec.job_tag_id
+), matched_events as materialized (
+  -- Events in the range with a context matching $8: controller#action, or
+  -- job tag. Empty when $8 is NULL. Materialized so the left join below
+  -- probes one hash of it, built once.
+  select distinct u.event_id
+  from context_events k
+  left join rotten.controllers c on c.id = k.controller_id
+  left join rotten.actions ac on ac.id = k.action_id
+  left join rotten.job_tags jt on jt.id = k.job_tag_id
+  cross join lateral unnest(k.event_ids) as u(event_id)
+  where ((k.controller_id is not null or k.action_id is not null)
+      and coalesce(c.controller, '') || '#' || coalesce(ac.action, '') ~* $8::text)
+    or jt.job_tag ~* $8::text
+), aggregated_all as (
   select
     e.fingerprint_id,
-    array_agg(e.id) as event_ids,
     sum(e.calls)::double precision as calls,
     sum(e.time)::double precision as total_ms,
-    (sum(e.time) / nullif(sum(e.calls), 0))::double precision as avg_ms_per_call
+    (sum(e.time) / nullif(sum(e.calls), 0))::double precision as avg_ms_per_call,
+    bool_or(m.event_id is not null) as context_matched,
+    array_agg(e.id) as event_ids
   from rotten.events e
   join sources s on s.id = e.logical_source_id
+  left join matched_events m on m.event_id = e.id
   -- Only windows fully inside [start, end) are counted; straddling windows are excluded on purpose.
   where e.observed_window_start >= $4::timestamptz
     and e.observed_window_start < $5::timestamptz
     and e.observed_window_end <= $5::timestamptz
   group by e.fingerprint_id
+), text_matched as (
+  -- Fingerprints in the range, without a matching context, whose query text
+  -- matches $8. Probed by id, so the fingerprints table isn't scanned. A
+  -- correlated lookup per group, in aggregated's HAVING, costs the same at run
+  -- time, but the planner prices it per estimated group, which pushes the
+  -- plan's cost past jit_optimize_above_cost and adds over a second of JIT.
+  select f.id
+  from rotten.fingerprints f
+  where $8::text is not null
+    and f.id = any(array(
+      select a.fingerprint_id from aggregated_all a where not a.context_matched))
+    and f.normalized ~* $8::text
+), aggregated as (
   -- $8 keeps a group only if one of its events ran in a matching context, or
   -- its query text matches. NULL keeps every group.
-  having $8::text is null
-    or bool_or(e.id in (select event_id from matched_events))
-    or (select f.normalized ~* $8::text from rotten.fingerprints f where f.id = e.fingerprint_id)
-  order by total_ms desc, calls desc, e.fingerprint_id
+  select a.fingerprint_id, a.calls, a.total_ms, a.avg_ms_per_call, a.event_ids
+  from aggregated_all a
+  where $8::text is null
+    or a.context_matched
+    or a.fingerprint_id in (select id from text_matched)
+  order by a.total_ms desc, a.calls desc, a.fingerprint_id
   limit $6::integer
 ), contexts as (
   select

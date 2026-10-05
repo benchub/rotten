@@ -60,48 +60,79 @@ with sources as (
     and environment = $2
     and cluster = $3
     and ($10::text is null or role = $10::text)
-), matched_events as (
-  -- Events in the range with a context matching $11: controller#action, or
-  -- job tag. Empty when $11 is NULL.
-  select ec.event_id
+), context_events as (
+  -- In-range events with a context, grouped by context, so $11 runs once per
+  -- distinct controller, action and job tag rather than once per
+  -- event_context row. One read of event_context; a first pass for the
+  -- distinct contexts and a second for their events reads it twice.
+  select ec.controller_id, ec.action_id, ec.job_tag_id, array_agg(ec.event_id) as event_ids
   from rotten.event_context ec
   join sources s on s.id = ec.logical_source_id
-  left join rotten.controllers c on c.id = ec.controller_id
-  left join rotten.actions ac on ac.id = ec.action_id
-  left join rotten.job_tags jt on jt.id = ec.job_tag_id
   where $11::text is not null
     and ec.observed_window_start >= $4::timestamptz
     and ec.observed_window_start < $5::timestamptz
     and ec.observed_window_end <= $5::timestamptz
-    and (
-      ((ec.controller_id is not null or ec.action_id is not null)
-        and coalesce(c.controller, '') || '#' || coalesce(ac.action, '') ~* $11::text)
-      or jt.job_tag ~* $11::text
-    )
-), aggregated as (
+    and (ec.controller_id is not null or ec.action_id is not null or ec.job_tag_id is not null)
+  group by ec.controller_id, ec.action_id, ec.job_tag_id
+), matched_events as materialized (
+  -- Events in the range with a context matching $11: controller#action, or
+  -- job tag. Empty when $11 is NULL. Materialized so the left join below
+  -- probes one hash of it, built once.
+  select distinct u.event_id
+  from context_events k
+  left join rotten.controllers c on c.id = k.controller_id
+  left join rotten.actions ac on ac.id = k.action_id
+  left join rotten.job_tags jt on jt.id = k.job_tag_id
+  cross join lateral unnest(k.event_ids) as u(event_id)
+  where ((k.controller_id is not null or k.action_id is not null)
+      and coalesce(c.controller, '') || '#' || coalesce(ac.action, '') ~* $11::text)
+    or jt.job_tag ~* $11::text
+), aggregated_all as (
   -- Grouped by the two ids only; the source's text columns are joined after.
   -- Sorting every in-range event by them as well is much slower.
   select
     e.logical_source_id,
     e.fingerprint_id,
-    array_agg(e.id) as event_ids,
     sum(e.calls)::double precision as calls,
     sum(e.time)::double precision as total_ms,
     avg(e.time / e.calls)::double precision as avg_ms_per_call,
-    max(e.time / e.calls)::double precision as worst_ms_per_call
+    max(e.time / e.calls)::double precision as worst_ms_per_call,
+    bool_or(m.event_id is not null) as context_matched
   from rotten.events e
   join sources s on s.id = e.logical_source_id
+  left join matched_events m on m.event_id = e.id
   -- Only windows fully inside [start, end) are counted; straddling windows are excluded on purpose.
   where e.observed_window_start >= $4::timestamptz
     and e.observed_window_start < $5::timestamptz
     and e.observed_window_end <= $5::timestamptz
     and e.calls > 0
   group by e.logical_source_id, e.fingerprint_id
+), text_matched as (
+  -- Fingerprints in the range, without a matching context, whose query text
+  -- matches $11. Probed by id, so the fingerprints table isn't scanned. A
+  -- correlated lookup per group, in aggregated's HAVING, costs the same at run
+  -- time, but the planner prices it per estimated group, which pushes the
+  -- plan's cost past jit_optimize_above_cost and adds over a second of JIT.
+  select f.id
+  from rotten.fingerprints f
+  where $11::text is not null
+    and f.id = any(array(
+      select a.fingerprint_id from aggregated_all a where not a.context_matched))
+    and f.normalized ~* $11::text
+), aggregated as (
   -- $11 keeps a group only if one of its events ran in a matching context, or
   -- its query text matches. NULL keeps every group.
-  having $11::text is null
-    or bool_or(e.id in (select event_id from matched_events))
-    or (select f.normalized ~* $11::text from rotten.fingerprints f where f.id = e.fingerprint_id)
+  select
+    a.logical_source_id,
+    a.fingerprint_id,
+    a.calls,
+    a.total_ms,
+    a.avg_ms_per_call,
+    a.worst_ms_per_call
+  from aggregated_all a
+  where $11::text is null
+    or a.context_matched
+    or a.fingerprint_id in (select id from text_matched)
 ), history as (
   -- Every fingerprint's samples on the sources, read by source and window,
   -- then grouped. Joining to aggregated first would invite one index probe
@@ -117,17 +148,16 @@ with sources as (
     and h.observed_window_start < $4::timestamptz
     and h.observed_window_end <= $4::timestamptz
     and h.calls > 0
+    -- With $11, only the kept groups' samples are grouped, so the aggregate
+    -- stays in memory.
+    and ($11::text is null
+      or (h.logical_source_id, h.fingerprint_id) in (select logical_source_id, fingerprint_id from aggregated))
   group by h.logical_source_id, h.fingerprint_id
   having count(*) >= $8::integer
 ), scored as (
   select
     a.logical_source_id,
-    s.project,
-    s.environment,
-    s.cluster,
-    s.role,
     a.fingerprint_id,
-    a.event_ids,
     a.calls,
     a.total_ms,
     a.avg_ms_per_call,
@@ -137,7 +167,6 @@ with sources as (
     sp.spread_ms as history_spread_ms,
     (a.worst_ms_per_call - m.median_ms) / sp.spread_ms as score
   from aggregated a
-  join sources s on s.id = a.logical_source_id
   join history h on h.logical_source_id = a.logical_source_id
     and h.fingerprint_id = a.fingerprint_id
   cross join lateral (
@@ -174,7 +203,19 @@ with sources as (
       order by sum(ec.c) desc, coalesce(c.controller, ''), coalesce(ac.action, ''), coalesce(jt.job_tag, '')
     ) as r
   from limited l
-  join rotten.event_context ec on ec.event_id = any(l.event_ids)
+  -- The limited rows' events, looked up again rather than carried through
+  -- aggregated as arrays, which makes every group's aggregate spill to disk.
+  cross join lateral (
+    select array_agg(e.id) as event_ids
+    from rotten.events e
+    where e.logical_source_id = l.logical_source_id
+      and e.fingerprint_id = l.fingerprint_id
+      and e.observed_window_start >= $4::timestamptz
+      and e.observed_window_start < $5::timestamptz
+      and e.observed_window_end <= $5::timestamptz
+      and e.calls > 0
+  ) le
+  join rotten.event_context ec on ec.event_id = any(le.event_ids)
   left join rotten.controllers c on c.id = ec.controller_id
   left join rotten.actions ac on ac.id = ec.action_id
   left join rotten.job_tags jt on jt.id = ec.job_tag_id
@@ -202,10 +243,10 @@ with sources as (
 select
   l.logical_source_id,
   l.fingerprint_id,
-  l.project,
-  l.environment,
-  l.cluster,
-  l.role,
+  s.project,
+  s.environment,
+  s.cluster,
+  s.role,
   l.calls,
   l.total_ms,
   l.avg_ms_per_call,
@@ -220,6 +261,9 @@ select
   -- A fallback fingerprint hashed from the text; the parser rejected it.
   f.unparsed
 from limited l
+-- The source's text columns, joined only here: joined in scored, the history
+-- aggregate ends up under a nested loop and is rebuilt for each source.
+join sources s on s.id = l.logical_source_id
 join rotten.fingerprints f on f.id = l.fingerprint_id
 -- The worst sample's window, earliest on a tie. Looked up only for the
 -- limited rows: carrying it through aggregated would cost every in-range
