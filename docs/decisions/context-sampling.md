@@ -5,10 +5,12 @@ two review rounds (see [Changes after review](#changes-after-review)).
 
 ## Status.
 
-Proposed. This is a design only. Nothing here gets built until the user signs
-off. The questions that need sign-off are in
-[Open questions for sign-off](#open-questions-for-sign-off), and the plain
-trade-off is in [Is this worth building?](#is-this-worth-building).
+Rejected (user, 2026-10-04). Periodic sampling measures each context's share of
+a query's running time, not its calls. It rarely sees fast queries, so it can't
+give useful per-context accuracy for typical workloads. Contexts keep
+first-text attribution, and the UI caveat stays. Nothing here is to be built.
+The open questions and proposed tasks below are kept for the record only.
+The original trade-off is in [Is this worth building?](#is-this-worth-building).
 
 ## The problem.
 

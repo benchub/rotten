@@ -1497,6 +1497,7 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - Completed: 2026-10-04, b5053cb
   - Design in `docs/decisions/context-sampling.md` after two review rounds. It reframes sampling as activity (time) share, not calls, and recommends two stages: sightings first, then the split.
   - Build tasks 20261004-204000-1..8 are proposed in the doc. They go into the backlog after user sign-off.
+  - Rejected by the user (2026-10-04): periodic sampling can't give per-context accuracy for fast queries. Nothing is to be built, and the doc is marked Rejected.
 
 ### 20261004-161500-1: Statements the fingerprinter rejects are dropped from batches.
 - **Decision (user, 2026-10-05):** Ship such entries under a fallback fingerprint derived from the pgss `queryid`, marked as unparsed, plus a visible count of what fell back.
