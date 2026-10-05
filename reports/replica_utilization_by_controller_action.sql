@@ -8,6 +8,8 @@
 --   $5 window end, exclusive for starts; windows must also end at or before it
 --   $6 primary role name
 --   $7 replica role name
+--   $8 match: a case-insensitive POSIX regex (~*) on the controller#action, or NULL
+--      for every row
 --
 -- Utilization:
 --   This report returns both call utilization and time utilization. Call
@@ -102,4 +104,5 @@ select
 from totals t
 left join rotten.controllers ctrl on ctrl.id = t.controller_id
 left join rotten.actions act on act.id = t.action_id
+where $8::text is null or coalesce(ctrl.controller, '') || '#' || coalesce(act.action, '') ~* $8::text
 order by total_calls desc, total_ms desc, controller_action, t.cluster;

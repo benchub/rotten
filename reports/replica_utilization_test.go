@@ -81,6 +81,7 @@ func TestReplicaUtilizationByJob(t *testing.T) {
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
 		testdb.ReportReplicaRole,
+		nil,
 	)
 
 	want := []replicaUtilizationRow{
@@ -106,6 +107,7 @@ func TestReplicaUtilizationByControllerAction(t *testing.T) {
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
 		testdb.ReportReplicaRole,
+		nil,
 	)
 
 	want := []replicaUtilizationRow{
@@ -130,6 +132,7 @@ func TestReplicaUtilizationByControllerActionSplitsEventTimeByContextCounts(t *t
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
 		testdb.ReportReplicaRole,
+		nil,
 	)
 
 	byName := map[string]replicaUtilizationRow{}
@@ -169,6 +172,7 @@ func TestReplicaUtilizationByJobDoesNotDoubleCountRepeatedJobContexts(t *testing
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
 		testdb.ReportReplicaRole,
+		nil,
 	)
 	row := findUtilizationRow(t, got, "Fanout")
 	if row.PrimaryCalls != 50 || row.ReplicaCalls != 0 || row.TotalCalls != 50 {
@@ -197,6 +201,7 @@ func TestReplicaUtilizationPercentagesSumToOneHundredAfterRounding(t *testing.T)
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
 		testdb.ReportReplicaRole,
+		nil,
 	)
 	row := findUtilizationRow(t, got, "RoundingCase")
 	if row.PrimaryCallPercent != 0.13 || row.ReplicaCallPercent != 99.87 {
@@ -229,6 +234,7 @@ func TestReplicaUtilizationPrunesEventContextPartitions(t *testing.T) {
 				end,
 				testdb.ReportPrimaryRole,
 				testdb.ReportReplicaRole,
+				nil,
 			)
 			assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.event_context", expectedPartitions)
 		})
@@ -259,6 +265,7 @@ func TestReplicaUtilizationPrunesFixedMidnightCrossingRange(t *testing.T) {
 				end,
 				testdb.ReportPrimaryRole,
 				testdb.ReportReplicaRole,
+				nil,
 			)
 			assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.event_context", expectedPartitions)
 		})
@@ -326,7 +333,7 @@ func TestReplicaUtilizationCountsContextsRepairedFromAPreMigrationServer(t *test
 		for _, row := range readReplicaUtilization(t, conn, "replica_utilization_by_controller_action.sql",
 			"canvas", testdb.ReportEnvironment, "7",
 			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
-			testdb.ReportPrimaryRole, testdb.ReportReplicaRole) {
+			testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil) {
 			byName[row.Name] = row
 		}
 		return byName

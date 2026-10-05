@@ -11,6 +11,10 @@
 --   $8 minimum history count after removing in-range samples (recommended default: 30)
 --   $9 zero-stddev ratio threshold (recommended default: 2)
 --   $10 role, or NULL for every role in the project, environment and cluster
+--   $11 match: a case-insensitive POSIX regex (~*), or NULL for every query.
+--      A query matches if its normalized text does, or if it ran in the range
+--      on the same source in a context whose controller#action or job tag does. It filters
+--      before the row limit.
 --
 -- Baseline choice:
 --   fingerprint_stats rows for logical_source_id = 0 are the global aggregate
@@ -52,6 +56,24 @@ with sources as (
     and environment = $2
     and cluster = $3
     and ($10::text is null or role = $10::text)
+), matched_events as (
+  -- Events in the range with a context matching $11: controller#action, or
+  -- job tag. Empty when $11 is NULL.
+  select ec.event_id
+  from rotten.event_context ec
+  join sources s on s.id = ec.logical_source_id
+  left join rotten.controllers c on c.id = ec.controller_id
+  left join rotten.actions ac on ac.id = ec.action_id
+  left join rotten.job_tags jt on jt.id = ec.job_tag_id
+  where $11::text is not null
+    and ec.observed_window_start >= $4::timestamptz
+    and ec.observed_window_start < $5::timestamptz
+    and ec.observed_window_end <= $5::timestamptz
+    and (
+      ((ec.controller_id is not null or ec.action_id is not null)
+        and coalesce(c.controller, '') || '#' || coalesce(ac.action, '') ~* $11::text)
+      or jt.job_tag ~* $11::text
+    )
 ), aggregated as (
   select
     s.id as logical_source_id,
@@ -75,6 +97,11 @@ with sources as (
     and e.observed_window_end <= $5::timestamptz
     and e.calls > 0
   group by s.id, s.project, s.environment, s.cluster, s.role, e.fingerprint_id
+  -- $11 keeps a group only if one of its events ran in a matching context, or
+  -- its query text matches. NULL keeps every group.
+  having $11::text is null
+    or bool_or(e.id in (select event_id from matched_events))
+    or (select f.normalized ~* $11::text from rotten.fingerprints f where f.id = e.fingerprint_id)
 ), global_range_samples as (
   select
     e.fingerprint_id,

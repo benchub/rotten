@@ -38,6 +38,7 @@ func TestTopByCalls(t *testing.T) {
 		fixture.Anchor,
 		3,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -123,6 +124,7 @@ func TestTopByCallsHonorsLimit(t *testing.T) {
 		fixture.Anchor,
 		2,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -194,6 +196,7 @@ func TestTopByCallsContextCountsAreBigint(t *testing.T) {
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		1,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -325,6 +328,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		fixture.Anchor,
 		1,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("top_by_calls with large context sum: %v", err)
@@ -365,7 +369,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		args := []any{"canvas", testdb.ReportEnvironment, "13", fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 1, nil}
+		args := []any{"canvas", testdb.ReportEnvironment, "13", fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 1, nil, nil}
 		reportRows, err := conn.Query(ctx, string(query), args...)
 		if err != nil {
 			t.Fatalf("%s with large context sum: %v", report, err)
@@ -413,6 +417,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		defaultMinHistory,
 		defaultRatio,
 		nil,
+		nil,
 	)
 	if len(outliers) == 0 {
 		t.Fatal("outliers got no rows")
@@ -434,6 +439,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 			fixture.Anchor,
 			testdb.ReportPrimaryRole,
 			testdb.ReportReplicaRole,
+			nil,
 		)
 		if len(got) == 0 {
 			t.Fatalf("%s got no rows", report)

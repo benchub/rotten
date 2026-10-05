@@ -1,8 +1,9 @@
 # Deploying the UI
 
 The UI is a Rails 8.1 app in `ui/`. It has the reports workbench
-(`/reports`: pick a dataset, then the report to run on it; pick another
-report in the same form to switch), a page for each
+(`/reports`: pick a dataset, optionally narrowed by a **Match** regex, then
+the report to run on it; pick another report in the same form to switch),
+a page for each
 fingerprint, pass key admin and the audit log. It connects to the rotten
 database as `rotten_ui` and never runs migrations; `rotten-server migrate`
 owns the schema, so run that first ([database.md](database.md)).
@@ -10,6 +11,13 @@ owns the schema, so run that first ([database.md](database.md)).
 This page is the reference for deploying it and for every environment
 variable it reads. `ui/README.md` describes how login, reports and key admin
 behave, and how to develop the app.
+
+The Match filter runs in Postgres, so how it treats non-ASCII characters
+case-insensitively follows the database's collation. The UI can't check
+that, so it never highlights a pattern containing non-ASCII characters; the
+rows are still filtered. A Turkish or Azeri database locale or column
+collation, where `i` doesn't match `I`, also turns off highlighting for
+patterns with an `i`, `I` or bracket expression. See `ui/README.md`.
 
 ## Build the image
 
@@ -65,7 +73,7 @@ docker run -d -p 8080:80 \
 | `SECRET_KEY_BASE` | yes | See above. Rails reads it itself. |
 | `ROTTEN_UI_HOSTS` | yes, in production | Comma-separated host names, such as `rotten.example.com`. A name starting with a dot, such as `.example.com`, also allows its subdomains. A request whose `Host` or `X-Forwarded-Host` isn't listed gets a 403, except `/up`, so health checks can use an IP address. The app refuses to boot without it. |
 | `ROTTEN_UI_AUTH` | yes | `oidc` or `password`. The app refuses to boot if it's missing or anything else. |
-| `ROTTEN_UI_REPORT_TIMEOUT` | no, default `15` | Time limit for each report page's queries, in seconds. Fractions such as `2.5` are allowed. It must be a number from 0.001 to 2147483. The fingerprint page runs four queries that share this limit: each gets only what's left of it. |
+| `ROTTEN_UI_REPORT_TIMEOUT` | no, default `15` | Time limit for each report page's queries, in seconds. Fractions such as `2.5` are allowed. It must be a number from 0.001 to 2147483. The fingerprint page runs four queries that share this limit: each gets only what's left of it. So do the workbench's **Match** regex check and the report it runs, which also bounds a slow regex. |
 | `ROTTEN_UI_SESSION_LIFETIME_HOURS` | no, default `12` | How long a sign-in lasts, in hours. Fractions such as `0.5` are allowed. It must be a number from 0.01 to 8760; the app refuses to boot otherwise. The expiry is fixed at sign-in and activity doesn't extend it. See [Sessions](#sessions). |
 | `DATABASE_CONNECT_TIMEOUT` | no, default `2` | Seconds to wait when connecting to the database. |
 | `RAILS_MAX_THREADS` | no | Puma threads per process (default 3) and the database pool size per process (default 5). Set it once to keep them equal. |

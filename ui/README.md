@@ -305,7 +305,7 @@ use it. One form holds the dataset and the report to run on it:
   picked, and picking it fills them with the window the preset had, so it
   can be nudged. Without JavaScript they stay visible, marked **Custom range
   only**. From and To sent with a preset range are ignored, and the page
-  says so.
+  says so. An optional **Match** narrows the rows; see below.
 - **Report:** a list of every report with its description. The fields only
   some reports read show only for them: the utilization reports pick a
   primary and a replica role instead of one role, and the time series takes
@@ -323,6 +323,58 @@ fingerprint ID, as from an old bookmark, asks for one instead of failing.
 An unknown report gets a 422. The old per-report
 pages, `/reports/<name>?...`, redirect (301) to the workbench with every
 parameter kept, so bookmarks still work.
+
+**Match** is a case-insensitive Postgres regex (`~*`, Postgres's ARE
+syntax), at most 200 characters, kept exactly as typed (spaces count). The
+top and outlier reports keep a query if its normalized text matches, or if
+it ran in the time range (on the same source, for outliers) in a context
+whose `controller#action` or job tag matches. The utilization reports match
+their name column, `controller#action` or the job. The filter is in the
+report SQL, before the 50-row limit, so it's the top 50 matching rows, not
+the shown 50 narrowed down. Only an empty match is no filter; one of only
+spaces filters on them, and is highlighted and kept in links. The time series is
+for one fingerprint, so it ignores match and says so. Match is part of the
+dataset: it carries across reports, into the fingerprint links and sort
+links, and through the fingerprint page (which doesn't filter) back to the
+workbench.
+
+Before the report runs, Postgres compiles the pattern on its own
+(`SELECT '' ~* $1`), within the report timeout. A pattern it can't compile
+gets a 422 with its error, such as `parentheses () not balanced`. A pattern
+that's slow on the data is stopped by the report timeout like any report.
+
+Matches are marked with `<mark>` in the query text (inside the one-line
+disclosure too), the top contexts and the utilization name column.
+`ReportsHelper#highlight_match` HTML-escapes the text and wraps only the
+matched spans. Ruby replays the pattern, and its regex dialect differs from
+Postgres's, so `MatchHighlighter` marks nothing rather than something wrong:
+
+- Only syntax both read the same way is replayed. Postgres-only syntax
+  (`\m`, `\y`, `[[:<:]]`, `(?s)`, `***=`, `{,n}`), syntax Ruby reads
+  otherwise (`\b`, `\Z`, `(?m)`, `[[=a=]]`, `[a[b]]`, `&&` in brackets), lazy
+  quantifiers and anything Ruby can't compile mark nothing.
+- Postgres takes the longest match where Ruby takes the first. If a longer
+  match exists where Ruby matched, as with `abc|abcd`, that cell gets no
+  marks.
+- A pattern with any non-ASCII character, literal (`ü`) or escaped
+  (`\u00fc`), marks nothing. How Postgres matches those case-insensitively
+  depends on the database's collation (with `COLLATE "C"`, `ü` doesn't match
+  `Ü`), which the UI doesn't check.
+- In a Turkish or Azeri locale Postgres folds `I` to `ı` and `i` to `İ`, so
+  `i` doesn't match `I`. Once per process the UI reads the database's
+  locale (`pg_database`) and the collations of the filtered columns; if any
+  is `tr` or `az` (libc or ICU), a pattern with an `i`, `I` or bracket
+  expression marks nothing.
+- `^` and `$` mark nothing on text with a line break. `\w`, `\s`, `\d` and
+  `[:classes:]` mark nothing on non-ASCII text, where they depend on the
+  database's locale, and neither does text with characters whose case
+  folding Ruby and Postgres may disagree on, such as `ß` or the Kelvin sign.
+- Each Ruby match has a `Regexp` timeout of 100ms, and a page spends at most
+  500ms highlighting, checked before every match and capping its timeout.
+  Past either, the cell at hand and the rest of the page have no marks.
+
+The rows are still filtered by Postgres in every case. Marks use the
+`mark` theme colours, 13.2:1 contrast.
 
 Fingerprint IDs in the reports link to the fingerprint page. Click a column
 header to sort. The form carries the sort with `sort_report`, the report
@@ -389,8 +441,8 @@ The app refuses to boot if any report file is missing.
 
 Every parameter is checked against a whitelist before the query runs: the
 source must exist in `logical_sources`, the range, bucket and sort column must
-be one of the choices, and the fingerprint ID must be a positive integer.
-Invalid input gets a 422 with a message. Values reach the SQL only as bound
+be one of the choices, the fingerprint ID must be a positive integer, and
+Postgres must compile the match. Invalid input gets a 422 with a message. Values reach the SQL only as bound
 parameters, never in its text.
 
 Each report runs as `rotten_ui` in a read-only transaction with
@@ -399,7 +451,7 @@ never applies to the next request on the same connection. A report that runs
 past it is stopped, and the page answers 503 with a message suggesting a
 shorter range or a narrower source. `ROTTEN_UI_REPORT_TIMEOUT` sets the
 limit for the whole page: the fingerprint page's four queries share it, each
-getting only what's left. See [`docs/ui.md`](../docs/ui.md#general).
+getting only what's left, as do the workbench's match check and report. See [`docs/ui.md`](../docs/ui.md#general).
 
 ## Pass keys
 

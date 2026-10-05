@@ -1,7 +1,8 @@
 # The parameters for one report run, validated against strict whitelists
 # before anything reaches the database. The source fields must name a
 # source that exists, the range and bucket come from fixed choices, and sort
-# must be one of the report's columns. Values then go to the SQL as bound
+# must be one of the report's columns. Match is a Postgres regex, checked by
+# Postgres itself (match_compiles?). Values then go to the SQL as bound
 # parameters, never into its text.
 class ReportQuery
   include ActiveModel::Validations
@@ -41,17 +42,24 @@ class ReportQuery
   MAX_FINGERPRINT_ID = (2**63) - 1
   DATETIME = /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?\z/
   MAX_VALUE_LENGTH = 1000
+  MAX_MATCH_LENGTH = 200
+  # Compiles a match pattern without reading any rows.
+  MATCH_CHECK_SQL = "SELECT ''::text ~* $1::text".freeze
+  MATCH_ERROR_PREFIX = "invalid regular expression: ".freeze
 
   # Read whatever the report: the dataset (source, role and time window) and
   # the sort. Each report's own fields (Report#own_fields) are read only for
   # it, so a form that sends every report's fields runs any of them. Reports
   # that don't filter by role keep a valid one, so the form carries it on.
-  COMMON_FIELDS = %i[project environment cluster role range from to sort dir sort_report].freeze
+  # Match is read for every report so it carries across them, but only the
+  # reports that filter on it (Report#matches?) use it.
+  COMMON_FIELDS = %i[project environment cluster role range from to match sort dir sort_report].freeze
 
   FIELDS = {
     project: "Project", environment: "Environment", cluster: "Cluster", role: "Role", range: "Time range",
     from: "From", to: "To", sort: "Sort", dir: "Direction", primary_role: "Primary role",
-    replica_role: "Replica role", fingerprint_id: "Fingerprint ID", bucket: "Bucket", sort_report: "Sort report"
+    replica_role: "Replica role", fingerprint_id: "Fingerprint ID", bucket: "Bucket", sort_report: "Sort report",
+    match: "Match"
   }.freeze
 
   attr_reader :report, :catalog, :now, *FIELDS.keys
@@ -60,6 +68,7 @@ class ReportQuery
   validate :source_exists
   validate :range_is_valid
   validate :sort_is_a_column
+  validate :match_is_short
   validate :utilization_roles_are_valid, if: -> { report.utilization? }
   validate :timeseries_is_valid, if: -> { report.timeseries? }
 
@@ -70,6 +79,8 @@ class ReportQuery
     read = COMMON_FIELDS + report.own_fields
     @raw = FIELDS.keys.to_h { |field| [field, read.include?(field) ? params[field] : nil] }
     @raw.each { |field, value| instance_variable_set(:"@#{field}", value.is_a?(String) ? value.strip : nil) }
+    # Spaces can matter in a regex, so match is kept as typed.
+    @match = @raw[:match] if @raw[:match].is_a?(String)
     @range = DEFAULT_RANGE if @range.blank? && @raw[:range].nil?
     @primary_role = DEFAULT_PRIMARY_ROLE if @primary_role.blank?
     @replica_role = DEFAULT_REPLICA_ROLE if @replica_role.blank?
@@ -86,6 +97,31 @@ class ReportQuery
 
   # From or To came with a preset range, which ignores them.
   def ignored_custom_range? = !custom? && (@raw[:from].present? || @raw[:to].present?)
+
+  # The regex the report filters on, or nil for no filter. Only an empty
+  # match is no filter; one of only spaces filters on them.
+  def match_pattern = match.nil? || match.empty? ? nil : match
+
+  # A match on a report that doesn't filter on it, as the time series.
+  def ignored_match? = !report.matches? && !match_pattern.nil?
+
+  # Asks Postgres to compile the match pattern, through the report's runner
+  # so it counts against the same timeout. A pattern it can't compile adds
+  # an error and returns false. Reports that ignore match skip the check.
+  def match_compiles?(runner)
+    return true unless report.matches? && match_pattern
+
+    runner.run(MATCH_CHECK_SQL, [match_pattern])
+    true
+  rescue ActiveRecord::QueryCanceled
+    raise
+  rescue ActiveRecord::StatementInvalid => e
+    raise unless e.cause.is_a?(PG::InvalidRegularExpression) || e.cause.is_a?(PG::ProgramLimitExceeded)
+
+    detail = e.cause.result&.error_field(PG::PG_DIAG_MESSAGE_PRIMARY).to_s.delete_prefix(MATCH_ERROR_PREFIX)
+    errors.add(:match, "is not a valid regular expression: #{detail}")
+    false
+  end
 
   def human_attribute_name(field) = FIELDS.fetch(field)
   def self.human_attribute_name(field, _options = {}) = FIELDS.fetch(field.to_sym) { field.to_s.humanize }
@@ -131,7 +167,7 @@ class ReportQuery
     params.merge!(primary_role: primary_role, replica_role: replica_role) if report.utilization?
     params.merge!(fingerprint_id: fingerprint_id, bucket: bucket.presence) if report.timeseries?
     params.merge!(sort: sort, dir: dir) if sort.present?
-    params.merge(overrides).compact_blank
+    with_match(params.merge(overrides).compact_blank)
   end
 
   # The source fields only, for links to another report.
@@ -139,20 +175,23 @@ class ReportQuery
     params = { project: project, environment: environment, cluster: cluster, range: range }
     params[:role] = role if role.present?
     params.merge!(from: from, to: to) if custom?
-    params.compact_blank
+    with_match(params.compact_blank)
   end
 
   private
+
+  # Match goes in after compact_blank, which would drop an all-spaces pattern.
+  def with_match(params) = match_pattern ? params.merge(match: match_pattern) : params
 
   def binds(report)
     start_at, end_at = window.map { |time| time.utc.iso8601(6) }
     source = [project, environment, cluster]
     role_or_nil = role.presence
     case report.kind
-    when :top then [*source, start_at, end_at, ROW_LIMIT, role_or_nil]
+    when :top then [*source, start_at, end_at, ROW_LIMIT, role_or_nil, match_pattern]
     when :outliers
-      [*source, start_at, end_at, ROW_LIMIT, OUTLIER_SIGMA, OUTLIER_MIN_HISTORY, OUTLIER_RATIO, role_or_nil]
-    when :utilization then [*source, start_at, end_at, primary_role, replica_role]
+      [*source, start_at, end_at, ROW_LIMIT, OUTLIER_SIGMA, OUTLIER_MIN_HISTORY, OUTLIER_RATIO, role_or_nil, match_pattern]
+    when :utilization then [*source, start_at, end_at, primary_role, replica_role, match_pattern]
     when :timeseries
       [*source, fingerprint_id_value, start_at, end_at, "#{bucket_seconds} seconds", role_or_nil]
     when :fingerprint_contexts
@@ -246,6 +285,10 @@ class ReportQuery
     errors.add(:sort_report, "is not one of the choices") if !sort_report.nil? && !Report.find(sort_report)
     errors.add(:sort, "is not a column of this report") if sort.present? && !sort_column&.sortable?
     errors.add(:dir, "must be asc or desc") if dir.present? && !DIRECTIONS.include?(dir)
+  end
+
+  def match_is_short
+    errors.add(:match, "is too long (at most #{MAX_MATCH_LENGTH} characters)") if match.to_s.length > MAX_MATCH_LENGTH
   end
 
   def utilization_roles_are_valid

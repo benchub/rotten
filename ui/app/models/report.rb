@@ -43,6 +43,10 @@ class Report
   def utilization? = kind == :utilization
   def timeseries? = kind == :timeseries
 
+  # The reports that filter on the dataset's match regex. The time series is
+  # for one fingerprint, so it ignores it.
+  def matches? = %i[top outliers utilization].include?(kind)
+
   # The report's own fields, beyond the source and time window, which every
   # report reads.
   def own_fields

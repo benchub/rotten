@@ -105,6 +105,7 @@ func TestOutliersUsesSourceHistoryAndReturnsGlobalHistory(t *testing.T) {
 		defaultMinHistory,
 		defaultRatio,
 		nil,
+		nil,
 	)
 	if len(got) != 1 {
 		t.Fatalf("got %d outliers, want exactly planted slow query: %+v", len(got), got)
@@ -170,6 +171,7 @@ func TestOutliersSkipsZeroDeviationAndMissingSourceHistory(t *testing.T) {
 		defaultMinHistory,
 		defaultRatio,
 		nil,
+		nil,
 	)
 	if len(got) != 1 || got[0].FingerprintID != fixture.FingerprintID["slow"] {
 		t.Fatalf("outliers = %+v, want only slow; users with zero deviation and users on replica with no source history must be excluded", got)
@@ -203,6 +205,7 @@ func TestOutliersSubtractsInRangeSamplesFromStoredHistory(t *testing.T) {
 		defaultMinHistory,
 		defaultRatio,
 		nil,
+		nil,
 	)
 	for _, row := range got {
 		if row.FingerprintID == fingerprintID {
@@ -230,6 +233,7 @@ func TestOutliersThresholdAndSourceVsGlobalBaseline(t *testing.T) {
 		defaultSigma,
 		defaultMinHistory,
 		defaultRatio,
+		nil,
 		nil,
 	)
 	seen := map[int64]bool{}
@@ -260,6 +264,7 @@ func TestOutliersUsesRatioFallbackForZeroDeviationHistory(t *testing.T) {
 		defaultSigma,
 		defaultMinHistory,
 		defaultRatio,
+		nil,
 		nil,
 	)
 	for _, row := range got {
@@ -297,6 +302,7 @@ func TestOutliersOrdersBeforeLimit(t *testing.T) {
 		defaultSigma,
 		defaultMinHistory,
 		defaultRatio,
+		nil,
 		nil,
 	)
 	if len(got) != 1 {

@@ -8,6 +8,10 @@
 --   $5 window end, exclusive for starts; windows must also end at or before it
 --   $6 row limit
 --   $7 role, or NULL for every role in the project, environment and cluster
+--   $8 match: a case-insensitive POSIX regex (~*), or NULL for every query.
+--      A query matches if its normalized text does, or if it ran in the range
+--      in a context whose controller#action or job tag does. It filters
+--      before the row limit.
 with sources as (
   select id
   from rotten.logical_sources
@@ -15,6 +19,24 @@ with sources as (
     and environment = $2
     and cluster = $3
     and ($7::text is null or role = $7::text)
+), matched_events as (
+  -- Events in the range with a context matching $8: controller#action, or
+  -- job tag. Empty when $8 is NULL.
+  select ec.event_id
+  from rotten.event_context ec
+  join sources s on s.id = ec.logical_source_id
+  left join rotten.controllers c on c.id = ec.controller_id
+  left join rotten.actions ac on ac.id = ec.action_id
+  left join rotten.job_tags jt on jt.id = ec.job_tag_id
+  where $8::text is not null
+    and ec.observed_window_start >= $4::timestamptz
+    and ec.observed_window_start < $5::timestamptz
+    and ec.observed_window_end <= $5::timestamptz
+    and (
+      ((ec.controller_id is not null or ec.action_id is not null)
+        and coalesce(c.controller, '') || '#' || coalesce(ac.action, '') ~* $8::text)
+      or jt.job_tag ~* $8::text
+    )
 ), aggregated as (
   select
     e.fingerprint_id,
@@ -29,6 +51,11 @@ with sources as (
     and e.observed_window_start < $5::timestamptz
     and e.observed_window_end <= $5::timestamptz
   group by e.fingerprint_id
+  -- $8 keeps a group only if one of its events ran in a matching context, or
+  -- its query text matches. NULL keeps every group.
+  having $8::text is null
+    or bool_or(e.id in (select event_id from matched_events))
+    or (select f.normalized ~* $8::text from rotten.fingerprints f where f.id = e.fingerprint_id)
   order by calls desc, total_ms desc, e.fingerprint_id
   limit $6::integer
 ), contexts as (

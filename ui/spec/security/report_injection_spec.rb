@@ -29,7 +29,7 @@ module ReportInjectionSpec
     { "a" => "' or 1=1 --" }
   ].freeze
 
-  PARAMS = %w[project environment cluster role range from to sort dir primary_role replica_role fingerprint_id bucket sort_report].freeze
+  PARAMS = %w[project environment cluster role range from to sort dir primary_role replica_role fingerprint_id bucket sort_report match].freeze
 end
 
 RSpec.describe "Report SQL injection", type: :request do

@@ -675,20 +675,26 @@ func perfCases(f perfFixture) []perfCase {
 		budget time.Duration
 		runs   int
 	}{{"3h", h3, twoS, 5}, {"24h", h24, uiTimeout, 3}, {"7d", d7, uiTimeout, 3}} {
-		add("top_by_calls "+r.label, "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil)...)
-		add("top_by_calls "+r.label+" role=replica", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, testdb.ReportReplicaRole)...)
-		add("top_by_total_time "+r.label, "top_by_total_time.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil)...)
-		add("outliers "+r.label, "outliers.sql", r.start, r.budget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil)...)
-		add("outliers "+r.label+" role=primary", "outliers.sql", r.start, r.budget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, testdb.ReportPrimaryRole)...)
+		add("top_by_calls "+r.label, "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, nil)...)
+		add("top_by_calls "+r.label+" role=replica", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, testdb.ReportReplicaRole, nil)...)
+		add("top_by_total_time "+r.label, "top_by_total_time.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, nil)...)
+		add("outliers "+r.label, "outliers.sql", r.start, r.budget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, nil)...)
+		add("outliers "+r.label+" role=primary", "outliers.sql", r.start, r.budget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, testdb.ReportPrimaryRole, nil)...)
 		add("replica_utilization_by_controller_action "+r.label, "replica_utilization_by_controller_action.sql", r.start, r.budget, r.runs,
-			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole)...)
+			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
 		add("replica_utilization_by_job "+r.label, "replica_utilization_by_job.sql", r.start, r.budget, r.runs,
-			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole)...)
+			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
+		// A match on a few controller#action contexts and no query text, so the context
+		// EXISTS does real work.
+		add("top_by_calls "+r.label+" match", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, "^controller1[0-9]#")...)
+		add("outliers "+r.label+" match", "outliers.sql", r.start, r.budget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, "^controller1[0-9]#")...)
+		add("replica_utilization_by_controller_action "+r.label+" match", "replica_utilization_by_controller_action.sql", r.start, r.budget, r.runs,
+			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, "^controller1[0-9]#")...)
 	}
 	// replica_utilization's cost grows with the cluster's events in the
 	// range, so it also runs over all 21 seeded days: the longest custom range.
 	for _, file := range []string{"replica_utilization_by_controller_action", "replica_utilization_by_job"} {
-		add(file+" 21d", file+".sql", d21, uiTimeout, 3, with(d21, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole)...)
+		add(file+" 21d", file+".sql", d21, uiTimeout, 3, with(d21, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
 	}
 	// The fingerprint page runs these four together, with the UI's automatic
 	// bucket: the smallest that gives at most 200 buckets.

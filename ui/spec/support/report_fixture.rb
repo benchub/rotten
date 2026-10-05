@@ -182,6 +182,75 @@ module ReportFixture
     conn&.close
   end
 
+  CROWD_SIZE = 60
+  # The crowd's needles: each matches /needle/i one way, its query text, a
+  # controller#action or a job tag, and each is small enough to rank below
+  # every crowd row. They're all outliers too, with lower scores than the crowd.
+  NEEDLES = {
+    "needle_sql" => ["select * from haystack_needle where id = $1", ctx("plain", "show", nil, 2)],
+    "needle_controller" => ["select * from plain_table where id = $1", ctx("needles", "show", nil, 2)],
+    "needle_job" => ["select * from other_plain_table where id = $1", ctx(nil, nil, "NeedleJob", 2)]
+  }.freeze
+
+  # Adds CROWD_SIZE big fingerprints to canvas 13 primary, 30 minutes before
+  # anchor, each with its own controller#action and job tag, plus the
+  # NEEDLES, so every report's limit fills with the crowd. Also adds "stale",
+  # whose only /stalectl/ context is 5 hours old. Returns the needles' and
+  # stale's fingerprint ids by key.
+  def self.seed_crowd!(anchor)
+    conn = connect
+    conn.transaction do
+      source_id = conn.exec("select id from rotten.logical_sources where project = 'canvas' and cluster = '13' and role = 'primary'")
+                      .getvalue(0, 0).to_i
+      physical_id = conn.exec("select id from rotten.physical_sources where fqdn = 'canvas13p.db.example'").getvalue(0, 0).to_i
+      insert_dim = lambda do |table, column, name|
+        next nil if name.nil?
+
+        conn.exec_params("insert into rotten.#{table} (#{column}) values ($1) on conflict (#{column}) do update set #{column} = excluded.#{column} returning id",
+                         [name]).getvalue(0, 0).to_i
+      end
+      add_event = lambda do |fingerprint_id, start_ago, calls, time, contexts|
+        start = anchor - start_ago
+        finish = start + WINDOW
+        event_id = conn.exec_params(<<~SQL, [fingerprint_id, source_id, physical_id, start.iso8601, finish.iso8601, calls, time]).getvalue(0, 0)
+          insert into rotten.events
+            (fingerprint_id, logical_source_id, physical_source_id, observed_window_start, observed_window_end, calls, time)
+          values ($1, $2, $3, $4, $5, $6, $7) returning id
+        SQL
+        total = contexts.sum(&:c)
+        contexts.each do |c|
+          conn.exec_params(<<~SQL, [event_id, start.iso8601, finish.iso8601, insert_dim.("controllers", "controller", c.controller), insert_dim.("actions", "action", c.action), insert_dim.("job_tags", "job_tag", c.job_tag), c.c, source_id, time * c.c.to_f / total])
+            insert into rotten.event_context
+              (event_id, observed_window_start, observed_window_end, controller_id, action_id, job_tag_id, c, logical_source_id, attributed_time)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          SQL
+        end
+      end
+      add = lambda do |key, normalized, calls, time, contexts|
+        fingerprint_id = conn.exec_params("insert into rotten.fingerprints (fingerprint, normalized) values ($1, $2) returning id",
+                                          [key, normalized]).getvalue(0, 0).to_i
+        add_event.(fingerprint_id, 30 * M, calls, time, contexts)
+        conn.exec_params(<<~SQL, [fingerprint_id, source_id])
+          insert into rotten.fingerprint_stats (fingerprint_id, logical_source_id, type, count, mean, deviation, last)
+          values ($1, $2, 'mean_time', 100000, 1, 1, 1)
+        SQL
+        fingerprint_id
+      end
+
+      CROWD_SIZE.times do |i|
+        calls = 1000 + i
+        add.("crowd_#{i}", "select * from crowd_table_#{i} where id = $1", calls, calls * 100,
+             [ctx("crowd#{i}", "index", nil, calls / 2), ctx(nil, nil, "CrowdJob#{i}", calls - (calls / 2))])
+      end
+      # Its only context matching /stalectl/ is from 5 hours before anchor.
+      stale = add.("stale", "select * from stale_table where id = $1", 2, 20, [ctx("plain", "show", nil, 2)])
+      add_event.(stale, 5 * H, 2, 20, [ctx("stalectl", "index", nil, 2)])
+      NEEDLES.to_h { |key, (normalized, context)| [key, add.(key, normalized, 2, 20, [context])] }.merge("stale" => stale)
+    end
+  ensure
+    conn&.close
+  end
+
   # Counts rows in the fixture's tables, to show a request changed nothing.
   def self.table_counts
     conn = connect

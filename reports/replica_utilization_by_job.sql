@@ -8,6 +8,8 @@
 --   $5 window end, exclusive for starts; windows must also end at or before it
 --   $6 primary role name
 --   $7 replica role name
+--   $8 match: a case-insensitive POSIX regex (~*) on the job tag, or NULL
+--      for every row
 --
 -- Utilization:
 --   This report returns both call utilization and time utilization. Call
@@ -98,4 +100,5 @@ select
   case when t.total_ms > 0 then (100::numeric - t.primary_time_percent)::double precision else 0::double precision end as replica_time_percent
 from totals t
 join rotten.job_tags jt on jt.id = t.job_tag_id
+where $8::text is null or jt.job_tag ~* $8::text
 order by total_calls desc, total_ms desc, jt.job_tag, t.cluster;

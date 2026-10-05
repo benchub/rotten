@@ -8,6 +8,8 @@
   .report-form :is(.source-picker, .time-window) { @apply contents; }
   .report-form .field select { @apply min-w-36; }
   .report-form .field input[type="text"] { @apply w-36; }
+  .report-form .report-match { @apply basis-full; }
+  .report-form .report-match input[type="text"] { @apply w-full max-w-xl font-mono; }
   .report-form .custom-range {
     @apply flex flex-wrap items-end gap-3 rounded-md border border-dashed border-line-strong bg-surface-muted px-3 py-2;
   }
@@ -58,6 +60,9 @@
   }
   table.report tr.all-sources.unavailable td { @apply font-normal text-ink-muted italic; }
   .report-contexts { @apply m-0 list-disc pl-4; }
+  /* The match pattern's highlights. The ink is fixed, so a hovered query's
+     primary color doesn't drop the contrast. */
+  .report mark { @apply rounded-xs bg-mark px-0 text-mark-ink; }
   .report-contexts li { @apply whitespace-nowrap; }
 
   /* Query text: a disclosure whose summary is the query on one line, cut with

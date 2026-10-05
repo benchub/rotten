@@ -13,6 +13,8 @@
   <%= form_with url: fingerprint_path(@fingerprint.id), method: :get, class: "report-form card", data: { turbo: false } do %>
     <%= render "reports/source_fields", query: @query, reports: [@query.report] %>
     <%= render "reports/report_fields", query: @query, reports: [@query.report], fingerprint_field: false %>
+    <%# This page doesn't filter, but keeps the workbench's match for the links back to it. %>
+    <%= hidden_field_tag :match, @query.match_pattern, id: nil if @query.match_pattern %>
     <div class="form-actions">
       <%= submit_tag "Show", name: nil, class: "btn btn-primary" %>
     </div>

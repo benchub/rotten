@@ -61,7 +61,7 @@ func TestTopReportsFilterByRole(t *testing.T) {
 		}
 		rows, err := conn.Query(ctx, string(query),
 			"canvas", testdb.ReportEnvironment, "13",
-			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, c.role)
+			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, c.role, nil)
 		if err != nil {
 			t.Fatalf("%s role %v: %v", c.report, c.role, err)
 		}
@@ -103,7 +103,7 @@ func TestOutliersFilterByRole(t *testing.T) {
 		got := readOutliers(t, conn,
 			"canvas", testdb.ReportEnvironment, "7",
 			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
-			10, defaultSigma, defaultMinHistory, defaultRatio, c.role)
+			10, defaultSigma, defaultMinHistory, defaultRatio, c.role, nil)
 		if len(got) != c.want {
 			t.Fatalf("role %v: got %d outliers, want %d: %+v", c.role, len(got), c.want, got)
 		}

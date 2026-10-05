@@ -11,6 +11,12 @@
     <fieldset class="report-dataset">
       <legend>Dataset</legend>
       <%= render "reports/source_fields", query: @query, reports: Report.all %>
+      <div class="field report-match">
+        <%= label_tag :match, "Match" %>
+        <%= text_field_tag :match, @query.match, maxlength: ReportQuery::MAX_MATCH_LENGTH, autocomplete: "off",
+                           spellcheck: false, placeholder: "e.g. users|#index", aria: { describedby: "match-hint" } %>
+        <p class="hint" id="match-hint">Optional. A case-insensitive Postgres regex on the query text and the contexts (controller#action, job). The time series ignores it.</p>
+      </div>
     </fieldset>
     <fieldset class="report-chooser">
       <legend>Report</legend>
@@ -54,6 +60,10 @@
         <% end %>
 
         <%= render "reports/messages", query: @query, timeout_seconds: @timeout_seconds %>
+
+        <% if ran && @query.ignored_match? %>
+          <p class="report-ignored-match alert alert-warning">Match was ignored: the time series is for one fingerprint.</p>
+        <% end %>
 
         <% if ran && @query.needs_fingerprint? %>
           <p class="report-needs-input alert alert-warning">Enter a fingerprint ID, then run the report.</p>

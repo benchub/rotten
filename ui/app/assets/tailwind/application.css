@@ -60,6 +60,10 @@
   --color-topbar-line: #4b5563;
   --color-brand-dot: #fbbf24;
 
+  /* Match highlights (<mark>) */
+  --color-mark: #fde68a;
+  --color-mark-ink: #18202c;          /* 13.2:1 on mark */
+
   /* Charts */
   --color-chart-line: #1d4ed8;
   --color-chart-axis: #8b95a3;

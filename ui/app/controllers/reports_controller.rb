@@ -18,7 +18,10 @@ class ReportsController < ApplicationController
     return render :index, status: :unprocessable_content if @query.errors.any?
     return if @query.needs_fingerprint?
 
-    @rows = @query.run
+    runner = ReportRunner.new
+    return render :index, status: :unprocessable_content unless @query.match_compiles?(runner)
+
+    @rows = @query.run(runner)
   rescue ActiveRecord::QueryCanceled
     @timeout_seconds = Rails.configuration.x.report_timeout_ms / 1000.0
     render :index, status: :service_unavailable

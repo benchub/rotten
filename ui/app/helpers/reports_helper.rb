@@ -1,31 +1,61 @@
 module ReportsHelper
+  # The text columns the match pattern is highlighted in: the query, and the
+  # utilization reports' names.
+  HIGHLIGHTED_COLUMNS = %w[example controller_action job_tag].freeze
+
   def report_cell(query, column, value)
     return "" if value.nil?
 
+    pattern = query&.report&.matches? ? query.match_pattern : nil
     case column.type
     when :fingerprint
       link_to value.to_s, fingerprint_path(value, query.source_params)
     when :count then number_with_delimiter(value.round)
     when :ms, :percent, :number then number_with_precision(value, precision: 2, delimiter: ",")
     when :time then value.utc.strftime("%Y-%m-%d %H:%M")
-    when :context then report_contexts(value)
-    else column.key == "example" ? report_query_text(value.to_s) : value.to_s
+    when :context then report_contexts(value, pattern)
+    else
+      if column.key == "example" then report_query_text(value.to_s, pattern)
+      elsif HIGHLIGHTED_COLUMNS.include?(column.key) then highlight_match(value.to_s, pattern)
+      else value.to_s
+      end
     end
   end
 
   # Query text, cut to one line by CSS (see .query-disclosure). The summary
   # holds the whole query once, so screen readers and copying get all of it;
   # opening the disclosure (click, Enter or Space) wraps it to show it all.
-  def report_query_text(sql)
-    tag.details(tag.summary(tag.span(sql, class: "query-text", title: sql)), class: "query-disclosure")
+  # Matches of pattern are marked in it, open or closed.
+  def report_query_text(sql, pattern = nil)
+    tag.details(tag.summary(tag.span(highlight_match(sql, pattern), class: "query-text", title: sql)), class: "query-disclosure")
   end
 
+  # The text, HTML-escaped, with each match of the report's match pattern in
+  # a <mark>. Matching is MatchHighlighter's, which gives no matches rather
+  # than wrong ones where Ruby's regex dialect may differ from Postgres's.
+  # One highlighter per pattern serves the whole page, so its time budget
+  # and a timeout's give-up span every cell.
+  def highlight_match(text, pattern)
+    text = text.to_s
+    return ERB::Util.html_escape(text) if pattern.nil? || pattern.empty?
 
-  def report_contexts(contexts)
+    @match_highlighters ||= {}
+    spans = (@match_highlighters[pattern] ||= MatchHighlighter.new(pattern, ascii_folding_safe: MatchHighlighter.ascii_folding_safe?)).spans(text)
+    parts = []
+    at = 0
+    spans.each do |from, to|
+      parts << text[at...from] << tag.mark(text[from...to])
+      at = to
+    end
+    safe_join(parts << text[at..])
+  end
+
+  def report_contexts(contexts, pattern = nil)
     items = Array(contexts).filter_map do |context|
       next unless context.is_a?(Hash)
 
-      tag.li("#{report_context_name(context)} (#{number_with_delimiter(context['times'].to_i)})")
+      tag.li(safe_join([highlight_match(report_context_name(context), pattern),
+                        " (#{number_with_delimiter(context['times'].to_i)})"]))
     end
     items.empty? ? "" : tag.ul(safe_join(items), class: "report-contexts")
   end

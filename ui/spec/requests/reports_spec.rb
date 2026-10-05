@@ -405,7 +405,7 @@ RSpec.describe "Reports", type: :request do
     allow(ReportSql).to receive(:read).and_call_original
     allow(ReportSql).to receive(:read).with("outliers.sql")
                                       .and_return("select pg_sleep(1), $1::text, $2::text, $3::text, $4::timestamptz, " \
-                                                  "$5::timestamptz, $6::integer, $7::float8, $8::integer, $9::float8, $10::text")
+                                                  "$5::timestamptz, $6::integer, $7::float8, $8::integer, $9::float8, $10::text, $11::text")
 
     get "/reports", params: source_params.merge(report: "outliers")
 

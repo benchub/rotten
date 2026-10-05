@@ -309,7 +309,7 @@ RSpec.describe "Reports", type: :system do
   it "shows a friendly message when a report times out" do
     original = Rails.configuration.x.report_timeout_ms
     Rails.configuration.x.report_timeout_ms = 100
-    slow = "select pg_sleep(2), $1::text, $2::text, $3::text, $4::timestamptz, $5::timestamptz, $6::integer, $7::text"
+    slow = "select pg_sleep(2), $1::text, $2::text, $3::text, $4::timestamptz, $5::timestamptz, $6::integer, $7::text, $8::text"
     allow(ReportSql).to receive(:read).and_call_original
     allow(ReportSql).to receive(:read).with("top_by_calls.sql").and_return(slow)
 
