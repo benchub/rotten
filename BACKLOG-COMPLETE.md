@@ -1461,3 +1461,13 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - Completed: 2026-10-04, b502966
   - A caveat under context results (reports and the fingerprint's Top contexts), titles on context headers, and a Match hint sentence. A docscheck covers docs/worker.md and ui/README.md.
   - The real fix is design task 20261004-150000-1. The stale text cache across reset is 20261004-182844-1.
+
+### 20261004-182844-1: The worker's text cache keeps stale text across pgss reset or eviction.
+- **Why (found in 20261004-144107-2 review):** `internal/pgss/textcache.go` caches query text by pgss key. `Retain` (lines 35–44) drops a text only when its key disappears from a harvest, and lookups (lines 72–74) reuse the cached text without checking that it's still the same entry. `internal/worker/worker.go:526–527` notices reset activity through `pgss.Diff` but only calls `texts.Retain(stats)`. So if a key is reset or evicted and recreated between two harvests, the worker keeps using the old text: its context, and its fingerprint input. The new entry's context is never seen.
+- **Do:**
+  - Invalidate cached text for keys whose entry was recreated. Diff already detects counter regressions and resets; check `stats_since` on PG 17 and later, and `pg_stat_statements_info.dealloc` / `stats_reset`.
+  - Remove the caveat about this from `docs/worker.md` once fixed.
+- **Red test:** A real-PG test: run a query under context A, harvest, `pg_stat_statements_reset()`, run the same query under context B, harvest. Expect calls credited to B.
+- Completed: 2026-10-04, 69b41c8
+  - `pgss.Recreated` plus `TextCache.Invalidate` before `Fill`. On PG 14–16, a dealloc change drops all cached texts.
+  - Known limitation (documented): on 14–16, a single-entry reset whose counters climb back past their old values is undetectable.
