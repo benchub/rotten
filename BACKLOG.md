@@ -88,4 +88,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
   - Meanwhile, make the gap visible: a per-window count of the calls dropped, shown in the UI or the worker status.
 - **Red test:** A real-PG18 test with an unparseable statement, asserting the chosen behaviour.
 
+### 20261004-182844-1: The worker's text cache keeps stale text across pgss reset or eviction.
+- **Why (found in 20261004-144107-2 review):** `internal/pgss/textcache.go` caches query text by pgss key. `Retain` (lines 35–44) drops a text only when its key disappears from a harvest, and lookups (lines 72–74) reuse the cached text without checking that it's still the same entry. `internal/worker/worker.go:526–527` notices reset activity through `pgss.Diff` but only calls `texts.Retain(stats)`. So if a key is reset or evicted and recreated between two harvests, the worker keeps using the old text: its context, and its fingerprint input. The new entry's context is never seen.
+- **Do:**
+  - Invalidate cached text for keys whose entry was recreated. Diff already detects counter regressions and resets; check `stats_since` on PG 17 and later, and `pg_stat_statements_info.dealloc` / `stats_reset`.
+  - Remove the caveat about this from `docs/worker.md` once fixed.
+- **Red test:** A real-PG test: run a query under context A, harvest, `pg_stat_statements_reset()`, run the same query under context B, harvest. Expect calls credited to B.
+
 ## Phase F: Docs.
