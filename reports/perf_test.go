@@ -408,7 +408,8 @@ type perfCase struct {
 	runs   int
 	// historyFrom, if set, is where the report's history scan of events
 	// starts, before the range: outliers reads back the range's length,
-	// clamped to between 1 and 7 days.
+	// clamped to between 1 and 7 days, and for a fingerprint short of
+	// samples there, up to 7 days.
 	historyFrom time.Time
 }
 
@@ -672,13 +673,15 @@ func perfCases(f perfFixture) []perfCase {
 	h3, h24, d7, d21 := end.Add(-3*time.Hour), end.Add(-24*time.Hour), end.AddDate(0, 0, -7), end.Truncate(24*time.Hour).AddDate(0, 0, -(perfDays-1))
 	src := []any{perfProject, perfEnvironment, perfCluster}
 	with := func(xs ...any) []any { return append(slices.Clone(src), xs...) }
-	const twoS, uiTimeout, matchBudget7d = 2 * time.Second, 15 * time.Second, 5 * time.Second
+	// Outliers gets its own budget at every range (user decision, 2026-10-04):
+	// the adaptive lookback (task 20261005-020000-2) reads up to 7 days of
+	// history for rare queries, even for a 3h range.
+	const twoS, uiTimeout, outliersBudget = 2 * time.Second, 15 * time.Second, 10 * time.Second
 	var cases []perfCase
 	add := func(name, file string, start time.Time, budget time.Duration, runs int, args ...any) {
 		c := perfCase{name: name, file: file, args: args, start: start, end: end, budget: budget, runs: runs}
 		if file == "outliers.sql" {
-			lookback := min(max(end.Sub(start), 24*time.Hour), 7*24*time.Hour)
-			c.historyFrom = start.Add(-lookback)
+			c.historyFrom = start.Add(-7 * 24 * time.Hour)
 		}
 		cases = append(cases, c)
 	}
@@ -691,22 +694,17 @@ func perfCases(f perfFixture) []perfCase {
 		add("top_by_calls "+r.label, "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, nil)...)
 		add("top_by_calls "+r.label+" role=replica", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, testdb.ReportReplicaRole, nil)...)
 		add("top_by_total_time "+r.label, "top_by_total_time.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, nil)...)
-		add("outliers "+r.label, "outliers.sql", r.start, r.budget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, nil)...)
-		add("outliers "+r.label+" role=primary", "outliers.sql", r.start, r.budget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, testdb.ReportPrimaryRole, nil)...)
+		add("outliers "+r.label, "outliers.sql", r.start, outliersBudget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, nil)...)
+		add("outliers "+r.label+" role=primary", "outliers.sql", r.start, outliersBudget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, testdb.ReportPrimaryRole, nil)...)
 		add("replica_utilization_by_controller_action "+r.label, "replica_utilization_by_controller_action.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
 		add("replica_utilization_by_job "+r.label, "replica_utilization_by_job.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
 		// A match on a few controller#action contexts and no query text, so
-		// matching the contexts does real work. At 7d, outliers with a match
-		// must stay well under the UI's timeout (task 20261005-020000-1).
-		outliersMatchBudget := r.budget
-		if r.label == "7d" {
-			outliersMatchBudget = matchBudget7d
-		}
+		// matching the contexts does real work.
 		add("top_by_calls "+r.label+" match", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, "^controller1[0-9]#")...)
 		add("top_by_total_time "+r.label+" match", "top_by_total_time.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, "^controller1[0-9]#")...)
-		add("outliers "+r.label+" match", "outliers.sql", r.start, outliersMatchBudget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, "^controller1[0-9]#")...)
+		add("outliers "+r.label+" match", "outliers.sql", r.start, outliersBudget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, "^controller1[0-9]#")...)
 		add("replica_utilization_by_controller_action "+r.label+" match", "replica_utilization_by_controller_action.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, "^controller1[0-9]#")...)
 	}

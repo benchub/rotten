@@ -14,8 +14,13 @@
     @apply flex flex-wrap items-end gap-3 rounded-md border border-dashed border-line-strong bg-surface-muted px-3 py-2;
   }
   .report-form .report-options { @apply flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-line pt-4; }
-  .report-form .form-actions { @apply ml-auto; }
+  .report-form .form-actions { @apply ml-auto flex items-center gap-3; }
   .report-form .form-actions .btn-primary { @apply min-w-32; }
+  .report-form .form-actions .btn-primary:disabled { @apply cursor-wait opacity-60 hover:border-primary hover:bg-primary; }
+  /* Shown while a report runs: report_busy_controller.js sets aria-busy. */
+  .report-busy-indicator { @apply hidden items-center gap-2 text-sm text-ink-muted; }
+  .report-form[aria-busy="true"] .report-busy-indicator { @apply inline-flex; }
+  .spinner { @apply inline-block size-4 animate-spin rounded-full border-2 border-primary-soft border-t-primary; }
 
   /* The report chooser: radio cards. */
   .report-form fieldset.report-chooser { @apply block; }

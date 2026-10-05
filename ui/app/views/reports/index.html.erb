@@ -7,7 +7,11 @@
     <p class="lede">Pick a dataset and a report to run on it. Times are UTC.</p>
   </div>
 
-  <%= form_with url: reports_path, method: :get, class: "report-form workbench card", data: { turbo: false, controller: "report-chooser" } do %>
+  <%# The status region is outside the form, which is aria-busy while a report runs: assistive tech may hold back announcements inside a busy element. %>
+  <div data-controller="report-busy" data-action="pageshow@window->report-busy#reset">
+  <p class="sr-only" role="status" data-report-busy-target="status"></p>
+  <%= form_with url: reports_path, method: :get, class: "report-form workbench card", data: { turbo: false, controller: "report-chooser",
+                            report_busy_target: "form", action: "submit->report-busy#start" } do %>
     <fieldset class="report-dataset">
       <legend>Dataset</legend>
       <%= render "reports/source_fields", query: @query, reports: Report.all %>
@@ -43,10 +47,12 @@
         <% end %>
       <% end %>
       <div class="form-actions">
-        <%= submit_tag "Run report", name: nil, class: "btn btn-primary" %>
+        <span class="report-busy-indicator" aria-hidden="true"><span class="spinner"></span>Running report…</span>
+        <%= submit_tag "Run report", name: nil, class: "btn btn-primary", data: { report_busy_target: "button" } %>
       </div>
     </div>
   <% end %>
+  </div>
 
   <% if results %>
     <section class="card results" aria-label="Results">
