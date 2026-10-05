@@ -527,10 +527,7 @@ type perfResult struct {
 // times runs executions (each in its own read-only transaction with the UI's
 // statement_timeout), then explains one more.
 // perfConn is a *pgx.Conn, or a pgx.Tx whose Begin makes a savepoint.
-type perfConn interface {
-	Begin(ctx context.Context) (pgx.Tx, error)
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
+type perfConn = reportConn
 
 func runPerfCase(t *testing.T, conn perfConn, c perfCase, mode string, partitionsOf map[string]string) perfResult {
 	t.Helper()
@@ -557,17 +554,11 @@ func runPerfCase(t *testing.T, conn perfConn, c perfCase, mode string, partition
 	execute := "execute perf_report(" + strings.Join(lits, ", ") + ")"
 
 	once := func(sql string) (time.Duration, int, []byte, bool) {
-		tx, err := conn.Begin(ctx)
+		tx, err := beginReportTx(ctx, conn, perfUITimeout)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if _, err := tx.Exec(ctx, "set transaction read only"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(ctx, "select set_config('statement_timeout', $1, true)", perfUITimeout); err != nil {
-			t.Fatal(err)
-		}
 		began := time.Now()
 		canceled := func(err error) bool {
 			var pgErr *pgconn.PgError

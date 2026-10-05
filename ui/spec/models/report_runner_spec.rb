@@ -26,6 +26,26 @@ RSpec.describe ReportRunner do
     expect(setting("statement_timeout")).to eq(before)
   end
 
+  it "runs the report query with JIT off" do
+    result = described_class.new(timeout_ms: 5_000).run("select current_setting('jit') as j", [])
+
+    expect(result.rows).to eq([["off"]])
+  end
+
+  it "doesn't leak JIT off to the connection afterwards" do
+    expect(setting("jit")).to eq("on")
+    described_class.new(timeout_ms: 5_000).run("select 1", [])
+
+    expect(setting("jit")).to eq("on")
+  end
+
+  it "doesn't leak JIT off when the report fails" do
+    expect { described_class.new(timeout_ms: 5_000).run("select 1/0", []) }
+      .to raise_error(ActiveRecord::StatementInvalid)
+
+    expect(setting("jit")).to eq("on")
+  end
+
   it "runs in a read-only transaction" do
     expect { described_class.new(timeout_ms: 5_000).run("create temporary table report_runner_probe (x int)", []) }
       .to raise_error(ActiveRecord::StatementInvalid, /read-only/)

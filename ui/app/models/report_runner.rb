@@ -1,6 +1,7 @@
 # Runs report SQL with bound parameters, in a read-only transaction with a
-# statement timeout. set_config(..., true) is SET LOCAL, so the timeout ends
-# with the transaction and never reaches the next user of the pooled
+# statement timeout and JIT off (JIT compiling costs the reports more than it
+# saves; see docs/perf.md). set_config(..., true) is SET LOCAL, so both end
+# with the transaction and never reach the next user of the pooled
 # connection. A query that runs too long raises ActiveRecord::QueryCanceled.
 #
 # The timeout is a budget for all the queries one runner runs, starting with
@@ -24,6 +25,7 @@ class ReportRunner
       conn.transaction do
         conn.execute("SET TRANSACTION READ ONLY")
         conn.select_value("SELECT set_config('statement_timeout', $1, true)", "Report timeout", ["#{left_ms}ms"])
+        conn.select_value("SELECT set_config('jit', 'off', true)", "Report JIT")
         result = conn.select_all(sql, "Report", binds)
         values = result.cast_values
         values = values.map { |value| [value] } if result.columns.one?

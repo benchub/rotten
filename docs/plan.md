@@ -225,7 +225,7 @@ The worker isn't on `core`. An end-to-end test checks that the worker can't reac
 - A dev image with Chromium for system specs, kept separate from the production image.
 - A `spec/security/` suite covering CSRF, headers, session fixation, and provisioning fuzz tests.
 
-The report SQL lives in `reports/*.sql`, tested against a seeded rotten DB from the Go harness. The UI runs those files, so reports get tested before the UI exists. Every report takes a project, environment and cluster, plus an optional role (NULL means every role) except the utilization reports, which take a primary and a replica role. The UI binds every value and runs each report in a read-only transaction with a local statement timeout (`ROTTEN_UI_REPORT_TIMEOUT`, 15s by default).
+The report SQL lives in `reports/*.sql`, tested against a seeded rotten DB from the Go harness. The UI runs those files, so reports get tested before the UI exists. Every report takes a project, environment and cluster, plus an optional role (NULL means every role) except the utilization reports, which take a primary and a replica role. The UI binds every value and runs each report in a read-only transaction with a local statement timeout (`ROTTEN_UI_REPORT_TIMEOUT`, 15s by default) and JIT off.
 
 **Auth is generic, with the mode picked by config.** `ROTTEN_UI_AUTH=oidc|password`.
 

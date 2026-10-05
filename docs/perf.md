@@ -29,7 +29,7 @@ make test-perf PERF_TEST_ARGS='-run TestPerfReports'
    Seeding takes 1m20s–2m15s.
 2. **Runs every report the way the UI does.**
    - It connects as `rotten_ui` and uses `PREPARE` / `EXECUTE` with bound parameters.
-   - Each run is in a read-only transaction with `statement_timeout = 15s`.
+   - Each run is in a read-only transaction with `statement_timeout = 15s` and `jit = off`, both transaction-local, as in the UI's `ReportRunner`. `beginReportTx` in `reports/report_tx_test.go` sets them up, and `TestBeginReportTxSettings` (in `make test`) checks them.
    - Each case runs under both `plan_cache_mode = force_custom_plan` and `force_generic_plan`. Rails reuses prepared statements, so after five executions Postgres may switch to a generic plan, where pruning happens at executor startup or per loop.
    - Each case gets one warmup, then the median of 5 runs (3 for the source-wide 24h and 7d cases).
    - A run canceled by the timeout is reported as a failure, and the suite carries on.
@@ -138,10 +138,36 @@ Plan shapes:
     | outliers 7d match | 4.82s / 5.18s | 6.11s / 4.92s |
 
     The 7d plans and results are unchanged, so the 7d differences are noise; before, one 7d match custom run took 9.1s.
+- **JIT off (task 20261004-225300-1):**
+  - Reports now run with `jit = off`, set transaction-locally next to the statement timeout in the UI's `ReportRunner` and in this suite. Postgres JIT-compiles a plan whose estimated cost passes `jit_above_cost` (100k), and inlines and optimizes it past 500k. The reports' plans cross those lines often (outliers at every range since the adaptive lookback, and generic plans, whose estimates run high, even at 3h), and the compile time was never paid back: these queries spend their time in scans, hashing and sorting, not in expression evaluation.
+  - Back-to-back runs, JIT on (the suite as it was) then JIT off, at a load average of about 14–18. Medians, custom / generic:
+
+    | Case | JIT on | JIT off |
+    |---|---|---|
+    | top_by_calls 3h | 34ms / 90ms | 34ms / 39ms |
+    | top_by_calls 3h match | 54ms / 161ms | 51ms / 51ms |
+    | top_by_calls 24h | 925ms / 532ms | 190ms / 285ms |
+    | top_by_calls 24h match | 471ms / 494ms | 259ms / 351ms |
+    | top_by_calls 7d | 2.48s / 3.74s | 2.24s / 3.82s |
+    | top_by_calls 7d match | 3.99s / 3.91s | 3.58s / 3.86s |
+    | top_by_total_time 24h | 308ms / 633ms | 193ms / 280ms |
+    | top_by_total_time 7d | 2.30s / 3.35s | 2.11s / 3.03s |
+    | top_by_total_time 7d match | 3.62s / 4.05s | 3.71s / 3.71s |
+    | outliers 3h | 2.58s / 2.29s | 2.31s / 1.99s |
+    | outliers 3h role=primary | 823ms / 782ms | 662ms / 572ms |
+    | outliers 3h match | 1.13s / 1.28s | 813ms / 608ms |
+    | outliers 24h | 3.68s / 3.34s | 3.10s / 2.78s |
+    | outliers 24h role=primary | 1.52s / 1.67s | 958ms / 939ms |
+    | outliers 24h match | 1.70s / 1.36s | 1.30s / 1.05s |
+    | outliers 7d | 3.71s / 4.96s | 3.71s / 4.89s |
+    | outliers 7d role=primary | 1.25s / 2.49s | 971ms / 1.33s |
+    | outliers 7d match | 4.72s / 4.76s | 4.57s / 3.97s |
+
+    JIT off was as fast or faster in nearly every case; the few slower ones are within run-to-run noise on this machine. The Results tables above predate this change, so they include JIT time.
 - **Match filter (top_by_calls, top_by_total_time and outliers, task 20261005-020000-1):**
   - `context_events` reads the range's `event_context` rows once, through `event_context_source_window`, grouped by (controller_id, action_id, job_tag_id) with an `array_agg` of event ids. On cluster 13 at 7d that's about 2.5M rows but only 340 distinct contexts, so the regex runs 340 times instead of once per row. `matched_events` (materialized) unnests the matching contexts' event ids: 16 contexts and about 100k events at 7d. Before, the regex ran on every row, after joining every row to controllers, actions and job tags.
   - The range's aggregate flags each group with `bool_or` over a left join to `matched_events` (one hash, built once). Before, `bool_or(e.id in (select ...))` probed a hashed subplan for every in-range event.
-  - The text match moved out of the aggregate's HAVING into `text_matched`, which probes `fingerprints` by id (`= any(array(...))`) for the groups without a matching context. At run time, the correlated lookup per group cost about the same. But the planner priced it per estimated group (about 100k), which pushed the custom plan's total cost past `jit_optimize_above_cost` (500k). That added 1.4–1.7s of JIT inlining and optimization at 7d. outliers' custom plan now costs about 487k, just under the line. See Known limits.
+  - The text match moved out of the aggregate's HAVING into `text_matched`, which probes `fingerprints` by id (`= any(array(...))`) for the groups without a matching context. At run time, the correlated lookup per group cost about the same. But the planner priced it per estimated group (about 100k), which pushed the custom plan's total cost past `jit_optimize_above_cost` (500k). That added 1.4–1.7s of JIT inlining and optimization at 7d. outliers' custom plan now costs about 487k, just under the line. Reports now run with JIT off (see "JIT off" above).
   - outliers no longer carries an `array_agg` of event ids through its aggregate, which made the planner sort every in-range event. It looks up the event ids for the at most 50 limited rows through `events_fingerprint_window`, and it joins `sources` for the text columns last. When matching, its history scan is restricted to the matching (source, fingerprint) groups. top_by_calls and top_by_total_time keep the `array_agg`: their limited rows are the hottest fingerprints, so a second lookup costs more than carrying the arrays (about +0.4s at 7d without a match).
   - Results are unchanged. On the perf data, outliers returned the same rows as before the rewrite for context, job tag, text, no-match and NULL regexes. top_by_calls and top_by_total_time returned the same rows for the controller#action regex at 3h and 7d. `match_filter_test.go`, which covers each kind of match, passes.
   - Before and after, interleaved in one run, cluster 13, 7d, median (custom / generic):
@@ -293,7 +319,7 @@ The `global_range_samples` CTE in `outliers.sql` used the new index. Task 202610
 - **The other source-wide reports at 7d** take 0.5–2.1s with custom plans and up to 3.2s with generic plans, and up to 3.9s with a match. They grow linearly too.
 - **outliers at 7d** takes about 3.5–5.2s custom and 4.8s generic without a match, and about 4.6s and 4.8s with one, because it also reads 7 days of history. It grows linearly in the range's events plus the history's.
 - **outliers at 3h and 24h** takes 2.5–3.5s, not well under a second, because fingerprints short of samples read up to 7 days of history (see "Adaptive lookback"). Its budget is 10s at every range.
-- **JIT.** Postgres JIT-compiles a plan whose total cost passes `jit_above_cost` (100k), and also inlines and optimizes past 500k. That's about 1.5s at 7d, and the rotten database runs the default settings. outliers' custom plan with a match costs about 487k at 7d on the perf data, so more data or different statistics could push it over and add that time back. Its 3h and 24h plans cost about 120k–205k since the adaptive lookback, past `jit_above_cost` but not 500k, so they pay about 0.1s of JIT compilation. A possible follow-up is `set local jit = off` (or a higher `jit_optimize_above_cost`) for report queries in the UI's report runner and in this suite.
+- **JIT** is off for reports (see "JIT off" above), so plan costs crossing `jit_above_cost` or `jit_optimize_above_cost` as data grows no longer add compile time. Other queries on the rotten database keep the server's JIT settings.
 - **Not covered:**
   - `fingerprint_stats` is seeded with `mean_time` rows only.
   - The source-wide reports other than replica_utilization aren't measured past 7d.

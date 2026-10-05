@@ -479,8 +479,10 @@ Postgres must compile the match. Invalid input gets a 422 with a message. Values
 parameters, never in its text.
 
 Each report runs as `rotten_ui` in a read-only transaction with
-`SET LOCAL statement_timeout`, so the limit ends with the transaction and
-never applies to the next request on the same connection. A report that runs
+`SET LOCAL statement_timeout` and `SET LOCAL jit = off`, so both end with the
+transaction and never apply to the next request on the same connection. JIT
+compilation adds time to the reports without paying it back (see
+[`docs/perf.md`](../docs/perf.md)). A report that runs
 past it is stopped, and the page answers 503 with a message suggesting a
 shorter range or a narrower source. `ROTTEN_UI_REPORT_TIMEOUT` sets the
 limit for the whole page: the fingerprint page's four queries share it, each
