@@ -140,6 +140,18 @@ batch of 1,000 events at a time. It logs `repaired context utilization` with
 the row count each time. A partial index, `event_context_utilization_missing`,
 finds those rows, and it's empty the rest of the time.
 
+**Run migration 0012 before you start the matching `serve`.** It adds
+`rotten.fingerprints.unparsed` (`boolean not null default false`, which
+doesn't rewrite the table), sets it on every fingerprint that starts with
+`unparsed-` (one `UPDATE` over the table), and builds a partial index,
+`fingerprints_unparsed`, with a plain `CREATE INDEX`. Both block fingerprint
+inserts until they're done. A new `serve` writes the column, so its ingest
+fails until the migration has run; workers keep their harvests in the outbox
+and resend them. An older `serve` works on the migrated schema, but it
+ignores the workers' unparsed flag, so fallback fingerprints it stores are
+marked parsed. The new `serve` marks each of those the next time a worker
+sends it flagged. See [worker.md](worker.md#statements-the-parser-rejects).
+
 ## 4. Partition maintenance and retention
 
 `rotten.events` and `rotten.event_context` are partitioned by day on
@@ -235,7 +247,7 @@ get nothing outside the `rotten` schema, and `PUBLIC` gets nothing in it.
 | Role | Used by | May |
 | --- | --- | --- |
 | `rotten_owner` | `rotten-server migrate`, `rotten-server keys`, pg_partman maintenance | Owns the database, the `rotten` schema and every table and partition. Runs migrations and grants. Creates, lists and revokes pass keys. Needs pg_partman's privileges in `public`. Use it only for administration, never for a long-running service. |
-| `rotten_ingest` | `rotten-server serve` | Read every event and lookup table. Insert into `controllers`, `actions`, `job_tags`, `logical_sources`, `physical_sources`, `logical_physical_sources`, `fingerprints`, `events`, `event_context` and `fingerprint_stats`, and update `fingerprint_stats`, `logical_sources.project` and `physical_sources.fqdn`. Never delete. On `api_keys`, read only `id`, `name`, `secret_hash`, `fqdn` and `revoked_at`, and update only `last_used_at`. Read and insert `ingested_batches`, and prune it only through `rotten.prune_ingested_batches()`. Fill in `event_context` rows that a pre-0011 server wrote only through `rotten.repair_context_utilization()`. |
+| `rotten_ingest` | `rotten-server serve` | Read every event and lookup table. Insert into `controllers`, `actions`, `job_tags`, `logical_sources`, `physical_sources`, `logical_physical_sources`, `fingerprints`, `events`, `event_context` and `fingerprint_stats`, and update `fingerprint_stats`, `logical_sources.project`, `physical_sources.fqdn` and `fingerprints.unparsed`. Never delete. On `api_keys`, read only `id`, `name`, `secret_hash`, `fqdn` and `revoked_at`, and update only `last_used_at`. Read and insert `ingested_batches`, and prune it only through `rotten.prune_ingested_batches()`. Fill in `event_context` rows that a pre-0011 server wrote only through `rotten.repair_context_utilization()`. |
 | `rotten_ui` | The Rails UI | Read every event and lookup table. On `api_keys`, read everything but `secret_hash`, insert only `name`, `secret_hash`, `fqdn` and `created_by`, and update only `revoked_at` and `revoked_by`; it can't delete a key. Select, insert, update and delete `users`, including bumping `session_generation`. Read `ui_audit_log`, and insert into it without setting `id` or `at`; it can't change or delete rows. |
 | `rotten_readonly` | People running `reports/*.sql` in psql, dashboards | Read the event and lookup tables only. No access to `api_keys`, `ingested_batches`, `users` or `ui_audit_log`. |
 

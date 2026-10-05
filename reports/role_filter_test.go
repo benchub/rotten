@@ -73,7 +73,7 @@ func TestTopReportsFilterByRole(t *testing.T) {
 				example string
 				ctxJSON []byte
 			)
-			if err := rows.Scan(&r.FingerprintID, &r.Calls, &r.TotalMS, &avg, &example, &ctxJSON); err != nil {
+			if err := rows.Scan(&r.FingerprintID, &r.Calls, &r.TotalMS, &avg, &example, &ctxJSON, new(bool)); err != nil {
 				t.Fatal(err)
 			}
 			got = append(got, r)

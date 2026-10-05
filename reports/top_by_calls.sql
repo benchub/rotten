@@ -100,7 +100,9 @@ select
   a.total_ms,
   a.avg_ms_per_call,
   left(regexp_replace(f.normalized, '\n', ' ', 'g'), 250) as example,
-  coalesce(ca.contexts, '[]'::jsonb) as context
+  coalesce(ca.contexts, '[]'::jsonb) as context,
+  -- A fallback fingerprint hashed from the text; the parser rejected it.
+  f.unparsed
 from aggregated a
 join rotten.fingerprints f on f.id = a.fingerprint_id
 left join context_agg ca on ca.fingerprint_id = a.fingerprint_id

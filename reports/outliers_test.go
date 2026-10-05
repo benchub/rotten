@@ -37,6 +37,7 @@ type outlierRow struct {
 	Score            float64
 	Example          string
 	ContextJSON      []byte
+	Unparsed         bool
 }
 
 func readOutliers(t *testing.T, conn *pgx.Conn, args ...any) []outlierRow {
@@ -73,6 +74,7 @@ func readOutliers(t *testing.T, conn *pgx.Conn, args ...any) []outlierRow {
 			&r.Score,
 			&r.Example,
 			&r.ContextJSON,
+			&r.Unparsed,
 		); err != nil {
 			t.Fatal(err)
 		}

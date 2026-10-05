@@ -16,6 +16,12 @@ const (
 	// a full semantic-limit harvest with headroom for protobuf overhead.
 	MaxIngestMessageBytes = 32 << 20
 
+	// FallbackFingerprintPrefix starts every fingerprint the worker hashes
+	// from the query text because its parser rejected the statement
+	// (fingerprint.Fallback). pg_query fingerprints are bare hex, so the
+	// server can tell the two apart by the prefix alone.
+	FallbackFingerprintPrefix = "unparsed-"
+
 	// MaxHarvestAggregates and MaxHarvestContexts are coupled to the worker's
 	// topDeltasPerMetric × len(deltaMetrics): one picked delta can become one
 	// aggregate and contributes exactly one context before fingerprint merges.

@@ -69,7 +69,7 @@ func TestTopByCalls(t *testing.T) {
 			example       string
 			contextJSON   []byte
 		)
-		if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+		if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON, new(bool)); err != nil {
 			t.Fatal(err)
 		}
 
@@ -141,7 +141,7 @@ func TestTopByCallsHonorsLimit(t *testing.T) {
 			example       string
 			contextJSON   []byte
 		)
-		if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+		if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON, new(bool)); err != nil {
 			t.Fatal(err)
 		}
 		got = append(got, fingerprintID)
@@ -217,7 +217,7 @@ func TestTopByCallsContextCountsAreBigint(t *testing.T) {
 		example       string
 		contextJSON   []byte
 	)
-	if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+	if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON, new(bool)); err != nil {
 		t.Fatal(err)
 	}
 	if fingerprintID != fixture.FingerprintID["users"] {
@@ -348,7 +348,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		example       string
 		contextJSON   []byte
 	)
-	if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+	if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON, new(bool)); err != nil {
 		t.Fatal(err)
 	}
 	var contexts []topByCallsContext
@@ -390,7 +390,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 			example       string
 			contextJSON   []byte
 		)
-		if err := reportRows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+		if err := reportRows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON, new(bool)); err != nil {
 			reportRows.Close()
 			t.Fatal(err)
 		}

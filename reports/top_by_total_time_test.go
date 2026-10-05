@@ -94,7 +94,7 @@ func TestTopByTotalTime(t *testing.T) {
 			example       string
 			contextJSON   []byte
 		)
-		if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+		if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON, new(bool)); err != nil {
 			t.Fatal(err)
 		}
 
@@ -166,7 +166,7 @@ func TestTopByTotalTimeHonorsLimit(t *testing.T) {
 			example       string
 			contextJSON   []byte
 		)
-		if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+		if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON, new(bool)); err != nil {
 			t.Fatal(err)
 		}
 		got = append(got, fingerprintID)

@@ -33,28 +33,28 @@ func progressLog(w *Worker) string {
 func TestParseFailureSnapshots(t *testing.T) {
 	w := New(Config{}, RealClock{})
 	longQuery := strings.Repeat("x", 2000)
-	w.recordParseFailure(longQuery)
-	count, samples := w.parseFailureSnapshot()
-	if count != 1 || len(samples) != 1 || samples[0] != longQuery[:1024]+"..." {
-		t.Fatalf("long sample not bounded: count=%d samples=%q", count, samples)
+	w.recordParseFailure(longQuery, 2)
+	count, calls, samples := w.parseFailureSnapshot()
+	if count != 1 || calls != 2 || len(samples) != 1 || samples[0] != longQuery[:1024]+"..." {
+		t.Fatalf("long sample not bounded: count=%d calls=%d samples=%q", count, calls, samples)
 	}
 	samples[0] = "changed snapshot"
-	_, next := w.parseFailureSnapshot()
+	_, _, next := w.parseFailureSnapshot()
 	if next[0] == samples[0] {
 		t.Fatal("snapshot aliases the worker's samples")
 	}
 	w.resetParseFailures()
-	count, samples = w.parseFailureSnapshot()
-	if count != 0 || len(samples) != 0 {
-		t.Fatalf("reset retained failures: count=%d samples=%q", count, samples)
+	count, calls, samples = w.parseFailureSnapshot()
+	if count != 0 || calls != 0 || len(samples) != 0 {
+		t.Fatalf("reset retained failures: count=%d calls=%d samples=%q", count, calls, samples)
 	}
-	if got := progressLog(w); strings.Contains(got, "fingerprint failure samples") {
+	if got := progressLog(w); strings.Contains(got, "unparsed samples") {
 		t.Fatalf("reset still reports samples: %s", got)
 	}
-	w.recordParseFailure("new window")
-	count, samples = w.parseFailureSnapshot()
-	if count != 1 || len(samples) != 1 || samples[0] != "new window" {
-		t.Fatalf("new window retained old samples: count=%d samples=%q", count, samples)
+	w.recordParseFailure("new window", 2)
+	count, calls, samples = w.parseFailureSnapshot()
+	if count != 1 || calls != 2 || len(samples) != 1 || samples[0] != "new window" {
+		t.Fatalf("new window retained old samples: count=%d calls=%d samples=%q", count, calls, samples)
 	}
 }
 
@@ -64,27 +64,27 @@ func TestParseFailureConcurrentSnapshots(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		wg.Go(func() {
 			for j := 0; j < 100; j++ {
-				w.recordParseFailure("bad query")
-				count, samples := w.parseFailureSnapshot()
-				if len(samples) != min(int(count), 5) {
+				w.recordParseFailure("bad query", 2)
+				count, calls, samples := w.parseFailureSnapshot()
+				if len(samples) != min(int(count), 5) || calls != 2*uint64(count) {
 					t.Errorf("inconsistent snapshot: count=%d samples=%q", count, samples)
 				}
 			}
 		})
 	}
 	wg.Wait()
-	count, samples := w.parseFailureSnapshot()
-	if count != 400 || len(samples) != 5 {
-		t.Fatalf("concurrent counts/samples lost: count=%d samples=%q", count, samples)
+	count, calls, samples := w.parseFailureSnapshot()
+	if count != 400 || calls != 800 || len(samples) != 5 {
+		t.Fatalf("concurrent counts/samples lost: count=%d calls=%d samples=%q", count, calls, samples)
 	}
 	// Exercise reset concurrently with record/snapshot under the race detector.
 	for i := 0; i < 4; i++ {
 		wg.Go(func() {
 			for j := 0; j < 100; j++ {
 				w.resetParseFailures()
-				w.recordParseFailure("another query")
-				count, samples := w.parseFailureSnapshot()
-				if len(samples) != min(int(count), 5) {
+				w.recordParseFailure("another query", 2)
+				count, calls, samples := w.parseFailureSnapshot()
+				if len(samples) != min(int(count), 5) || calls != 2*uint64(count) {
 					t.Errorf("inconsistent reset snapshot: count=%d samples=%q", count, samples)
 				}
 			}
@@ -136,17 +136,17 @@ func TestParseFailuresCountedAndSampled(t *testing.T) {
 	var sendLog bytes.Buffer
 	old := log.Writer()
 	log.SetOutput(&sendLog)
-	w.buildHarvestBatch(ctx, texts, deltas, time.Unix(1, 0), time.Unix(2, 0))
+	batch := w.buildHarvestBatch(ctx, texts, deltas, time.Unix(1, 0), time.Unix(2, 0))
 	log.SetOutput(old)
-	if !strings.Contains(sendLog.String(), "window fingerprint failures: 7; fingerprint failure samples (up to 5):") {
-		t.Errorf("window summary missing; a later harvest could hide failures: %s", sendLog.String())
+	if !strings.Contains(sendLog.String(), "window unparsed entries: 7 (7 calls) sent under text fingerprints; unparsed samples (up to 5):") {
+		t.Errorf("window summary missing; a later harvest could hide fallbacks: %s", sendLog.String())
 	}
 	got := progressLog(w)
-	if !strings.Contains(got, "7 fingerprints failed") {
-		t.Errorf("failure count missing from progress: %s", got)
+	if !strings.Contains(got, "7 unparsed entries (7 calls) sent under text fingerprints.") {
+		t.Errorf("fallback count missing from progress: %s", got)
 	}
-	if !strings.Contains(got, "fingerprint failure samples (up to 5):") {
-		t.Errorf("failure samples missing from progress: %s", got)
+	if !strings.Contains(got, "unparsed samples (up to 5):") {
+		t.Errorf("fallback samples missing from progress: %s", got)
 	}
 	for i, d := range topNDeltas(deltas, topDeltasPerMetric) {
 		quoted := fmt.Sprintf("%q", d.Query)
@@ -154,8 +154,14 @@ func TestParseFailuresCountedAndSampled(t *testing.T) {
 			t.Errorf("sample %d present = %v, want %v: %s", i, present, i < 5, got)
 		}
 	}
-	if w.eventsPending.Load() != 0 || w.fingerprintCount() != 0 {
-		t.Fatal("failed queries should not queue events or create fingerprints")
+	// Unparsed entries are sent, not dropped: one aggregate per statement.
+	if n := len(batch.GetAggregates()); n != 7 {
+		t.Fatalf("want 7 unparsed aggregates in the batch, got %d", n)
+	}
+	for _, agg := range batch.GetAggregates() {
+		if !agg.GetUnparsed() || agg.GetMetrics().GetCalls() != 1 || !strings.HasPrefix(agg.GetFingerprint(), "unparsed-") {
+			t.Errorf("aggregate not sent as unparsed fallback: %v", agg)
+		}
 	}
 }
 

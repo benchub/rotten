@@ -650,7 +650,7 @@ func Normalized(query string, opts Options) (fingerprint string, err error) {
 	tree, err := pg_query.Parse(modified_query)
 	if err != nil {
 		log.Println("couldn't parse query", modified_query, err)
-		return "", errors.New("failed to parse")
+		return "", ErrParse
 	}
 
 	// Now that we have our query tree, munge it to normalize queries as defined in our StructField walker above

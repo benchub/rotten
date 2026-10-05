@@ -185,6 +185,15 @@ module ReportFixture
     conn&.close
   end
 
+  # Marks fingerprints as fallbacks the worker hashed from their text
+  # because its parser rejected them, as ingest does for unparsed aggregates.
+  def self.mark_unparsed!(*ids)
+    conn = connect
+    conn.exec_params("update rotten.fingerprints set unparsed = true where id = any($1::bigint[])", [PG::TextEncoder::Array.new.encode(ids)])
+  ensure
+    conn&.close
+  end
+
   CROWD_SIZE = 60
   # The crowd's needles: each matches /needle/i one way, its query text, a
   # controller#action or a job tag, and each is small enough to rank below

@@ -29,7 +29,8 @@ The worker logs to two streams, and you need both:
 - **stderr, plain text** with a timestamp, from Go's `log` package. This is
   most of the output: startup and config errors, the periodic status line
   (`Current window closed ...`), harvest warnings such as a failed snapshot or
-  a failed min/max reset, fingerprinting failures, the outbox cap dropping
+  a failed min/max reset, statements sent under text fingerprints because
+  the parser rejected them (`window unparsed entries`), the outbox cap dropping
   its oldest harvests (`worker outbox cap dropped oldest batches`), and a
   corrupt state file being moved aside.
 - **stdout, JSON lines**, from `slog`. These are the outbox and registration
@@ -179,6 +180,56 @@ example, for temp tables with a three-character suffix such as
 `([^\\s]+)_temp_table_[0-9a-z]{3}[0-9a-z]*([^\\s]*)`. Changing a pattern
 changes the fingerprints of the statements it matches, so their history
 before and after the change won't line up.
+
+### Statements the parser rejects
+
+The worker fingerprints with `pg_query_go`, which has the Postgres 17
+parser. It rejects some valid Postgres 18 syntax, such as
+`UPDATE ... RETURNING WITH (OLD AS o, NEW AS n)` and `VIRTUAL` generated
+columns. Those statements are still sent, with their calls, time and
+contexts, under a fallback fingerprint marked unparsed:
+
+- **The fingerprint** is `unparsed-` and 16 hex digits: the start of a
+  SHA-256 of the `pg_stat_statements` text, with its leading and trailing
+  comments, whitespace and semicolons removed. A `--` comment ends at a
+  carriage return or a newline, as in Postgres. Real fingerprints are 16 hex
+  digits with no prefix, so the two never collide.
+- **The normalized SQL** stored for it is that same stripped text, cut to 8
+  KiB. `pg_stat_statements` has already replaced the constants with `$1`,
+  `$2` and so on.
+- **Contexts** come from the comments, as for any statement.
+
+It's hashed from the text rather than the `queryid`, because the `queryid`
+is built from table OIDs on 14 through 17, so it differs between databases
+and servers, and Postgres 18 builds it differently again. The text doesn't
+depend on OIDs. So the same statement gets the same fallback fingerprint on
+every worker, observed server and restart, as long as `pg_stat_statements`
+keeps the same text. Anything that changes the text makes a new one:
+different whitespace or capitalization, a comment in the middle, schema
+qualification, or a different number of `$n` placeholders. Generated cursor
+and temp table names aren't collapsed here, unlike for parsed statements:
+`CursorPattern` and `TempTablePattern` don't apply, and each name gets its own
+fallback fingerprint. Two servers on different Postgres versions can
+normalize the same statement differently.
+
+When a later parser can parse the statement, it gets a real fingerprint,
+and its history won't join the fallback's: the two show as separate
+fingerprints. The UI marks fallbacks with an **unparsed** badge
+([ui/README.md](../ui/README.md#reports)).
+
+Statements that fail for any other reason are still skipped, and logged as
+`couldn't be fingerprinted`.
+
+The count of fallbacks covers the top 100 selected entries of each harvest,
+not every `pg_stat_statements` row. At the end of each window the worker logs
+`window unparsed entries: N (C calls) sent under text fingerprints`, with up
+to five of their texts, each cut to 1,024 bytes plus `...`. The status line
+shows the current harvest's count and samples too. The samples are query
+text, which may contain sensitive literals, so treat the worker logs
+accordingly. A server from before migration 0012 ignores the unparsed flag
+and stores fallbacks as parsed. Migration 0012 marks those, and a newer
+server marks any it stored later the next time a worker sends one
+([database.md](database.md#3-run-the-migrations)).
 
 ### Removed keys
 

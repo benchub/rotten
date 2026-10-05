@@ -32,8 +32,9 @@ class Report
 
   def self.find(key) = LISTED.find { |report| report.key == key }
 
-  # The queries the fingerprint detail page runs alongside the time series.
-  # They aren't reports of their own, so they're not listed or routable.
+  # The queries the fingerprint detail page runs alongside the time series,
+  # and the unparsed count under the fingerprint reports. They aren't reports
+  # of their own, so they're not listed or routable.
   def self.internal(key) = INTERNAL.find { |report| report.key == key }
 
   # Every SQL file the UI may read.
@@ -50,6 +51,10 @@ class Report
   def role_filter? = kind != :utilization
   def utilization? = kind == :utilization
   def timeseries? = kind == :timeseries
+
+  # The reports that list fingerprints, so they badge unparsed ones and count
+  # them for the window.
+  def fingerprints? = %i[top outliers].include?(kind)
 
   # The reports that filter on the dataset's match regex. The time series is
   # for one fingerprint, so it ignores it.
@@ -160,6 +165,13 @@ class Report
           ["history_samples", "History samples", :count],
           ["history_mean_ms", "History mean ms/call", :ms],
           ["history_deviation_ms", "History deviation ms", :ms]
+        ]),
+    new(key: "unparsed_summary", title: "Unparsed queries", file: "unparsed_summary.sql",
+        kind: :unparsed_summary, description: "How many queries in the window were fingerprinted by their text.",
+        columns: [
+          ["fingerprints", "Queries", :count],
+          ["calls", "Calls", :count],
+          ["total_ms", "Total ms", :ms]
         ])
   ].freeze
 end

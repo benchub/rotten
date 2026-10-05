@@ -411,7 +411,7 @@ func TestSubmitHarvestStoresUint64ContextCountForReports(t *testing.T) {
 		example       string
 		contextJSON   []byte
 	)
-	if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON); err != nil {
+	if err := rows.Scan(&fingerprintID, &calls, &totalMS, &avgMSPerCall, &example, &contextJSON, new(bool)); err != nil {
 		t.Fatal(err)
 	}
 	if calls != float64(bigCount) {

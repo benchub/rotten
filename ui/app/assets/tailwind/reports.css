@@ -56,6 +56,13 @@
   table.report th[aria-sort="descending"] a::after { content: "\25BC" / ""; }
   table.report td[data-column="fingerprint_id"] a { @apply font-mono font-semibold; }
   .context-caveat { @apply mt-3 mb-0 max-w-3xl text-sm text-ink-muted; }
+
+  /* Fallback fingerprints, hashed from the text when the parser rejected it. */
+  .unparsed-badge {
+    @apply ml-1 inline-block cursor-help rounded-full border border-warning-line bg-warning-soft px-2 py-0.5;
+    @apply align-middle text-xs leading-[1.4] font-semibold whitespace-nowrap text-warning;
+  }
+  .unparsed-summary, .unparsed-note { @apply mt-3 mb-0 max-w-3xl text-sm text-warning; }
   table.report th[title] { @apply cursor-help; }
   table.report tfoot tr.all-sources :is(th, td) {
     @apply border-t-2 border-b-0 border-t-line-strong bg-surface-muted font-semibold;

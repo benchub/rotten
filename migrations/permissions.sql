@@ -85,6 +85,18 @@ BEGIN
 END
 $$;
 
+-- fingerprints.unparsed. rotten_ingest marks an unparsed- fingerprint that a
+-- pre-0012 server stored as parsed; it can update no other fingerprint column.
+-- Checked for the same reason.
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_attribute WHERE attrelid = 'rotten.fingerprints'::regclass
+               AND attname = 'unparsed' AND NOT attisdropped) THEN
+        GRANT UPDATE (unparsed) ON rotten.fingerprints TO rotten_ingest;
+    END IF;
+END
+$$;
+
 -- users. The Rails UI owns authentication and authorization state, including
 -- session_generation, which it bumps to end a user's sessions.
 grant select, insert, update, delete on rotten.users to rotten_ui;

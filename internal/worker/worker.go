@@ -80,6 +80,11 @@ type QueryEvent struct {
 	// A histogram of the marginalia contexts observed for this query in this window
 	context map[string]uint64
 
+	// unparsed is true when the parser rejected query, so the event's
+	// fingerprint is fingerprint.Fallback's and fallbackText is its text.
+	unparsed     bool
+	fallbackText string
+
 	// pg_stat_statment's observation window boundaries this event was seen in
 	observationTimeStart PoorMansTime
 	observationTimeEnd   PoorMansTime
@@ -194,6 +199,7 @@ type Worker struct {
 	// Count and samples are one snapshot for the progress goroutine.
 	parseFailuresMu     sync.Mutex
 	parseFailures       uint32
+	parseFailureCalls   uint64
 	parseFailureSamples []string
 
 	// lastHarvest is the last harvest's time in Unix seconds.
@@ -701,7 +707,7 @@ func zeroStatCounters(s *pgss.Stat) {
 func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat, start, end time.Time) *rottenv1.SubmitHarvestRequest {
 	cfg := w.cfg
 	events := make(map[string]QueryEvent)
-	hidden, noText := 0, 0
+	hidden, noText, unfingerprintable := 0, 0, 0
 	for i, d := range picked {
 		if d.Calls <= 0 {
 			continue
@@ -725,8 +731,16 @@ func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat
 		jobTag := extractContextValue(event.query, cfg.ReJobTag)
 		w.noteContext(d.UserID, d.TopLevel, wholeCount(event.calls), controller != "" || action != "" || jobTag != "")
 		fingerprint, err := fingerprinting.Normalized(event.query, cfg.Fingerprint)
-		if err != nil {
-			w.recordParseFailure(event.query)
+		if errors.Is(err, fingerprinting.ErrParse) {
+			// Ship it under a text-derived fingerprint rather than drop its
+			// calls, time and contexts.
+			fallback := fingerprinting.Fallback(event.query)
+			fingerprint = fallback.Fingerprint
+			event.unparsed = true
+			event.fallbackText = fallback.Text
+			w.recordParseFailure(event.query, wholeCount(event.calls))
+		} else if err != nil {
+			unfingerprintable++
 			continue
 		}
 		event.context = map[string]uint64{
@@ -745,18 +759,25 @@ func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat
 	if noText > 0 {
 		log.Println(noText, "top entries have no query text, so they're skipped")
 	}
-	failures, samples := w.parseFailureSnapshot()
+	if unfingerprintable > 0 {
+		log.Println(unfingerprintable, "top entries couldn't be fingerprinted, so they're skipped")
+	}
+	failures, calls, samples := w.parseFailureSnapshot()
 	if failures > 0 {
-		log.Printf("window fingerprint failures: %d; fingerprint failure samples (up to %d): %q", failures, parseFailureSampleLimit, samples)
+		log.Printf("window unparsed entries: %d (%d calls) sent under text fingerprints; unparsed samples (up to %d): %q", failures, calls, parseFailureSampleLimit, samples)
 	}
 	aggregates := make([]*rottenv1.FingerprintAggregate, 0, len(events))
 	for fingerprint, event := range events {
-		normalized, err := fingerprinting.Query(event.query)
-		if err != nil {
-			w.recordParseFailure(event.query)
-			continue
+		normalized := event.fallbackText
+		if !event.unparsed {
+			var err error
+			if normalized, err = fingerprinting.Query(event.query); err != nil {
+				normalized = fingerprinting.Fallback(event.query).Text
+			}
 		}
-		aggregates = append(aggregates, eventAggregate(fingerprint, normalized, event))
+		aggregate := eventAggregate(fingerprint, normalized, event)
+		aggregate.Unparsed = event.unparsed
+		aggregates = append(aggregates, aggregate)
 	}
 	w.eventsPending.Store(0)
 	sort.Slice(aggregates, func(i, j int) bool {
@@ -864,11 +885,11 @@ func (w *Worker) reportProgress(ctx context.Context, noIdleHands bool, interval 
 			lastLive = live
 			lastLiveAt = time.Now()
 		}
-		failures, samples := w.parseFailureSnapshot()
+		failures, calls, samples := w.parseFailureSnapshot()
 
-		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", w.eventsPending.Load(), "unique events queued,", failures, "fingerprints failed. Overall,", processed, "processed")
+		log.Println("Current window closed", closed, "seconds ago,", int64(observation_interval)-closed, "seconds till new window,", w.eventsPending.Load(), "unique events queued,", fmt.Sprintf("%d unparsed entries (%d calls) sent under text fingerprints.", failures, calls), "Overall,", processed, "processed")
 		if failures > 0 {
-			log.Printf("fingerprint failure samples (up to %d): %q", parseFailureSampleLimit, samples)
+			log.Printf("unparsed samples (up to %d): %q", parseFailureSampleLimit, samples)
 		}
 		if noIdleHands && time.Since(lastLiveAt) > watchdogTimeout {
 			reason := fmt.Sprintf("no worker liveness for %s (last: %v)", time.Since(lastLiveAt).Round(time.Millisecond), w.livenessReason.Load())

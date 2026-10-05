@@ -216,7 +216,9 @@ select
   l.history_spread_ms,
   l.score,
   left(regexp_replace(f.normalized, '\n', ' ', 'g'), 250) as example,
-  coalesce(ca.contexts, '[]'::jsonb) as context
+  coalesce(ca.contexts, '[]'::jsonb) as context,
+  -- A fallback fingerprint hashed from the text; the parser rejected it.
+  f.unparsed
 from limited l
 join rotten.fingerprints f on f.id = l.fingerprint_id
 -- The worst sample's window, earliest on a tie. Looked up only for the

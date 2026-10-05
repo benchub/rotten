@@ -358,8 +358,16 @@ type FingerprintAggregate struct {
 	// lifetime values, not this window's (Postgres 14 through 16, where the
 	// min/max can't be reset on their own).
 	MinmaxLifetime bool `protobuf:"varint,5,opt,name=minmax_lifetime,json=minmaxLifetime,proto3" json:"minmax_lifetime,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// True when the worker's parser rejected the statement, so fingerprint is
+	// fingerprint.Fallback's text-derived "unparsed-" fingerprint, not a
+	// pg_query one, and normalized is the pg_stat_statements text with its
+	// leading and trailing comments stripped. Unset (as from older workers)
+	// means parsed. The server stores it when it first inserts the
+	// fingerprint, like normalized, and later sets it on an existing
+	// "unparsed-" fingerprint stored as parsed; it never clears it.
+	Unparsed      bool `protobuf:"varint,6,opt,name=unparsed,proto3" json:"unparsed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *FingerprintAggregate) Reset() {
@@ -423,6 +431,13 @@ func (x *FingerprintAggregate) GetMetrics() *Metrics {
 func (x *FingerprintAggregate) GetMinmaxLifetime() bool {
 	if x != nil {
 		return x.MinmaxLifetime
+	}
+	return false
+}
+
+func (x *FingerprintAggregate) GetUnparsed() bool {
+	if x != nil {
+		return x.Unparsed
 	}
 	return false
 }
@@ -775,7 +790,7 @@ const file_rotten_v1_ingest_proto_rawDesc = "" +
 	"window_end\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\twindowEnd\x12?\n" +
 	"\n" +
 	"aggregates\x18\x06 \x03(\v2\x1f.rotten.v1.FingerprintAggregateR\n" +
-	"aggregates\"\xe4\x01\n" +
+	"aggregates\"\x80\x02\n" +
 	"\x14FingerprintAggregate\x12 \n" +
 	"\vfingerprint\x18\x01 \x01(\tR\vfingerprint\x12\x1e\n" +
 	"\n" +
@@ -783,7 +798,8 @@ const file_rotten_v1_ingest_proto_rawDesc = "" +
 	"normalized\x123\n" +
 	"\bcontexts\x18\x03 \x03(\v2\x17.rotten.v1.QueryContextR\bcontexts\x12,\n" +
 	"\ametrics\x18\x04 \x01(\v2\x12.rotten.v1.MetricsR\ametrics\x12'\n" +
-	"\x0fminmax_lifetime\x18\x05 \x01(\bR\x0eminmaxLifetime\"u\n" +
+	"\x0fminmax_lifetime\x18\x05 \x01(\bR\x0eminmaxLifetime\x12\x1a\n" +
+	"\bunparsed\x18\x06 \x01(\bR\bunparsed\"u\n" +
 	"\fQueryContext\x12\x1e\n" +
 	"\n" +
 	"controller\x18\x01 \x01(\tR\n" +

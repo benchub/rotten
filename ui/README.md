@@ -400,7 +400,16 @@ Postgres's, so `MatchHighlighter` marks nothing rather than something wrong:
 The rows are still filtered by Postgres in every case. Marks use the
 `mark` theme colours, 13.2:1 contrast.
 
-Fingerprint IDs in the reports link to the fingerprint page. Click a column
+Fingerprint IDs in the reports link to the fingerprint page. A fingerprint
+the worker hashed from the query text, because its Postgres 17 parser
+rejected the statement, has an **unparsed** badge next to its ID, and its
+page says so in the heading and under the SQL. Below the top and outlier
+reports, a note counts the unparsed queries and their calls in the source,
+role and window, including any the limit or the match left out. It's run by
+`reports/unparsed_summary.sql`, and doesn't show when there are none. See
+[docs/worker.md](../docs/worker.md#statements-the-parser-rejects).
+
+Click a column
 header to sort. The form carries the sort with `sort_report`, the report
 it came from, so running a different report drops it. The sort happens in
 Ruby on the rows the report returned, at most 50 for the top and outlier

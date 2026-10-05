@@ -2,12 +2,19 @@
 <div class="reports fingerprint">
   <%= render "shared/breadcrumbs", trail: [["All reports", reports_path]], current: "Fingerprint #{@fingerprint.id}" %>
   <div class="page-header">
-    <h1>Fingerprint <%= @fingerprint.id %></h1>
+    <h1>Fingerprint <%= @fingerprint.id %><% if @fingerprint.unparsed %> <%= unparsed_badge %><% end %></h1>
   </div>
 
   <section class="card" aria-labelledby="fingerprint-sql-heading">
     <h2 id="fingerprint-sql-heading" class="card-title">Normalized SQL</h2>
     <pre class="fingerprint-sql"><%= @fingerprint.normalized %></pre>
+    <% if @fingerprint.unparsed %>
+      <p class="unparsed-note">
+        Unparsed: fingerprinted by text, the Postgres 17 parser rejected it. The SQL above is the
+        pg_stat_statements text with its leading and trailing comments removed. If a later worker's parser
+        can parse this statement, it gets a new fingerprint, and that history won't join this one's.
+      </p>
+    <% end %>
   </section>
 
   <%= form_with url: fingerprint_path(@fingerprint.id), method: :get, class: "report-form card", data: { turbo: false } do %>

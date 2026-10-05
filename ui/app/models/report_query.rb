@@ -198,6 +198,7 @@ class ReportQuery
       [*source, fingerprint_id_value, start_at, end_at, CONTEXT_LIMIT, role_or_nil]
     when :fingerprint_sources then [*source, fingerprint_id_value, start_at, end_at, role_or_nil]
     when :fingerprint_all_sources then [fingerprint_id_value, start_at, end_at]
+    when :unparsed_summary then [*source, start_at, end_at, role_or_nil]
     else raise ArgumentError, "unknown report kind #{report.kind}"
     end
   end

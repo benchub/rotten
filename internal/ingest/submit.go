@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -219,11 +220,13 @@ func resolveHarvestIdentities(ctx context.Context, tx pgx.Tx, aggregates []*rott
 		jobTags:      map[string]int64{},
 	}
 	normalized := map[string]string{}
+	unparsed := map[string]bool{}
 	var fingerprints, controllers, actions, jobTags []string
 	for _, aggregate := range aggregates {
 		fp := aggregate.GetFingerprint()
 		if _, ok := normalized[fp]; !ok {
 			normalized[fp] = aggregate.GetNormalized()
+			unparsed[fp] = aggregate.GetUnparsed()
 			fingerprints = append(fingerprints, fp)
 		}
 		for _, qc := range aggregate.GetContexts() {
@@ -252,7 +255,7 @@ func resolveHarvestIdentities(ctx context.Context, tx pgx.Tx, aggregates []*rott
 	sort.Strings(actions)
 	sort.Strings(jobTags)
 	for _, fingerprint := range fingerprints {
-		id, err := fingerprintID(ctx, tx, fingerprint, normalized[fingerprint])
+		id, err := fingerprintID(ctx, tx, fingerprint, normalized[fingerprint], unparsed[fingerprint])
 		if err != nil {
 			return harvestIDs{}, err
 		}
@@ -463,17 +466,34 @@ func optionalID(ids map[string]int64, value string) *int64 {
 	return &id
 }
 
-func fingerprintID(ctx context.Context, tx pgx.Tx, fingerprint, normalized string) (int64, error) {
+// fingerprintID stores normalized only on first insert, like the
+// fingerprint itself. An unset unparsed, from an older worker, is false.
+//
+// A server from before the unparsed column stores a new worker's fallback
+// fingerprints as parsed, so a flagged aggregate for an existing fallback
+// fingerprint marks it unparsed. Only fallback fingerprints, which the
+// prefix tells apart, are marked, and the flag is never cleared. The update
+// runs, and locks the row, only when the flag actually changes.
+func fingerprintID(ctx context.Context, tx pgx.Tx, fingerprint, normalized string, unparsed bool) (int64, error) {
 	var id int64
-	err := tx.QueryRow(ctx, `insert into rotten.fingerprints(fingerprint, normalized)
-		values ($1, $2) on conflict (fingerprint) do nothing returning id`, fingerprint, normalized).Scan(&id)
+	err := tx.QueryRow(ctx, `insert into rotten.fingerprints(fingerprint, normalized, unparsed)
+		values ($1, $2, $3) on conflict (fingerprint) do nothing returning id`, fingerprint, normalized, unparsed).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, err
 	}
-	return id, tx.QueryRow(ctx, `select id from rotten.fingerprints where fingerprint = $1`, fingerprint).Scan(&id)
+	var stored bool
+	if err := tx.QueryRow(ctx, `select id, unparsed from rotten.fingerprints where fingerprint = $1`, fingerprint).Scan(&id, &stored); err != nil {
+		return 0, err
+	}
+	if unparsed && !stored && strings.HasPrefix(fingerprint, harvestlimits.FallbackFingerprintPrefix) {
+		if _, err := tx.Exec(ctx, `update rotten.fingerprints set unparsed = true where id = $1 and not unparsed`, id); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
 }
 
 func controllerID(ctx context.Context, tx pgx.Tx, controller string) (*int64, error) {

@@ -6,10 +6,6 @@ import (
 	"github.com/benchub/rotten/internal/harvestlimits"
 )
 
-func (w *Worker) fingerprintCount() int {
-	return 0
-}
-
 func (w *Worker) stillProcessing() uint32 {
 	return w.processing.Load()
 }

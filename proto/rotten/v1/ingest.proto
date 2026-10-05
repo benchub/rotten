@@ -106,6 +106,14 @@ message FingerprintAggregate {
   // lifetime values, not this window's (Postgres 14 through 16, where the
   // min/max can't be reset on their own).
   bool minmax_lifetime = 5;
+  // True when the worker's parser rejected the statement, so fingerprint is
+  // fingerprint.Fallback's text-derived "unparsed-" fingerprint, not a
+  // pg_query one, and normalized is the pg_stat_statements text with its
+  // leading and trailing comments stripped. Unset (as from older workers)
+  // means parsed. The server stores it when it first inserts the
+  // fingerprint, like normalized, and later sets it on an existing
+  // "unparsed-" fingerprint stored as parsed; it never clears it.
+  bool unparsed = 6;
 }
 
 // QueryContext is one controller/action/job tag combination and how many

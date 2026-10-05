@@ -100,8 +100,9 @@ func TestFingerprintColumnCommentsDescribeStoredValues(t *testing.T) {
 	ctx := context.Background()
 
 	want := map[string]string{
-		"fingerprint": "Hex string from fingerprint.Normalized, matching proto.rotten.v1.FingerprintAggregate.fingerprint.",
-		"normalized":  "pg_query.Normalize output of one representative query text for this fingerprint, stored only on first insert.",
+		"fingerprint": "Hex string from fingerprint.Normalized, or unparsed- plus a hash of the query text when the parser rejected it (see unparsed); matches proto.rotten.v1.FingerprintAggregate.fingerprint.",
+		"normalized":  "pg_query.Normalize output of one representative query text for this fingerprint, or the pg_stat_statements text with leading and trailing comments stripped when unparsed; stored only on first insert.",
+		"unparsed":    "True when the worker's parser rejected the statement, so fingerprint is a hash of its text rather than a pg_query fingerprint. Set on first insert, or later for an unparsed- fingerprint an older server stored; never cleared. False for workers older than the flag.",
 	}
 	for column, comment := range want {
 		var got string
@@ -666,6 +667,45 @@ func TestRepairContextUtilization(t *testing.T) {
 		}
 		if ok {
 			t.Errorf("%s can execute repair_context_utilization", role)
+		}
+	}
+}
+
+const fingerprintsUnparsedMigration = "0012_fingerprints_unparsed.sql"
+
+// A worker that sends fallback fingerprints to a server from before 0012
+// gets them stored as plain fingerprints. 0012 marks those unparsed by their
+// prefix, which no pg_query fingerprint has.
+func TestFingerprintsUnparsedBackfill(t *testing.T) {
+	db := testdb.StartRottenEmpty(t)
+	ctx := context.Background()
+	dsn := db.DSNAs(t, testdb.OwnerRole)
+
+	before := migrationsBefore(t, fingerprintsUnparsedMigration)
+	if _, err := migrate.UpWith(ctx, dsn, before, migrations.Permissions); err != nil {
+		t.Fatalf("migrate to 0011: %v", err)
+	}
+	conn := db.Connect(t)
+	if _, err := conn.Exec(ctx, `insert into rotten.fingerprints (fingerprint, normalized) values
+		('unparsed-0123456789abcdef', 'update t set x = $1 returning with (old as o) o.x'),
+		('0123456789abcdef', 'select $1'),
+		('xunparsed-0123456789abcdef', 'select $2')`); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := migrate.Up(ctx, dsn); err != nil || !slices.Contains(applied, 12) {
+		t.Fatalf("migrate to 0012: applied %v, err %v; want it to include 12", applied, err)
+	}
+	for fp, want := range map[string]bool{
+		"unparsed-0123456789abcdef":  true,
+		"0123456789abcdef":           false,
+		"xunparsed-0123456789abcdef": false,
+	} {
+		var got bool
+		if err := conn.QueryRow(ctx, "select unparsed from rotten.fingerprints where fingerprint = $1", fp).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", fp, err)
+		}
+		if got != want {
+			t.Errorf("%s unparsed = %v, want %v", fp, got, want)
 		}
 	}
 }

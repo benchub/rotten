@@ -3,13 +3,18 @@ module ReportsHelper
   # utilization reports' names.
   HIGHLIGHTED_COLUMNS = %w[example controller_action job_tag].freeze
 
-  def report_cell(query, column, value)
+  UNPARSED_TITLE = "Fingerprinted by text: the Postgres 17 parser rejected it".freeze
+
+  # row is the whole result row, for cells that read more than their own
+  # column: a fingerprint's unparsed flag.
+  def report_cell(query, column, value, row = nil)
     return "" if value.nil?
 
     pattern = query&.report&.matches? ? query.match_pattern : nil
     case column.type
     when :fingerprint
-      link_to value.to_s, fingerprint_path(value, query.source_params)
+      link = link_to(value.to_s, fingerprint_path(value, query.source_params))
+      row&.dig("unparsed") ? safe_join([link, " ", unparsed_badge]) : link
     when :count then number_with_delimiter(value.round)
     when :ms, :percent, :number then number_with_precision(value, precision: 2, delimiter: ",")
     when :time then value.utc.strftime("%Y-%m-%d %H:%M")
@@ -20,6 +25,30 @@ module ReportsHelper
       else value.to_s
       end
     end
+  end
+
+  # Marks a fallback fingerprint: the worker's parser rejected the statement,
+  # so it hashed the pg_stat_statements text instead (docs/worker.md).
+  def unparsed_badge
+    tag.span("unparsed", class: "unparsed-badge", title: UNPARSED_TITLE)
+  end
+
+  # The note under a fingerprint report on how many queries in the window
+  # fell back to text fingerprints, or nil when none did. It counts the whole
+  # source and window, not only the listed or matching rows.
+  def unparsed_summary(summary)
+    count = summary && summary["fingerprints"].to_i
+    return if count.nil? || count.zero?
+
+    calls = number_with_delimiter(summary["calls"].to_f.round)
+    text = if count == 1
+             "1 query in this window was fingerprinted by its text, with #{calls} calls: " \
+               "the worker's Postgres 17 parser rejected it."
+           else
+             "#{number_with_delimiter(count)} queries in this window were fingerprinted by their text, with #{calls} calls: " \
+               "the worker's Postgres 17 parser rejected them."
+           end
+    tag.p(text, class: "unparsed-summary")
   end
 
   # Query text, cut to one line by CSS (see .query-disclosure). The summary

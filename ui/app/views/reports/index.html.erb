@@ -93,7 +93,7 @@
                   <% @rows.each do |row| %>
                     <tr>
                       <% @report.columns.each do |column| %>
-                        <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, row[column.key]) %></td>
+                        <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, row[column.key], row) %></td>
                       <% end %>
                     </tr>
                   <% end %>
@@ -102,6 +102,7 @@
             </div>
             <%= context_caveat if @report.contexts? %>
           <% end %>
+          <%= unparsed_summary(@unparsed) %>
         <% end %>
       </div>
     </section>
