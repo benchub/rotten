@@ -1497,3 +1497,14 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - Completed: 2026-10-04, b5053cb
   - Design in `docs/decisions/context-sampling.md` after two review rounds. It reframes sampling as activity (time) share, not calls, and recommends two stages: sightings first, then the split.
   - Build tasks 20261004-204000-1..8 are proposed in the doc. They go into the backlog after user sign-off.
+
+### 20261004-161500-1: Statements the fingerprinter rejects are dropped from batches.
+- **Decision (user, 2026-10-05):** Ship such entries under a fallback fingerprint derived from the pgss `queryid`, marked as unparsed, plus a visible count of what fell back.
+- **Why (found in 20261004-144107-1):** The worker fingerprints with the pinned Postgres 17 parser (pg_query_go), which rejects some valid Postgres 18 syntax, e.g. `UPDATE … RETURNING WITH (OLD AS o, NEW AS n)`. Those entries are counted and sampled as parse failures only. Their calls, time and contexts never reach the server, so reports silently undercount on 18.
+- **Do:**
+  - Decide with the user: wait for the pg_query_go 18 parser (see the working agreement; don't upgrade until the user confirms the release is out), or ship such entries under a fallback fingerprint, e.g. one derived from the pgss `queryid`, with a marker.
+  - Meanwhile, make the gap visible: a per-window count of the calls dropped, shown in the UI or the worker status.
+- **Red test:** A real-PG18 test with an unparseable statement, asserting the chosen behaviour.
+- Completed: 2026-10-04, 4a1f499
+  - The fallback is `unparsed-` + 16 hex of SHA-256 over the pgss text with leading and trailing comments stripped (text, not queryid, because queryid is OID-based on 14–17).
+  - Migration 0012 adds `fingerprints.unparsed`, backfills it and builds a partial index. It holds ACCESS EXCLUSIVE while it runs, so plan for blocking time on large tables. Ingest repairs flags set by older servers.

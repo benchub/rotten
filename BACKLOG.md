@@ -67,14 +67,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Do:** Decide with the user whether that's fine. Options: a longer minimum lookback for short ranges, which costs time (7 days of history for a 3h range took about 2.8s in the perf harness with a draft of the query, against a 2s budget), or a lower minimum history.
 - **Red test:** Depends on the choice; for example, an hourly fingerprint with a slow run in a 3h range that's listed.
 
-### 20261004-161500-1: Statements the fingerprinter rejects are dropped from batches.
-- **Decision (user, 2026-10-05):** Ship such entries under a fallback fingerprint derived from the pgss `queryid`, marked as unparsed, plus a visible count of what fell back.
-- **Why (found in 20261004-144107-1):** The worker fingerprints with the pinned Postgres 17 parser (pg_query_go), which rejects some valid Postgres 18 syntax, e.g. `UPDATE … RETURNING WITH (OLD AS o, NEW AS n)`. Those entries are counted and sampled as parse failures only. Their calls, time and contexts never reach the server, so reports silently undercount on 18.
-- **Do:**
-  - Decide with the user: wait for the pg_query_go 18 parser (see the working agreement; don't upgrade until the user confirms the release is out), or ship such entries under a fallback fingerprint, e.g. one derived from the pgss `queryid`, with a marker.
-  - Meanwhile, make the gap visible: a per-window count of the calls dropped, shown in the UI or the worker status.
-- **Red test:** A real-PG18 test with an unparseable statement, asserting the chosen behaviour.
-
 ### 20261004-204751-1: Flaky `TestWorkerCreditsRecreatedEntryToNewText/pg17`.
 - **Why (found in 20261004-161500-1):** One `make test-all` run failed in the pg17 case of `TestWorkerCreditsRecreatedEntryToNewText` (added in 20261004-182844-1): plan time went down where the test needs it to climb. Three reruns passed. There's no CI, so a flaky gate wastes runs and hides real failures.
 - **Do:** Find the race, for example plan time not always recorded for a re-planned statement or timing-dependent counters, and make the test deterministic without weakening what it checks.
