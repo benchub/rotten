@@ -11,8 +11,9 @@
 --   $6 role, or NULL for every role in the project, environment and cluster
 --
 -- Unparsed fingerprints are rare, so this starts from them (the partial
--- index fingerprints_unparsed) and reads their events by
--- events_fingerprint_window, rather than scanning the range.
+-- index fingerprints_unparsed) and reads their events by source and
+-- fingerprint through events_source_fingerprint_window, rather than
+-- scanning the range.
 with sources as (
   select id
   from rotten.logical_sources

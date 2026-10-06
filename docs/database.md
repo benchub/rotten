@@ -89,7 +89,8 @@ to an application role is revoked at the next `migrate`.
 but the server's inserts wait until the index is built. In testing, that
 took about 3 seconds for every 10 million events. Run it at a quiet time.
 Workers keep their harvests in their outbox while the server waits, and
-resend them afterwards. See `docs/perf.md` for the measurements.
+resend them afterwards. See `docs/perf.md` for the measurements. Migration
+0014 drops this index again.
 
 **Migration 0013 blocks ingest while it runs.** It builds the
 `events_source_fingerprint_window` index, on `(logical_source_id,
@@ -104,6 +105,19 @@ while the server waits, and resend them afterwards. It needs no new grants,
 and new partitions get the index automatically. Afterwards each insert
 maintains one more index, and the index takes about 70% of the events heap's
 size on disk. See `docs/perf.md` for the measurements.
+
+**Migration 0014 blocks reports and ingest briefly.** It drops migration
+0008's `events_fingerprint_window`: every report that read it reads 0013's
+`events_source_fingerprint_window` just as fast on Postgres 18, and dropping
+it saves an index entry per event (up to about 10–20% of insert time in
+testing, within run-to-run noise) and about 400 MB per 10 million events. Dropping an index on the partitioned
+`rotten.events` takes an `ACCESS EXCLUSIVE` lock on it and every partition,
+and `DROP INDEX CONCURRENTLY` isn't supported there. Nothing is rebuilt, so
+it holds the lock only for a moment, but it first waits for running reports
+to finish, and reports and inserts that arrive meanwhile queue behind it.
+Run it when no long report is running. Workers keep their harvests in their
+outbox while the server waits. Its Down section builds the index again, like
+0008. See `docs/perf.md` for the measurements.
 
 **Migration 0009 stops if two users share an OIDC identity.** It adds
 `users_provider_uid_key`, a unique index on `rotten.users (provider,

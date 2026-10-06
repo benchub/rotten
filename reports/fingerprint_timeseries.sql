@@ -30,9 +30,9 @@
 --
 -- Limits:
 --   The report rejects requests that would generate more than 10000 buckets.
---   Migration 0008 adds events (fingerprint_id, observed_window_start) for
---   this report and the other per-fingerprint ones; docs/perf.md has the
---   numbers behind it.
+--   It reads events through events_source_fingerprint_window (migration
+--   0013), on (logical_source_id, fingerprint_id, observed_window_start),
+--   like the other per-fingerprint reports; docs/perf.md has the numbers.
 --
 -- Window semantics:
 --   Only windows fully inside [$5, $6) are counted: observed_window_start must

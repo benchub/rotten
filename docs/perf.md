@@ -1,14 +1,17 @@
 # Report query performance
 
-This page covers how the report SQL in `reports/*.sql` performs against a realistically sized `rotten` database: about 10 million events across 21 daily partitions. It records latency, partition pruning, plan shapes, the `events (fingerprint_id, observed_window_start)` index decision, and the replica_utilization rewrite. The suite is `reports/perf_test.go` (task 20261001-103222-53).
+This page covers how the report SQL in `reports/*.sql` performs against a realistically sized `rotten` database: about 10 million events across 21 daily partitions. It records latency, partition pruning, plan shapes, the `events (fingerprint_id, observed_window_start)` index decision and its reversal (migration 0014), and the replica_utilization rewrite. The suite is `reports/perf_test.go` (task 20261001-103222-53).
 
 ## Reproducing
 
 ```sh
-make test-perf                                  # about 10M events, around 9 minutes
+make test-perf                                  # about 10M events, twice; around 30 minutes
 make test-perf ROTTEN_PERF_EVENTS=500000        # quick smoke run
 make test-perf PERF_TEST_ARGS='-run TestPerfReports'
+make test-perf PERF_TEST_ARGS='-run TestPerfManySources'
 ```
+
+- **Two tests:** `TestPerfReports` runs every report on the main seed below. `TestPerfManySources` seeds the same data plus the fleet (400 more logical sources) in its own database, and runs only `fingerprint_all_sources` and the index decision for it (see "Dropping `events_fingerprint_window`").
 
 - **What runs:** `make test-perf` runs `go test -tags perf ./reports` in the test image.
 - **Not in the gate:** the `perf` build tag keeps the suite out of `make test`, `make test-unit` and `make test-all`. `make test` does run `go vet -tags perf ./reports`, so a compile break in the suite still fails the gate.
@@ -18,15 +21,16 @@ make test-perf PERF_TEST_ARGS='-run TestPerfReports'
 ### What it does
 
 1. **Seeds the data on the server side.** It uses `INSERT ... SELECT generate_series` over 6 parallel connections, one day at a time, then runs `VACUUM ANALYZE`.
-   - **Determinism:** each day's insert runs `select setseed(...)` first, on the same connection, with a seed derived from the day's index. Contexts are derived from the event's natural key, not its id. The data ends at a fixed anchor, 2026-01-21 12:00 UTC. So every run seeds the same data: 10,039,225 events and 13,052,198 event_context rows. Every 3h range sits in one partition, and every 24h range spans two. Event ids and physical row order can still vary with scheduling.
+   - **Determinism:** each day's insert runs `select setseed(...)` first, on the same connection, with a seed derived from the day's index. Contexts are derived from the event's natural key, not its id. The data ends at a fixed anchor, 2026-01-21 12:00 UTC. So every run seeds the same data: 10,039,225 events and 13,052,198 event_context rows (10,432,825 and 13,563,878 with the fleet). Every 3h range sits in one partition, and every 24h range spans two. Event ids and physical row order can still vary with scheduling.
    - **Sources:** 12 streams. Canvas clusters 13, 7 and 21 and bridge cluster 1 each have a primary with one host and a replica with two hosts. Cluster 13 carries 4× the weight of each other cluster. The reports query cluster 13.
+   - **Fleet (`TestPerfManySources` only):** 400 more logical sources (project `fleet`, one cluster and one host each), added in task 20261005-123457-1 so the index that leads with the source has hundreds of distinct leading values in every partition. It's kept out of `TestPerfReports`'s seed because it skews the source-wide reports' generic plans (see "Known limits"). Each harvests hourly, deterministically: fingerprint 20001 (on all 400, the "many" case) and one of a pool of 500 more. That's 393,600 events.
    - **Windows:** 5 minutes long, spanning 21 days, so 21 populated daily partitions created by `public.create_partition_time`.
-   - **Fingerprints:** pools of 15,000 for canvas and 5,000 for bridge. Fingerprints are picked with a skew (`pool*random()^2`), and calls are skewed too (`50000/idx`). On cluster 13 over 21 days, the hot fingerprint (id 1) has 16,549 events and the typical fingerprint (id 200) has 1,577.
+   - **Fingerprints:** pools of 15,000 for canvas and 5,000 for bridge. Those with `id % 1000 = 7` (20 of them) are marked unparsed, for `unparsed_summary`. Fingerprints are picked with a skew (`pool*random()^2`), and calls are skewed too (`50000/idx`). On cluster 13 over 21 days, the hot fingerprint (id 1) has 16,549 events and the typical fingerprint (id 200) has 1,577.
    - **Outliers:** a slice of fingerprints is 10× slower in the last 2 hours, so `outliers` has something to find.
    - **event_context:** about 1.3 rows per event, 20% of them job contexts. Each row gets its event's `logical_source_id` and an equal share of its time as `attributed_time`, as ingest would write them (every context of a seeded event has the same `c`).
    - **fingerprint_stats:** `mean_time` rows per source and for source 0.
 
-   Seeding takes 1m20s–2m15s.
+   Seeding takes 1m20s–4m20s, depending on the machine's load.
 2. **Runs every report the way the UI does.**
    - It connects as `rotten_ui` and uses `PREPARE` / `EXECUTE` with bound parameters.
    - Each run is in a read-only transaction with `statement_timeout = 15s` and `jit = off`, both transaction-local, as in the UI's `ReportRunner`. `beginReportTx` in `reports/report_tx_test.go` sets them up, and `TestBeginReportTxSettings` (in `make test`) checks them.
@@ -40,19 +44,18 @@ make test-perf PERF_TEST_ARGS='-run TestPerfReports'
      | Reports | Ranges | Budget |
      |---|---|---|
      | Every report but outliers | 3h | 2s |
-     | The fingerprint reports | 3h, 7d, 21d | 2s |
-     | top_by_calls, top_by_total_time, both replica_utilization reports | 24h and 7d | 15s |
+     | The fingerprint reports, and in `TestPerfManySources` fingerprint_all_sources, including a fingerprint on all 400 fleet sources | 3h, 7d, 21d | 2s |
+     | top_by_calls, top_by_total_time, unparsed_summary, both replica_utilization reports | 24h and 7d | 15s |
      | outliers, with and without a role or a match | 3h | 2s |
      | outliers, with and without a role or a match | 24h and 7d | 10s |
      | Both replica_utilization reports | 21d | 15s |
 
      15s is the UI's `statement_timeout`, so it's the hard failure line: past it, the user gets an error page instead of a report. It's a ceiling, not a target. The 7d numbers below show how much headroom each report has. outliers had 10s at every range (user decision, 2026-10-04, task 20261005-020000-2): its adaptive lookback read up to 7 days of history for rare fingerprints even at 3h (see "Adaptive lookback" below). Migration 0013's index brought 3h back under 2s (task 20261004-231500-1, see "Outliers history index" below), so 3h is 2s again. 24h and 7d stay at 10s. The UI shows a busy indicator while a report runs, so the wait is visible.
-4. **Decides on the index.**
-   - The test fails if `events_fingerprint_window` is missing.
-   - It logs index sizes and times a one-hour insert with and without the index, and with and without migration 0013's `events_source_fingerprint_window`, whose build (migration 0013's own Up section, rolled back) it also times.
-   - It drops the index inside a transaction it rolls back, then reruns the fingerprint reports without it, with only `events_source_fingerprint_window` left, and then with neither.
-   - It requires the index to be at least 2× faster than neither index for the typical fingerprint at 7d and 21d. `events_source_fingerprint_window` leads with the source, which these reports filter on too, so it serves them about as well (see "Outliers history index").
-   - Last, still inside that transaction, it rebuilds the index with migration 0008's own Up section and times the build.
+4. **Decides on the indexes.** Both tests do this, each on its own cases.
+   - The test fails if `events_source_fingerprint_window` (migration 0013) is missing.
+   - It logs index sizes. `TestPerfReports` also times a one-hour insert and the build (each migration's own Up section, rolled back) for both `events_source_fingerprint_window` and migration 0008's `events_fingerprint_window`.
+   - **Migration 0008's index.** In a transaction it rolls back, it toggles `events_fingerprint_window`: it drops it if the schema has it, or builds it with migration 0008's Up section if it doesn't (the schema since migration 0014). It reruns every report that reads events by fingerprint (the per-fingerprint reports, unparsed_summary and outliers) in that transaction before and after the toggle, and compares the two. A report *needs* the index if it's more than 2× **and** more than 25ms slower without it, or times out only without it. The test fails if the index exists and no report needs it (it costs an index entry per event), or if it doesn't exist and a report needs it, or, when it exists, if a report is over its budget without it.
+   - **Migration 0013's index.** Still in that transaction, with `events_fingerprint_window` gone, it drops `events_source_fingerprint_window` too and reruns the fingerprint reports with no index on the fingerprint. It requires `events_source_fingerprint_window` to be at least 2× faster for the typical fingerprint at 7d and 21d.
 
 The UI also offers a 6h preset and custom ranges up to 31 days. Those sit between, or beyond, the measured presets. Retention is 21 days, so a 31-day range covers at most 21 partitions.
 
@@ -116,7 +119,7 @@ Plan shapes:
 - **outliers:**
   - The same scan of events for the range, grouped by (logical source, fingerprint) only, with the source's text columns joined after. Grouping by them too made generic plans sort every in-range event by four text keys.
   - A second scan of events for the history before the range, grouped into one array of samples per (logical source, fingerprint), hash-joined to the range's groups. The median and the median absolute deviation come from `percentile_cont` over each array. Joining to the range's groups first invited one index probe per fingerprint, which was far slower.
-  - The worst window's start is looked up only for the at most 50 limited rows, through `events_fingerprint_window`. Carrying it through the aggregation (an ordered `array_agg`) sorted every in-range event, about 8s at 7d.
+  - The worst window's start is looked up only for the at most 50 limited rows, by source and fingerprint (through `events_source_fingerprint_window` since migration 0014 dropped `events_fingerprint_window`). Carrying it through the aggregation (an ordered `array_agg`) sorted every in-range event, about 8s at 7d.
   - A 7d range reads 7 days of history, so it scans 15 partitions. That's most of the time at 7d. A 3h range reads a day of history, then up to 7 days for fingerprints short of samples, one index-only probe per short group (see "Outliers history index" below).
   - With a match, see "Match filter" below.
 - **Adaptive lookback (outliers, task 20261005-020000-2):**
@@ -169,7 +172,7 @@ Plan shapes:
   - `context_events` reads the range's `event_context` rows once, through `event_context_source_window`, grouped by (controller_id, action_id, job_tag_id) with an `array_agg` of event ids. On cluster 13 at 7d that's about 2.5M rows but only 340 distinct contexts, so the regex runs 340 times instead of once per row. `matched_events` (materialized) unnests the matching contexts' event ids: 16 contexts and about 100k events at 7d. Before, the regex ran on every row, after joining every row to controllers, actions and job tags.
   - The range's aggregate flags each group with `bool_or` over a left join to `matched_events` (one hash, built once). Before, `bool_or(e.id in (select ...))` probed a hashed subplan for every in-range event.
   - The text match moved out of the aggregate's HAVING into `text_matched`, which probes `fingerprints` by id (`= any(array(...))`) for the groups without a matching context. At run time, the correlated lookup per group cost about the same. But the planner priced it per estimated group (about 100k), which pushed the custom plan's total cost past `jit_optimize_above_cost` (500k). That added 1.4–1.7s of JIT inlining and optimization at 7d. outliers' custom plan now costs about 487k, just under the line. Reports now run with JIT off (see "JIT off" above).
-  - outliers no longer carries an `array_agg` of event ids through its aggregate, which made the planner sort every in-range event. It looks up the event ids for the at most 50 limited rows through `events_fingerprint_window`, and it joins `sources` for the text columns last. When matching, its history scan is restricted to the matching (source, fingerprint) groups. top_by_calls and top_by_total_time keep the `array_agg`: their limited rows are the hottest fingerprints, so a second lookup costs more than carrying the arrays (about +0.4s at 7d without a match).
+  - outliers no longer carries an `array_agg` of event ids through its aggregate, which made the planner sort every in-range event. It looks up the event ids for the at most 50 limited rows by source and fingerprint (through `events_source_fingerprint_window` since migration 0014), and it joins `sources` for the text columns last. When matching, its history scan is restricted to the matching (source, fingerprint) groups. top_by_calls and top_by_total_time keep the `array_agg`: their limited rows are the hottest fingerprints, so a second lookup costs more than carrying the arrays (about +0.4s at 7d without a match).
   - Results are unchanged. On the perf data, outliers returned the same rows as before the rewrite for context, job tag, text, no-match and NULL regexes. top_by_calls and top_by_total_time returned the same rows for the controller#action regex at 3h and 7d. `match_filter_test.go`, which covers each kind of match, passes.
   - Before and after, interleaved in one run, cluster 13, 7d, median (custom / generic):
 
@@ -200,9 +203,9 @@ Plan shapes:
 | fingerprint_sources | 21d | 317ms / 7ms | 320ms / 3ms | 21/21 | 10 |
 | fingerprint_all_sources | 21d | 155ms / 6ms | 169ms / 2ms | 21/21 | 10 |
 
-- **fingerprint_all_sources** (added later, task 20261003-170000-2; numbers from its own run) isn't limited to cluster 13: it sums every source's events. It reads only `events_fingerprint_window` and the source-0 `fingerprint_stats` row, with no join to `logical_sources`, so it's cheaper than fingerprint_sources even for the hot fingerprint across all canvas clusters.
+- **fingerprint_all_sources** (added later, task 20261003-170000-2; numbers from its own run) isn't limited to cluster 13: it sums every source's events. It reads only events and the source-0 `fingerprint_stats` row, with no join to `logical_sources`. With no source to filter on, it reads `events_source_fingerprint_window` with an index-only btree skip scan (Postgres 18) over every source in each partition; see "Dropping `events_fingerprint_window`" below.
 
-- **Plan shape:** all of these use `events_fingerprint_window`. The hot fingerprint's custom plans BitmapAnd it with `(logical_source_id, calls)`. `fingerprint_contexts` then reads `event_context` by `event_id`.
+- **Plan shape:** all of these read `events_source_fingerprint_window`, one index scan per source, mostly index-only, since its INCLUDE columns cover what they read. Before migration 0014 they used `events_fingerprint_window`, and the hot fingerprint's custom plans BitmapAnd it with `(logical_source_id, calls)`. `fingerprint_contexts` then reads `event_context` by `event_id`.
 - **Role filter:** the `role=replica` variants of fingerprint_timeseries run at about half to two-thirds of the unfiltered time. For example, 21d hot is 209ms custom and 161ms generic.
 
 ### Findings
@@ -256,7 +259,7 @@ The backfill took about 7 minutes on 13M context rows. See `docs/database.md` fo
 
 ## Index decision: `events (fingerprint_id, observed_window_start)`
 
-**Decision: add it.** It's migration `0008_events_fingerprint_window.sql`, created on the partitioned parent, so every existing and future partition gets it.
+**Decision: add it.** It's migration `0008_events_fingerprint_window.sql`, created on the partitioned parent, so every existing and future partition gets it. **Reversed by migration 0014**, which drops it: migration 0013's index serves the same reports as well (see "Dropping `events_fingerprint_window`" below). This section is the original decision's record.
 
 **Why.** Without the index, `fingerprint_timeseries`, `fingerprint_contexts` and `fingerprint_sources` can only narrow by time and source. They read every heap page of the source's partitions in the range, so their cost grows with the size of the source, not with how many events the fingerprint has. A typical fingerprint costs as much as the hottest one.
 
@@ -302,7 +305,7 @@ Medians in the same run, with the index dropped inside a rolled-back transaction
 
 ### Side effect on outliers
 
-The `global_range_samples` CTE in `outliers.sql` used the new index. Task 20261004-221500-1 replaced it: outliers now builds its baseline from the events before the range. It uses `events_fingerprint_window` only to find the worst window of each listed row.
+The `global_range_samples` CTE in `outliers.sql` used the new index. Task 20261004-221500-1 replaced it: outliers now builds its baseline from the events before the range. It used `events_fingerprint_window` only to find the worst window of each listed row, until migration 0014.
 
 ## Outliers history index (migration 0013)
 
@@ -353,7 +356,74 @@ The same as 0008's: a plain `CREATE INDEX` on the partitioned parent, so a SHARE
 
 ### Effect on the per-fingerprint reports
 
-The new index leads with the source, which the per-fingerprint reports filter on too, so with `events_fingerprint_window` dropped they're about as fast as with it (the suite's last table: e.g. fingerprint_timeseries 21d typical 3ms / 1ms with only the new index, 3ms / 1ms with both, 732ms / 1.21s with neither). A backlog task covers whether to drop `events_fingerprint_window`.
+The new index leads with the source, which the per-fingerprint reports filter on too, so with `events_fingerprint_window` dropped they're about as fast as with it (the suite's last table: e.g. fingerprint_timeseries 21d typical 3ms / 1ms with only the new index, 3ms / 1ms with both, 732ms / 1.21s with neither). Migration 0014 dropped `events_fingerprint_window`; see the next section.
+
+## Dropping `events_fingerprint_window` (migration 0014)
+
+Task 20261005-123457-1 (user decision, 2026-10-04: drop it if nothing regresses). Migration `0014_drop_events_fingerprint_window.sql` drops 0008's index, leaving 0013's `(logical_source_id, fingerprint_id, observed_window_start) INCLUDE (observed_window_end, calls, time)`.
+
+### What read it
+
+Every query that reads `rotten.events` by fingerprint is a report; `internal/` only inserts events, and the UI runs only the report SQL.
+
+| Report | Filters by source? | Notes |
+|---|---|---|
+| fingerprint_timeseries, fingerprint_contexts, fingerprint_sources | yes, the cluster's (and role's) sources | one index scan per source |
+| fingerprint_all_sources | **no** | every source; the risk, since the remaining index leads with the source |
+| outliers (worst-window and event-id lookups for the listed rows) | yes, each row's source | |
+| unparsed_summary | yes, the cluster's sources | starts from the unparsed fingerprints |
+
+So the suite gained `unparsed_summary` cases, and `TestPerfManySources`, which adds a fleet of 400 more logical sources (see "Fleet" above) and a fingerprint on all of them (`fingerprint_all_sources … many`).
+
+### Results
+
+Each test's decision table, with 0013's index in both columns (median, custom / generic). Its "without" column is the schema with migration 0014, and its "with" column builds 0008's index again in the same rolled-back transaction.
+
+`TestPerfReports` (main seed):
+
+| Case | Without 0008's index | With it |
+|---|---|---|
+| fingerprint_timeseries 21d hot | 5ms / 5ms | 5ms / 4ms |
+| fingerprint_timeseries 21d typical | 3ms / 1ms | 3ms / 1ms |
+| fingerprint_contexts 21d hot | 387ms / 871ms | 484ms / 1.20s |
+| fingerprint_contexts 21d typical | 42ms / 48ms | 39ms / 54ms |
+| fingerprint_sources 21d hot | 4ms / 4ms | 6ms / 4ms |
+| fingerprint_all_sources 21d hot | 6ms / 5ms | 7ms / 171ms |
+| fingerprint_all_sources 21d typical | 2ms / 2ms | 3ms / 3ms |
+| unparsed_summary 24h | 2ms / 1ms | 2ms / 2ms |
+| unparsed_summary 7d | 3ms / 2ms | 4ms / 3ms |
+| outliers 3h | 850ms / 833ms | 865ms / 1.19s |
+| outliers 7d | 2.62s / 4.14s | 2.72s / 4.12s |
+
+`TestPerfManySources` (with the fleet; fingerprint_all_sources only):
+
+| Case | Without 0008's index | With it | With neither index |
+|---|---|---|---|
+| 3h hot / typical / many | 1ms / 1ms each | 1–2ms | 6–9ms |
+| 7d hot | 6ms / 5ms | 7ms / 8ms | 115ms / 361ms |
+| 7d typical | 5ms / 5ms | 2ms / 3ms | 95ms / 356ms |
+| 7d many (400 sources) | 11ms / 10ms | 11ms / 18ms | 104ms / 339ms |
+| 21d hot | 14ms / 13ms | 14ms / 171ms | 271ms / 996ms |
+| 21d typical | 11ms / 10ms | 3ms / 3ms | 254ms / 1.08s |
+| 21d many (400 sources) | 20ms / 29ms | 19ms / 53ms | 231ms / 938ms |
+
+No report is more than 2× and 25ms slower without it. fingerprint_all_sources typical is a few milliseconds slower with the fleet (one index search per run of sources in each partition, rather than one); the other differences above a few milliseconds go both ways and change from run to run. The full tables are in the suite's output. The red run, on the schema before 0014 with the fleet in the main seed and the index dropped in the transaction instead, gave the same picture (e.g. fingerprint_all_sources 21d hot 17ms / 15ms without it, 27ms / 225ms with it). With the fleet, unparsed_summary 7d generic took about 2.1s with or without the index, another symptom of the skewed per-source estimate (see "Known limits"); it's 2–3ms on the main seed.
+
+**fingerprint_all_sources needs Postgres 18's skip scan.** With no source to filter on, it reads `events_source_fingerprint_window` with an index-only skip scan: about 9–19 index searches per daily partition, though each partition holds 408 sources. Without any index on the fingerprint it takes 0.2–0.6s custom and 0.9–1.6s generic at 21d (hot, typical and many, over three runs), and Postgres 14–17, which have no skip scan, would be at best somewhat better than that: a full scan of the index or of the partitions. The rotten database runs only Postgres 18 (see [plan.md](plan.md)), so this is a constraint on its version, not a regression.
+
+### Savings
+
+- **Size:** `events_fingerprint_window` was 401 MB at 10.4M events, against a 926 MB heap and 872 MB for 0013's index.
+- **Ingest:** one btree insert per event fewer. One hour of windows (about 20,400 events), median of 5 rolled-back runs, with it and without it: 634ms and 523ms, 482ms and 611ms, 562ms and 546ms, 579ms and 524ms, and 642ms and 754ms in five suite runs at load average 20–30. That's within run-to-run noise here; earlier interleaved measurements put one such index at about 10–20% of insert time.
+- **Build time if it's ever restored:** 3.4–5.8s over 10–10.4M events (0013's: 5.8–7.4s).
+
+### Migration lock
+
+`DROP INDEX` on the partitioned parent drops the index on every partition, holding an `ACCESS EXCLUSIVE` lock on `rotten.events` and all its partitions. `DROP INDEX CONCURRENTLY` isn't supported on a partitioned index. Nothing is rebuilt, so the lock is held only briefly, but the drop first waits for running reports, and reports and inserts queue behind it. See [database.md](database.md).
+
+### The decision check
+
+The suite now requires 0013's index and checks 0008's in both directions: it fails if `events_fingerprint_window` exists while no report needs it, or if it's absent while one does (more than 2× and 25ms slower without it, or timing out only without it), and, when it exists, if a report is over budget without it. Both sides are measured in the same transaction, the schema's own state first and then the toggled one: comparing against the main run instead flagged `unparsed_summary 24h` once each way (2ms in one pass, 37–48ms in the other), since the timed inserts in between leave dead rows in the latest partition.
 
 ## Red notes
 
@@ -364,6 +434,7 @@ The new index leads with the source, which the per-fingerprint reports filter on
 - **Adaptive lookback (task 20261005-020000-2).** No version of the extension fit the old 2s budget at 3h: per-group probes took about 7.5s, and the scan in `outliers.sql` about 2.5s. The user raised outliers' budget to 10s at every range.
 - **Match red (task 20261005-020000-1).** Tightening the outliers 7d match budget to 5s failed on time, not on an error: 7.45s custom and 8.57s generic. It passed after the match filter rewrite above.
 - **Outliers history index (task 20261004-231500-1).** Tightening the outliers 3h budgets back to 2s failed on time: outliers 3h took 2.10s custom (and 1.82s generic) at load average 30–69. It passed after migration 0013 and the per-group `older` CTE.
+- **Index drop (task 20261005-123457-1).** On the schema before migration 0014, the reversed decision check failed with "index events_fingerprint_window exists, but no report that reads events by fingerprint is more than 2× and 25ms slower without it". `TestEventsFingerprintWindowDropped` in `internal/migrate` failed while the index was there. Both passed after migration 0014.
 - **21d red (task 20261003-190000-1).** Adding 21d replica_utilization cases timed out replica_utilization_by_controller_action in both plans. It passed after migration 0011.
 
 ## Known limits
@@ -372,6 +443,8 @@ The new index leads with the source, which the per-fingerprint reports filter on
 - **The other source-wide reports at 7d** take 0.5–2.1s with custom plans and up to 3.2s with generic plans, and up to 3.9s with a match. They grow linearly too.
 - **outliers at 7d** takes about 3.5–5.2s custom and 4.8s generic without a match, and about 4.6s and 4.8s with one, because it also reads 7 days of history. It grows linearly in the range's events plus the history's.
 - **outliers at 3h and 24h** takes about 0.8s and 1.3s, because fingerprints short of samples look up to 7 days back, one index probe per short group (see "Outliers history index"). 24h's budget stays at 10s.
+- **Match reports' generic plans with hundreds of sources.** With the fleet's 400 sources seeded alongside (as in `TestPerfManySources`), the generic plans of top_by_calls, top_by_total_time and outliers with a match take about 2.1–2.9s at 3h (budget 2s) and time out at 24h and 7d, with or without `events_fingerprint_window`. The planner's per-source estimate drops (about 46 events where cluster 13 has about 35,000 in 3h), so it nested-loops the aggregate against the matched CTE. Custom plans are fine. Task 20261005-150200-1 tracks it. `TestPerfReports` seeds no fleet, so it doesn't catch this yet.
+- **fingerprint_all_sources relies on btree skip scan**, so on Postgres 18 only (see "Dropping `events_fingerprint_window`").
 - **JIT** is off for reports (see "JIT off" above), so plan costs crossing `jit_above_cost` or `jit_optimize_above_cost` as data grows no longer add compile time. Other queries on the rotten database keep the server's JIT settings.
 - **Not covered:**
   - `fingerprint_stats` is seeded with `mean_time` rows only.

@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"slices"
@@ -33,15 +34,42 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// perfSeedFleetDaySQL seeds a day of the fleet's hourly windows: on each
+// fleet source, perfManyFP and one pool fingerprint picked from the source
+// and the hour. It's deterministic. $3 and $4 are the first and last fleet
+// logical source ids; each one's physical id is its logical id plus $5. $6
+// is perfManyFP and $7 perfFleetPool; the pool's ids follow perfManyFP.
+const perfSeedFleetDaySQL = `
+insert into rotten.events (fingerprint_id, logical_source_id, physical_source_id,
+    observed_window_start, observed_window_end, recorded_at, calls, time)
+select
+  case when k = 0 then $6::bigint
+       else $6::bigint + 1 + (s.id * 7 + extract(epoch from w.ws)::bigint / 3600) % $7::int end,
+  s.id,
+  s.id + $5::int,
+  w.ws,
+  w.ws + interval '5 minutes',
+  w.ws + interval '5 minutes',
+  10 + s.id % 50 + k,
+  (10 + s.id % 50 + k) * 0.3
+from generate_series($1::timestamptz, $2::timestamptz - interval '1 hour', interval '1 hour') w(ws)
+cross join generate_series($3::int, $4::int) s(id)
+cross join generate_series(0, 1) k`
+
 const (
 	perfDefaultEvents = 10_000_000
 	perfDays          = 21
 	perfWindow        = 5 * time.Minute
 	perfUITimeout     = "15s"
-	perfIndex         = "events_fingerprint_window"
-	perfProject       = "canvas"
-	perfCluster       = "13"
-	perfEnvironment   = "production"
+	// The index the per-fingerprint reports and outliers read events by.
+	perfIndex = "events_source_fingerprint_window"
+	// Migration 0008's index on (fingerprint_id, observed_window_start),
+	// which migration 0014 drops. The suite fails if it's back without a
+	// report that needs it.
+	perfDroppedIndex = "events_fingerprint_window"
+	perfProject      = "canvas"
+	perfCluster      = "13"
+	perfEnvironment  = "production"
 	// The canvas fingerprint pool. Index 1 is the hottest fingerprint, so it
 	// has the most events: the worst case for a per-fingerprint report.
 	perfCanvasPool = 15000
@@ -49,6 +77,17 @@ const (
 	// A mid-popularity fingerprint: it shows up in about a third of cluster
 	// 13's windows, where the hot one shows up in all of them.
 	perfTypicalFP = 200
+	// The fleet: many small logical sources (project "fleet", one cluster
+	// each), so a fingerprint can be on hundreds of them and the index that
+	// leads with the source has hundreds of distinct leading values per
+	// partition. Each harvests hourly: perfManyFP, which every fleet source
+	// runs, and one fingerprint from a pool of perfFleetPool.
+	perfFleetSources = 400
+	perfFleetPool    = 500
+	perfManyFP       = perfCanvasPool + perfBridgePool + 1
+	// Fingerprints with id % 1000 = this are marked unparsed, for
+	// unparsed_summary: 15 canvas and 5 bridge ones.
+	perfUnparsedMod = 7
 )
 
 // perfAnchor is the end of the seeded data and of every report range. It's
@@ -128,10 +167,15 @@ type perfFixture struct {
 	anchor    time.Time
 	hotFP     int64
 	typicalFP int64
-	events    int64
-	contexts  int64
-	seedTime  time.Duration
-	pgVersion string
+	// fleet is whether the fleet was seeded (TestPerfManySources only), and
+	// manyFP, then, is on every fleet source, hundreds of logical sources.
+	fleet       bool
+	manyFP      int64
+	events      int64
+	fleetEvents int64
+	contexts    int64
+	seedTime    time.Duration
+	pgVersion   string
 }
 
 func perfEventTarget(t *testing.T) int {
@@ -198,7 +242,11 @@ cross join lateral (select (e.fingerprint_id + k.n) % 5 = 0 as job) j
 where e.observed_window_start >= $1::timestamptz
   and e.observed_window_start < $2::timestamptz`
 
-func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
+// seedPerf seeds the perf data, with the fleet's hundreds of logical sources
+// if fleet is set. Only TestPerfManySources seeds them: they skew the
+// planner's per-source estimates for the source-wide reports, which
+// task 20261005-150200-1 covers.
+func seedPerf(t *testing.T, db *testdb.DB, fleet bool) perfFixture {
 	t.Helper()
 	ctx := context.Background()
 	started := time.Now()
@@ -223,6 +271,10 @@ func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
 	for d := firstDay; d.Before(anchor); d = d.AddDate(0, 0, 1) {
 		days = append(days, d)
 	}
+	lastFP := perfCanvasPool + perfBridgePool
+	if fleet {
+		lastFP = perfManyFP + perfFleetPool
+	}
 	var setup []string
 	setup = append(setup,
 		fmt.Sprintf(`select public.create_partition_time('rotten.events', array[%s]::timestamptz[])`, perfTimeList(days)),
@@ -230,8 +282,9 @@ func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
 		`insert into rotten.fingerprints (id, fingerprint, normalized)
 		 select i, 'select perf_' || i || ' from t where id = ' || i,
 		        'SELECT perf_' || i || ', ' || repeat('col, ', 30) || 'x FROM t WHERE id = $1 AND kind = $2'
-		 from generate_series(1, `+strconv.Itoa(perfCanvasPool+perfBridgePool)+`) i`,
-		`select setval('rotten.fingerprints_id_seq', `+strconv.Itoa(perfCanvasPool+perfBridgePool)+`)`,
+		 from generate_series(1, `+strconv.Itoa(lastFP)+`) i`,
+		`select setval('rotten.fingerprints_id_seq', `+strconv.Itoa(lastFP)+`)`,
+		`update rotten.fingerprints set unparsed = true where id <= `+strconv.Itoa(perfCanvasPool+perfBridgePool)+` and id % 1000 = `+strconv.Itoa(perfUnparsedMod),
 		`insert into rotten.controllers (id, controller) select i, 'Controller' || i from generate_series(1, 200) i`,
 		`insert into rotten.actions (id, action) select i, 'action_' || i from generate_series(1, 50) i`,
 		`insert into rotten.job_tags (id, job_tag) select i, 'Job' || i || '#perform' from generate_series(1, 100) i`,
@@ -243,7 +296,9 @@ func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
 		}
 	}
 	seenLogical := map[int]bool{}
+	lastLogical, lastPhysical := 0, 0
 	for _, s := range streams {
+		lastLogical, lastPhysical = max(lastLogical, s.logicalID), max(lastPhysical, s.physicalID)
 		if !seenLogical[s.logicalID] {
 			seenLogical[s.logicalID] = true
 			if _, err := conn.Exec(ctx, `insert into rotten.logical_sources (id, project, environment, cluster, role) values ($1, $2, $3, $4, $5)`,
@@ -257,6 +312,20 @@ func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
 		if _, err := conn.Exec(ctx, `insert into public.perf_streams values ($1, $2, $3, $4, $5)`,
 			s.logicalID, s.physicalID, s.fpBase, s.pool, s.samples); err != nil {
 			t.Fatal(err)
+		}
+	}
+
+	fleetFirst, fleetLast, fleetPhysicalOffset := lastLogical+1, lastLogical+perfFleetSources, lastPhysical-lastLogical
+	if fleet {
+		if _, err := conn.Exec(ctx, `insert into rotten.logical_sources (id, project, environment, cluster, role)
+			select i, 'fleet', $3, 'f' || i, $4 from generate_series($1::int, $2::int) i`,
+			fleetFirst, fleetLast, perfEnvironment, testdb.ReportPrimaryRole); err != nil {
+			t.Fatalf("perf fleet logical sources: %v", err)
+		}
+		if _, err := conn.Exec(ctx, `insert into rotten.physical_sources (id, fqdn)
+			select i + $3::int, 'fleet-f' || i || '.perf.example' from generate_series($1::int, $2::int) i`,
+			fleetFirst, fleetLast, fleetPhysicalOffset); err != nil {
+			t.Fatalf("perf fleet physical sources: %v", err)
 		}
 	}
 
@@ -303,6 +372,12 @@ func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
 					errs <- fmt.Errorf("seed events %s: %w", day, err)
 					continue
 				}
+				if fleet {
+					if _, err := c.Exec(ctx, perfSeedFleetDaySQL, day, end, fleetFirst, fleetLast, fleetPhysicalOffset, perfManyFP, perfFleetPool); err != nil {
+						errs <- fmt.Errorf("seed fleet events %s: %w", day, err)
+						continue
+					}
+				}
 				if _, err := c.Exec(ctx, perfSeedContextSQL, day, end); err != nil {
 					errs <- fmt.Errorf("seed contexts %s: %w", day, err)
 				}
@@ -336,8 +411,11 @@ func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
 		}
 	}
 
-	f := perfFixture{anchor: anchor, hotFP: 1, typicalFP: perfTypicalFP, seedTime: time.Since(started)}
-	if err := conn.QueryRow(ctx, "select count(*) from rotten.events").Scan(&f.events); err != nil {
+	f := perfFixture{anchor: anchor, hotFP: 1, typicalFP: perfTypicalFP, fleet: fleet, seedTime: time.Since(started)}
+	if fleet {
+		f.manyFP = perfManyFP
+	}
+	if err := conn.QueryRow(ctx, "select count(*), count(*) filter (where logical_source_id >= $1) from rotten.events", fleetFirst).Scan(&f.events, &f.fleetEvents); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.QueryRow(ctx, "select count(*) from rotten.event_context").Scan(&f.contexts); err != nil {
@@ -353,8 +431,17 @@ func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
 	if populated != perfDays {
 		t.Fatalf("events are in %d partitions, want %d", populated, perfDays)
 	}
-	if f.events < int64(target)*9/10 || f.events > int64(target)*11/10 {
-		t.Fatalf("seeded %d events, want about %d", f.events, target)
+	if main := f.events - f.fleetEvents; main < int64(target)*9/10 || main > int64(target)*11/10 {
+		t.Fatalf("seeded %d events besides the fleet's, want about %d", main, target)
+	}
+	if fleet {
+		var manySources int
+		if err := conn.QueryRow(ctx, `select count(distinct logical_source_id) from rotten.events where fingerprint_id = $1`, f.manyFP).Scan(&manySources); err != nil {
+			t.Fatal(err)
+		}
+		if manySources != perfFleetSources {
+			t.Fatalf("fingerprint %d is on %d logical sources, want %d", f.manyFP, manySources, perfFleetSources)
+		}
 	}
 	for _, fp := range []int64{f.hotFP, f.typicalFP} {
 		var n int64
@@ -364,8 +451,12 @@ func seedPerf(t *testing.T, db *testdb.DB) perfFixture {
 		}
 		t.Logf("fingerprint %d has %d events on %s cluster %s", fp, n, perfProject, perfCluster)
 	}
-	t.Logf("seeded %d events and %d event_context rows in %d partitions in %s (Postgres %s)",
-		f.events, f.contexts, populated, f.seedTime.Round(time.Second), f.pgVersion)
+	fleetNote := ""
+	if fleet {
+		fleetNote = fmt.Sprintf(" (%d of them on %d fleet sources)", f.fleetEvents, perfFleetSources)
+	}
+	t.Logf("seeded %d events%s and %d event_context rows in %d partitions in %s (Postgres %s)",
+		f.events, fleetNote, f.contexts, populated, f.seedTime.Round(time.Second), f.pgVersion)
 	return f
 }
 
@@ -697,6 +788,9 @@ func perfCases(f perfFixture) []perfCase {
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
 		add("replica_utilization_by_job "+r.label, "replica_utilization_by_job.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
+		// Starts from the unparsed fingerprints and reads their events by
+		// fingerprint and source.
+		add("unparsed_summary "+r.label, "unparsed_summary.sql", r.start, r.budget, r.runs, with(r.start, end, nil)...)
 		// A match on a few controller#action contexts and no query text, so
 		// matching the contexts does real work.
 		add("top_by_calls "+r.label+" match", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, "^controller1[0-9]#")...)
@@ -731,27 +825,64 @@ func perfCases(f perfFixture) []perfCase {
 			add("fingerprint_sources "+r.label+" "+fp.label, "fingerprint_sources.sql", r.start, r.budget, 5, with(fp.id, r.start, end, nil)...)
 			add("fingerprint_all_sources "+r.label+" "+fp.label, "fingerprint_all_sources.sql", r.start, r.budget, 5, fp.id, r.start, end)
 		}
+		// fingerprint_all_sources has no source filter. With the fleet, this
+		// fingerprint is on all its hundreds of sources, and the canvas ones
+		// above are on a few of them, among hundreds that don't have them.
+		if f.fleet {
+			add("fingerprint_all_sources "+r.label+" many", "fingerprint_all_sources.sql", r.start, r.budget, 5, f.manyFP, r.start, end)
+		}
 	}
 	return cases
 }
 
 func TestPerfReports(t *testing.T) {
 	db := testdb.StartRotten(t)
-	f := seedPerf(t, db)
+	f := seedPerf(t, db, false)
 	conn := db.Connect(t)
 	ui := db.ConnectAs(t, testdb.UIRole)
 	partitionsOf := perfPartitionsOf(t, conn)
+	cases := perfCases(f)
+	runPerfBudgets(t, conn, ui, f, cases, partitionsOf)
 
-	var hasIndex bool
-	if err := conn.QueryRow(context.Background(),
-		"select exists (select from pg_class where relname = $1 and relnamespace = 'rotten'::regnamespace)", perfIndex).Scan(&hasIndex); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("index %s present: %v", perfIndex, hasIndex)
+	requirePerfIndex(t, conn)
+	logPerfIndexSizes(t, conn)
+	insertNow, inserted := timePerfInserts(t, conn, f.anchor)
+	logOutliersIndexCost(t, conn, f, insertNow, inserted)
+	perfIndexDecision(t, conn, f, cases, partitionsOf, insertNow, inserted)
+}
 
-	var lines []string
-	withIndex := map[string]perfResult{}
+// TestPerfManySources seeds the same data plus the fleet: 400 more logical
+// sources, with a fingerprint on all of them. fingerprint_all_sources has no
+// source filter, and events_source_fingerprint_window leads with the source,
+// so it relies on btree skip scan over hundreds of sources in each partition.
+// It runs that report and the index decision for it. The fleet stays out of
+// TestPerfReports because it skews the source-wide reports' generic plans
+// (task 20261005-150200-1).
+func TestPerfManySources(t *testing.T) {
+	db := testdb.StartRotten(t)
+	f := seedPerf(t, db, true)
+	conn := db.Connect(t)
+	ui := db.ConnectAs(t, testdb.UIRole)
+	partitionsOf := perfPartitionsOf(t, conn)
+	var cases []perfCase
 	for _, c := range perfCases(f) {
+		if strings.HasPrefix(c.name, "fingerprint_all_sources ") {
+			cases = append(cases, c)
+		}
+	}
+	runPerfBudgets(t, conn, ui, f, cases, partitionsOf)
+
+	requirePerfIndex(t, conn)
+	logPerfIndexSizes(t, conn)
+	perfIndexDecision(t, conn, f, cases, partitionsOf, 0, 0)
+}
+
+// runPerfBudgets runs each case under both plan cache modes, as the UI does,
+// and checks its pruning and its budget.
+func runPerfBudgets(t *testing.T, conn, ui *pgx.Conn, f perfFixture, cases []perfCase, partitionsOf map[string]string) {
+	t.Helper()
+	var lines []string
+	for _, c := range cases {
 		for _, mode := range perfModes {
 			r := runPerfCase(t, ui, c, mode, partitionsOf)
 			if !r.timedOut {
@@ -760,46 +891,49 @@ func TestPerfReports(t *testing.T) {
 			if r.median > c.budget {
 				t.Errorf("%s (%s): median %s over budget %s (runs %v)", c.name, mode, r.median, c.budget, r.runs)
 			}
-			withIndex[c.name+" "+mode] = r
 			lines = append(lines, perfLine(c, mode, r))
 		}
 	}
 	t.Logf("results (anchor %s):\n%s", f.anchor.Format(time.RFC3339), strings.Join(lines, "\n"))
+}
 
-	// The index decision. events (fingerprint_id, observed_window_start)
-	// is for the per-fingerprint reports, so rerun those with it dropped in
-	// a transaction that's rolled back, and require an index on the
-	// fingerprint to win clearly for a typical fingerprint on the longer
-	// ranges. The hot fingerprint, which has an event in nearly every
-	// window, gains less; it's logged. Migration 0013's index, (source,
-	// fingerprint, window) for outliers, serves these reports too, so the
-	// reports are rerun with only it, which is logged, and then with
-	// neither, which is what the requirement compares against.
-	if !hasIndex {
-		t.Fatalf("index %s is missing; the per-fingerprint reports read every page of the source's partitions without it", perfIndex)
+func requirePerfIndex(t *testing.T, conn *pgx.Conn) {
+	t.Helper()
+	t.Logf("index %s present: %v; %s present: %v", perfIndex, perfHasIndex(t, conn, perfIndex), perfDroppedIndex, perfHasIndex(t, conn, perfDroppedIndex))
+	if !perfHasIndex(t, conn, perfIndex) {
+		t.Fatalf("index %s is missing; the per-fingerprint reports and outliers read events by source and fingerprint through it", perfIndex)
 	}
+}
+
+// perfIndexDecision checks both indexes on the fingerprint against the
+// cases. Every report that reads events by fingerprint (the per-fingerprint
+// reports, unparsed_summary and outliers) reads them through
+// events_source_fingerprint_window, which leads with the source. Migration
+// 0008's events_fingerprint_window, on the fingerprint alone, costs an index
+// entry per event; migration 0014 drops it. So rerun those reports with
+// 0008's index toggled, in a transaction that's rolled back: dropped if the
+// schema has it, built with 0008's own Up section if it doesn't. It must be
+// there exactly when a report needs it: one is clearly slower without it,
+// or over its budget. If insertNow is set (the insert time on the schema as
+// it is), it also times inserts with the index toggled.
+func perfIndexDecision(t *testing.T, conn *pgx.Conn, f perfFixture, cases []perfCase, partitionsOf map[string]string, insertNow time.Duration, inserted int64) {
+	t.Helper()
 	ctx := context.Background()
-	logPerfIndexSizes(t, conn)
-	insertWith, inserted := timePerfInserts(t, conn, f.anchor)
-	logOutliersIndexCost(t, conn, f, insertWith, inserted)
+	hasDropped := perfHasIndex(t, conn, perfDroppedIndex)
+	timeInserts := insertNow > 0
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "drop index rotten."+perfIndex); err != nil {
-		t.Fatal(err)
-	}
-	insertWithout, _ := timePerfInserts(t, tx, f.anchor)
-	t.Logf("inserting one hour of windows (%d events): %s with %s, %s without", inserted, insertWith.Round(time.Millisecond), perfIndex, insertWithout.Round(time.Millisecond))
-	rerun := func() map[string]perfResult {
+	rerun := func(include func(perfCase) bool) map[string]perfResult {
 		t.Helper()
 		if _, err := tx.Exec(ctx, "set local role "+testdb.UIRole); err != nil {
 			t.Fatal(err)
 		}
 		out := map[string]perfResult{}
-		for _, c := range perfCases(f) {
-			if strings.HasPrefix(c.name, "fingerprint_") {
+		for _, c := range cases {
+			if include(c) {
 				for _, mode := range perfModes {
 					out[c.name+" "+mode] = runPerfCase(t, tx, c, mode, partitionsOf)
 				}
@@ -810,36 +944,151 @@ func TestPerfReports(t *testing.T) {
 		}
 		return out
 	}
-	only0013 := rerun()
-	if _, err := tx.Exec(ctx, "drop index rotten.events_source_fingerprint_window"); err != nil {
-		t.Fatal(err)
+	// Compare against the schema's own state rerun in the same transaction,
+	// not the budget run: the timed inserts (rolled back) leave dead
+	// rows in the latest partition, and autovacuum may visit it, so a report
+	// on the latest day can run differently now (e.g. unparsed_summary 24h,
+	// 2ms in one pass and 40ms in the other, either way round).
+	baseline := rerun(perfReadsByFingerprint)
+	var with0008, without0008 map[string]perfResult
+	var insertWith, insertWithout time.Duration
+	if hasDropped {
+		if _, err := tx.Exec(ctx, "drop index rotten."+perfDroppedIndex); err != nil {
+			t.Fatal(err)
+		}
+		if timeInserts {
+			insertWith = insertNow
+			insertWithout, _ = timePerfInserts(t, tx, f.anchor)
+		}
+		with0008, without0008 = baseline, rerun(perfReadsByFingerprint)
+	} else {
+		build := perfMigrationUp(t, "../migrations/0008_events_fingerprint_window.sql")
+		began := time.Now()
+		if _, err := tx.Exec(ctx, build); err != nil {
+			t.Fatalf("build %s: %v", perfDroppedIndex, err)
+		}
+		t.Logf("building %s (migration 0008) on %d events took %s, holding a SHARE lock on rotten.events and its partitions throughout",
+			perfDroppedIndex, f.events, time.Since(began).Round(time.Millisecond))
+		if timeInserts {
+			insertWithout = insertNow
+			insertWith, _ = timePerfInserts(t, tx, f.anchor)
+		}
+		with0008, without0008 = rerun(perfReadsByFingerprint), baseline
+		if _, err := tx.Exec(ctx, "drop index rotten."+perfDroppedIndex); err != nil {
+			t.Fatal(err)
+		}
 	}
-	neither := rerun()
-	lines = nil
-	for _, c := range perfCases(f) {
-		if !strings.HasPrefix(c.name, "fingerprint_") {
+	if timeInserts {
+		t.Logf("inserting one hour of windows (%d events): %s with %s, %s without", inserted, insertWith.Round(time.Millisecond), perfDroppedIndex, insertWithout.Round(time.Millisecond))
+	}
+	var lines []string
+	var needs []string
+	for _, c := range cases {
+		if !perfReadsByFingerprint(c) {
 			continue
 		}
 		for _, mode := range perfModes {
-			without, other, with := neither[c.name+" "+mode], only0013[c.name+" "+mode], withIndex[c.name+" "+mode]
-			lines = append(lines, fmt.Sprintf("| %s | %s | %s | %s | %s |", c.name, strings.TrimSuffix(strings.TrimPrefix(mode, "force_"), "_plan"),
-				without.median.Round(time.Millisecond), other.median.Round(time.Millisecond), with.median.Round(time.Millisecond)))
-			if strings.Contains(c.name, " typical") && !strings.Contains(c.name, " 3h ") && with.median*2 > without.median {
-				t.Errorf("%s (%s): with %s %s, without either index %s; want at least twice as fast", c.name, mode, perfIndex, with.median, without.median)
+			key := c.name + " " + mode
+			with, without := with0008[key], without0008[key]
+			lines = append(lines, fmt.Sprintf("| %s | %s | %s | %s |", c.name, perfShortMode(mode),
+				perfMedian(without), perfMedian(with)))
+			if hasDropped && (without.timedOut || without.median > c.budget) {
+				t.Errorf("%s (%s): median %s without %s, over budget %s", c.name, mode, perfMedian(without), perfDroppedIndex, c.budget)
+			}
+			if perfNeedsIndex(with, without) {
+				needs = append(needs, fmt.Sprintf("%s (%s): %s without it (%s), %s with it (%s)", c.name, mode,
+					perfMedian(without), perfAccessPaths(without), perfMedian(with), perfAccessPaths(with)))
 			}
 		}
 	}
-	t.Logf("per-fingerprint reports without either index, with only events_source_fingerprint_window, and with both:\n| case | plan | neither | 0013's only | both |\n%s", strings.Join(lines, "\n"))
-
-	// What migration 0008 costs on a database this size: rebuild the index
-	// with the migration's own statement, still inside the transaction.
-	build := perfMigrationUp(t, "../migrations/0008_events_fingerprint_window.sql")
-	began := time.Now()
-	if _, err := tx.Exec(ctx, build); err != nil {
-		t.Fatalf("rebuild %s: %v", perfIndex, err)
+	t.Logf("reports that read events by fingerprint, without and with %s (both have %s):\n| case | plan | without | with |\n%s",
+		perfDroppedIndex, perfIndex, strings.Join(lines, "\n"))
+	switch {
+	case hasDropped && len(needs) == 0:
+		t.Errorf("index %s exists, but no report that reads events by fingerprint is more than 2× and %s slower without it; "+
+			"it costs an index entry per event, so drop it (migration 0014)", perfDroppedIndex, perfIndexNoise)
+	case !hasDropped && len(needs) > 0:
+		t.Errorf("without %s (dropped by migration 0014), these are more than 2× and %s slower than with it:\n%s",
+			perfDroppedIndex, perfIndexNoise, strings.Join(needs, "\n"))
 	}
-	t.Logf("building %s (migration 0008) on %d events took %s, holding a SHARE lock on rotten.events and its partitions throughout",
-		perfIndex, f.events, time.Since(began).Round(time.Millisecond))
+
+	// Without any index on the fingerprint, the per-fingerprint reports read
+	// every page of the source's partitions in the range. Require
+	// events_source_fingerprint_window to win clearly for a typical
+	// fingerprint on the longer ranges. The hot fingerprint, which has an
+	// event in nearly every window, gains less; it's logged.
+	if _, err := tx.Exec(ctx, "drop index rotten."+perfIndex); err != nil {
+		t.Fatal(err)
+	}
+	isFingerprintReport := func(c perfCase) bool { return strings.HasPrefix(c.name, "fingerprint_") }
+	neither := rerun(isFingerprintReport)
+	lines = nil
+	for _, c := range cases {
+		if !isFingerprintReport(c) {
+			continue
+		}
+		for _, mode := range perfModes {
+			without, with := neither[c.name+" "+mode], without0008[c.name+" "+mode]
+			lines = append(lines, fmt.Sprintf("| %s | %s | %s | %s |", c.name, perfShortMode(mode), perfMedian(without), perfMedian(with)))
+			if strings.Contains(c.name, " typical") && !strings.Contains(c.name, " 3h ") && with.median*2 > without.median {
+				t.Errorf("%s (%s): with %s %s, without an index on the fingerprint %s; want at least twice as fast", c.name, mode, perfIndex, with.median, without.median)
+			}
+		}
+	}
+	t.Logf("per-fingerprint reports without an index on the fingerprint, and with %s:\n| case | plan | neither | %s |\n%s",
+		perfIndex, perfIndex, strings.Join(lines, "\n"))
+}
+
+// perfIndexNoise is how much slower than with events_fingerprint_window a
+// report must be without it, besides twice as slow, to need it. A few
+// milliseconds either way is run-to-run noise on a page that runs four
+// reports.
+const perfIndexNoise = 25 * time.Millisecond
+
+// perfNeedsIndex reports whether a report is clearly slower without an index
+// than with it.
+func perfNeedsIndex(with, without perfResult) bool {
+	if with.timedOut || without.timedOut {
+		return without.timedOut && !with.timedOut
+	}
+	return without.median > 2*with.median && without.median-with.median > perfIndexNoise
+}
+
+// perfReadsByFingerprint is whether a case's report looks up events by
+// fingerprint, the reads an index on it could serve.
+func perfReadsByFingerprint(c perfCase) bool {
+	for _, p := range []string{"fingerprint_", "unparsed_summary ", "outliers "} {
+		if strings.HasPrefix(c.name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func perfHasIndex(t *testing.T, conn *pgx.Conn, name string) bool {
+	t.Helper()
+	var ok bool
+	if err := conn.QueryRow(context.Background(),
+		"select exists (select from pg_class where relname = $1 and relnamespace = 'rotten'::regnamespace)", name).Scan(&ok); err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+func perfAccessPaths(r perfResult) string {
+	paths := slices.Sorted(maps.Keys(r.summary.accessPaths))
+	return strings.Join(paths, "; ")
+}
+
+func perfShortMode(mode string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(mode, "force_"), "_plan")
+}
+
+func perfMedian(r perfResult) string {
+	if r.timedOut {
+		return "timed out"
+	}
+	return r.median.Round(time.Millisecond).String()
 }
 
 // logOutliersIndexCost logs what migration 0013's index costs: inserts

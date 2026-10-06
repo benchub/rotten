@@ -509,6 +509,72 @@ func TestEventsSourceFingerprintWindowIndex(t *testing.T) {
 	}
 }
 
+// Migration 0014 drops migration 0008's events_fingerprint_window, on
+// (fingerprint_id, observed_window_start): every report that read it reads
+// events_source_fingerprint_window instead (docs/perf.md). Dropping the
+// partitioned index drops it from every partition, and events_source_
+// fingerprint_window stays.
+func TestEventsFingerprintWindowDropped(t *testing.T) {
+	db := testdb.StartRottenEmpty(t)
+	ctx := context.Background()
+	dsn := db.DSNAs(t, testdb.OwnerRole)
+
+	through0013 := copyMigrations(t)
+	for p := range through0013 {
+		if path.Ext(p) == ".sql" && p > eventsSourceFingerprintWindowMigration {
+			delete(through0013, p)
+		}
+	}
+	if _, err := migrate.UpWith(ctx, dsn, through0013, migrations.Permissions); err != nil {
+		t.Fatalf("migrate to 0013: %v", err)
+	}
+	conn := db.Connect(t)
+	// A dated partition made before the drop, besides the default one, made
+	// by the owner as pg_partman's maintenance would.
+	if _, err := db.ConnectAs(t, testdb.OwnerRole).Exec(ctx, `select public.create_partition_time('rotten.events', array[now() + interval '400 days'])`); err != nil {
+		t.Fatalf("create a later partition: %v", err)
+	}
+	// Every index on rotten.events or a partition of it, keyed on exactly
+	// (fingerprint_id, observed_window_start), and how many carry 0013's index.
+	const fingerprintIndexes = `
+		select coalesce(string_agg((x.indexrelid::regclass)::text, ', ' order by (x.indexrelid::regclass)::text), ''),
+		       (select count(*) from pg_index y join pg_inherits yi on yi.inhrelid = y.indexrelid
+		         where yi.inhparent = 'rotten.events_source_fingerprint_window'::regclass)
+		from pg_index x
+		cross join lateral (
+		  select array_agg(a.attname::text order by k.ord) as cols
+		  from unnest(x.indkey::int2[]) with ordinality k(attnum, ord)
+		  join pg_attribute a on a.attrelid = x.indrelid and a.attnum = k.attnum) c
+		where (x.indrelid = 'rotten.events'::regclass
+		       or x.indrelid in (select inhrelid from pg_inherits where inhparent = 'rotten.events'::regclass))
+		  and c.cols = array['fingerprint_id', 'observed_window_start']`
+	var before string
+	var sourceIndexesBefore int
+	if err := conn.QueryRow(ctx, fingerprintIndexes).Scan(&before, &sourceIndexesBefore); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(before, "events_fingerprint_window") || strings.Count(before, ",") < 2 {
+		t.Fatalf("before 0014, fingerprint indexes = %q; want 0008's on rotten.events and on its partitions", before)
+	}
+
+	if _, err := migrate.Up(ctx, dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var after string
+	var sourceIndexesAfter int
+	if err := conn.QueryRow(ctx, fingerprintIndexes).Scan(&after, &sourceIndexesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if after != "" {
+		t.Errorf("after migrate, indexes on rotten.events (fingerprint_id, observed_window_start) = %s; want none", after)
+	}
+	if sourceIndexesAfter != sourceIndexesBefore || sourceIndexesAfter < 2 {
+		t.Errorf("partitions with events_source_fingerprint_window: %d before, %d after; want the same, at least 2", sourceIndexesBefore, sourceIndexesAfter)
+	}
+}
+
+const eventsSourceFingerprintWindowMigration = "0013_events_source_fingerprint_window.sql"
+
 const eventContextUtilizationMigration = "0011_event_context_utilization.sql"
 
 // Migration 0011 copies each context's logical source and share of its

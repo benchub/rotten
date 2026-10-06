@@ -61,8 +61,20 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** 20261004-231500-1.
 - **Red test:** The perf suite fails if `events_fingerprint_window` exists while a per-fingerprint case is no slower without it, or, in the other direction, a case that needs it fails its budget once it's dropped.
 
+### 20261005-150200-1: Match reports' generic plans nested-loop on a store with hundreds of sources.
+- **Why (found in 20261005-123457-1):** That task's `TestPerfManySources` seeds 400 fleet logical sources besides the 12 main ones. With that many, `n_distinct(logical_source_id)` is high, so the generic plan estimates about 46 events per source where busy cluster 13 has about 35,000 in 3h. top_by_calls, top_by_total_time and outliers with a match then nested-loop the aggregate against the `matched_events` CTE (63M join-filter rows): about 2.3–2.9s at 3h, and canceled by the 15s timeout at 24h and 7d. Custom plans are fine. This predates migration 0014 (it's the same with `events_fingerprint_window`); the fleet only exposed it. The fleet was kept out of `TestPerfReports`'s seed so `make test-perf` stays green, so the suite doesn't catch it yet.
+- **Do:** Make the plan independent of the per-source estimate, for example by matching through a hashed `= any(array(...))` or a semi-join the planner hashes, or by materializing the matched keys so the join can't be a nested loop over a CTE scan. Recheck 20261005-123457-2 afterwards, since it covers the same reports.
+- **Needs:** nothing.
+- **Red test:** Add the 400-source fleet seed to the match cases (or run them against `TestPerfManySources`'s setup) and require the 3h budget (2s) for top_by_calls, top_by_total_time and outliers with a match, in both plan cache modes.
+
+### 20261005-150200-2: The fingerprint page's one-timeout spec flakes under load.
+- **Why (found in 20261005-123457-1):** In one `make test-all` run on a loaded machine, `spec/requests/fingerprints_spec.rb:226` ("stops the page within one timeout when every query is slow") took 0.84s against its 0.65s wall-clock bound. It passed three times when run alone afterwards.
+- **Do:** Keep what the spec proves (the page stops after one 300ms timeout, not one per query) without a tight wall-clock bound, e.g. by counting the queries that started, or by widening the bound to well under the slowest serial case (four queries × 0.3s).
+- **Needs:** nothing.
+- **Red test:** The spec, run with the CPU loaded (e.g. a busy container alongside), fails today and passes after the change.
+
 ### 20261005-123457-2: 7d match reports hit the statement timeout under heavy load.
-- **Why (found in 20261004-231500-1):** In one perf run on master at load average 30–69 (other projects' containers), outliers 7d match (both plans) and top_by_total_time 7d match (generic) were canceled by the 15s statement_timeout. At load average 15–25 they take about 3.5–4.5s. They read 7 days of a cluster's events plus contexts, so a busy database could show users an error page.
+- **Why (found in 20261004-231500-1):** In one perf run on master at load average 30–69 (other projects' containers), outliers 7d match (both plans) and top_by_total_time 7d match (generic) were canceled by the 15s statement_timeout. At load average 15–25 they take about 3.5–4.5s. Seen again in task 20261005-123457-1 on the main seed: two of three `make test-perf` runs at load average about 20–27 each had one 7d match generic case canceled (outliers, then top_by_calls) that took 3.7–5.8s in other runs; the third run, at load average 13–17, passed. They read 7 days of a cluster's events plus contexts, so a busy database could show users an error page.
 - **Do:** Reproduce under controlled load (for example, run the suite with a CPU-bound container alongside), and find which part of those plans degrades most (hash spills at the default `work_mem`, the context match, parallel workers). Fix it or document the limit.
 - **Needs:** nothing.
 - **Red test:** A perf case that runs the 7d match reports with a concurrent load generator and requires them to finish under the UI's timeout.
