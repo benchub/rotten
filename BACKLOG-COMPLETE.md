@@ -1547,3 +1547,11 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Red test:** Tighten the perf suite's outliers 3h budget back to 2s, so it fails now.
 - Completed: 2026-10-04, edd958c
   - Covering index (migration 0013) plus per-group WITH TIES read; rollup rejected (1.75s, drift risk). 3h ~0.7-0.8s, 24h ~1.2-1.3s. Costs: index ~table size, ingest inserts +10-20%, SHARE lock ~7s/10M events during build. User approved landing (2026-10-04) and asked for 20261005-123457-1 next. Review clean.
+
+### 20261005-123457-1: Decide whether to drop `events_fingerprint_window`.
+- **Why (found in 20261004-231500-1):** Migration 0013's `events_source_fingerprint_window` on `(logical_source_id, fingerprint_id, observed_window_start)` serves the per-fingerprint reports about as well as 0008's `(fingerprint_id, observed_window_start)` on the perf data: e.g. fingerprint_timeseries 21d typical 3ms / 1ms with only the new index, 3ms / 1ms with both. Dropping 0008's index would save 392 MB per 10M events and one btree insert per event (about 10–30% of insert time, see docs/perf.md).
+- **Do:** List every query that uses `events_fingerprint_window` (the per-fingerprint reports, outliers' worst-window lookup, the UI), and check each with only the new index, including a fingerprint on many sources and Postgres 14–17, which have no btree skip scan. If none regresses, add a migration that drops it, and change the perf suite's index decision to require the new index instead. Note the lock in docs/database.md.
+- **Needs:** 20261004-231500-1.
+- **Red test:** The perf suite fails if `events_fingerprint_window` exists while a per-fingerprint case is no slower without it, or, in the other direction, a case that needs it fails its budget once it's dropped.
+- Completed: 2026-10-05, 3995f39
+  - Migration 0014 drops the index (ACCESS EXCLUSIVE, brief); saves ~401MB per 10.4M events. No report regressed; fingerprint_all_sources relies on PG 18 skip scan (store is PG 18 only; noted in docs/plan.md). TestPerfManySources added with 400 sources. Review clean. Follow-ups 20261005-150200-1, -2.
