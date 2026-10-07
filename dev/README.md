@@ -31,7 +31,14 @@ starts. `worker-key` creates a runtime-only pass key in the `worker-secrets`
 volume, pinned to the dev worker FQDN. The server has an HTTPS `/healthz`
 healthcheck, and the real `worker` service waits for the server and key before
 running `rotten-worker -config /src/dev/worker.json`. `observed-postgres` is
-Postgres 18 with `pg_stat_statements` preloaded. The worker is on `observed`
+Postgres 18 with `pg_stat_statements` and then `pg_stat_statement_context`
+(pssc) preloaded, built from `docker/observed-db.Dockerfile` at a pinned pssc
+commit. pssc reads marginalia appended or prepended. `observed-init.sql`
+creates the extension on a fresh `observed-data` volume; on an older volume,
+create it once with `docker compose -f dev/docker-compose.yaml exec
+observed-postgres psql -U postgres -d observed -c 'create extension
+pg_stat_statement_context'`. Existing setups need the new image first:
+`docker compose -f dev/docker-compose.yaml up --build`. The worker is on `observed`
 and `edge` only; it reaches the rotten DB only through `rotten-server`.
 
 `observed-replica` is a streaming replica of `observed-postgres`, watched by

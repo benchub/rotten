@@ -240,7 +240,7 @@ func start(t testing.TB, image, dbName string, extra ...testcontainers.Container
 	}, extra...)
 	c, err := runPostgres(t, ctx, image, opts...)
 	if err != nil {
-		if image == RottenImage {
+		if image == RottenImage || strings.HasPrefix(image, observedImagePrefix) {
 			t.Fatalf("testdb: start %s: %v (is the image built? run `make image`)", image, err)
 		}
 		t.Fatalf("testdb: start %s: %v", image, err)
@@ -265,7 +265,7 @@ func startNoHostDSN(t testing.TB, image, dbName string, extra ...testcontainers.
 	}, extra...)
 	c, err := runPostgres(t, ctx, image, opts...)
 	if err != nil {
-		if image == RottenImage {
+		if image == RottenImage || strings.HasPrefix(image, observedImagePrefix) {
 			t.Fatalf("testdb: start %s: %v (is the image built? run `make image`)", image, err)
 		}
 		t.Fatalf("testdb: start %s: %v", image, err)
@@ -467,19 +467,67 @@ func (d *DB) PSQL(t testing.TB, path string, vars map[string]string) (string, er
 // customizes the container, e.g. SmallTCPSendBuffer.
 func StartObserved(t testing.TB, version int, extra ...testcontainers.ContainerCustomizer) *DB {
 	t.Helper()
+	return startObserved(t, version, true, extra...)
+}
+
+// StartObservedWithoutPSSC is StartObserved on the stock postgres image,
+// without pg_stat_statement_context, for the path where an observed
+// database can't load it (e.g. RDS).
+func StartObservedWithoutPSSC(t testing.TB, version int, extra ...testcontainers.ContainerCustomizer) *DB {
+	t.Helper()
+	return startObserved(t, version, false, extra...)
+}
+
+func startObserved(t testing.TB, version int, pssc bool, extra ...testcontainers.ContainerCustomizer) *DB {
+	t.Helper()
 	skipShort(t)
 	if version < 14 || version > 18 {
 		t.Fatalf("testdb: unsupported Postgres version %d", version)
 	}
-	db := start(t, fmt.Sprintf("postgres:%d", version), "observed",
-		append([]testcontainers.ContainerCustomizer{testcontainers.WithCmdArgs(
-			"-c", "shared_preload_libraries=pg_stat_statements",
-			"-c", "pg_stat_statements.track_planning=on")}, extra...)...)
+	image, args, setup := observedSetup(version, pssc)
+	db := start(t, image, "observed",
+		append([]testcontainers.ContainerCustomizer{testcontainers.WithCmdArgs(args...)}, extra...)...)
 	conn := db.Connect(t)
-	if _, err := conn.Exec(context.Background(), "create extension pg_stat_statements"); err != nil {
-		t.Fatalf("testdb: create pg_stat_statements: %v", err)
+	for _, q := range setup {
+		if _, err := conn.Exec(context.Background(), q); err != nil {
+			t.Fatalf("testdb: %s: %v", q, err)
+		}
 	}
 	return db
+}
+
+// observedImagePrefix names the observed images; the Makefile's image
+// target tags them the same way.
+const observedImagePrefix = "rotten-observed-test:"
+
+// ObservedImage is the image `make image` builds from
+// docker/observed-db.Dockerfile: postgres:<version> plus
+// pg_stat_statement_context.
+func ObservedImage(version int) string {
+	return fmt.Sprintf("%s%d", observedImagePrefix, version)
+}
+
+// PSSCExtractors makes pssc read marginalia and SQLCommenter comments
+// wherever they are. Its default reads only appended comments, and Rails
+// marginalia is prepended in production.
+const PSSCExtractors = "sqlcommenter(position=any), marginalia(position=any)"
+
+// observedSetup returns the image, postgres arguments, and setup SQL for an
+// observed database, with or without pssc. pssc is preloaded after
+// pg_stat_statements, as it requires.
+func observedSetup(version int, pssc bool) (image string, args []string, setup []string) {
+	if !pssc {
+		return fmt.Sprintf("postgres:%d", version),
+			[]string{"-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track_planning=on"},
+			[]string{"create extension pg_stat_statements"}
+	}
+	return ObservedImage(version),
+		[]string{
+			"-c", "shared_preload_libraries=pg_stat_statements, pg_stat_statement_context",
+			"-c", "pg_stat_statements.track_planning=on",
+			"-c", "pg_stat_statement_context.extractors=" + PSSCExtractors,
+		},
+		[]string{"create extension pg_stat_statements", "create extension pg_stat_statement_context"}
 }
 
 // SmallTCPSendBuffer caps the container's TCP send buffers at 128 KiB, so a

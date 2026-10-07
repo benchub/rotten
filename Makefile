@@ -93,11 +93,17 @@ proto:
 		echo "buf breaking: $(PROTO_BASE) has no proto/ yet, skipping"; \
 	fi
 
-## image: the Go test image, plus the rotten DB image (Postgres 18 + pg_partman)
-## that internal/testdb.StartRotten runs by name.
+## image: the Go test image, the rotten DB image (Postgres 18 + pg_partman)
+## that internal/testdb.StartRotten runs by name, and the observed images
+## (Postgres 14 through 18 + pg_stat_statement_context) that
+## internal/testdb.StartObserved runs.
+OBSERVED_VERSIONS := 14 15 16 17 18
 image:
 	docker build --pull=false -q -f $(DOCKERFILE) -t $(IMAGE) . >/dev/null
 	docker build --pull=false -q -f docker/rotten-db.Dockerfile -t rotten-db-test:18 docker >/dev/null
+	for v in $(OBSERVED_VERSIONS); do \
+		docker build --pull=false -q -f docker/observed-db.Dockerfile --build-arg PG_MAJOR=$$v -t rotten-observed-test:$$v docker || exit 1; \
+	done
 
 ## ui-image: the Rails development/test image with Chromium for system specs.
 ui-image:

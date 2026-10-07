@@ -1,4 +1,5 @@
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statement_context;
 CREATE ROLE rotten_observer LOGIN PASSWORD 'rotten_observer';
 GRANT pg_read_all_stats TO rotten_observer;
 

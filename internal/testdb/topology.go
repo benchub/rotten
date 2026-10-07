@@ -2,9 +2,9 @@ package testdb
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,12 +112,11 @@ func (topology *Topology) StartObserved(t testing.TB, version int) *DB {
 	if version < 14 || version > 18 {
 		t.Fatalf("testdb: unsupported Postgres version %d", version)
 	}
-	db := startNoHostDSN(t, fmt.Sprintf("postgres:%d", version), "observed",
+	image, args, setup := observedSetup(version, true)
+	db := startNoHostDSN(t, image, "observed",
 		tcnetwork.WithNetwork([]string{topology.ObservedAlias}, topology.ObservedNetwork),
-		testcontainers.WithCmdArgs(
-			"-c", "shared_preload_libraries=pg_stat_statements",
-			"-c", "pg_stat_statements.track_planning=on"))
-	execSQLInContainer(t, db, "CREATE EXTENSION pg_stat_statements;\nCREATE ROLE rotten_observer LOGIN PASSWORD 'rotten_observer';\nGRANT pg_read_all_stats TO rotten_observer;")
+		testcontainers.WithCmdArgs(args...))
+	execSQLInContainer(t, db, strings.Join(setup, ";\n")+";\nCREATE ROLE rotten_observer LOGIN PASSWORD 'rotten_observer';\nGRANT pg_read_all_stats TO rotten_observer;")
 	topology.Observed = db
 	return db
 }

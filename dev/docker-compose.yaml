@@ -1,12 +1,22 @@
 services:
   observed-postgres:
-    image: postgres:18
+    # Postgres 18 with pg_stat_statement_context (pinned in the Dockerfile).
+    build:
+      context: ../docker
+      dockerfile: observed-db.Dockerfile
+      args:
+        PG_MAJOR: "18"
+    image: rotten-dev-observed:18
     command:
       - postgres
       - -c
-      - shared_preload_libraries=pg_stat_statements
+      - shared_preload_libraries=pg_stat_statements, pg_stat_statement_context
       - -c
       - pg_stat_statements.track_planning=on
+      # Read marginalia wherever it is: pssc's default reads only appended
+      # comments, and the traffic prepends some, as Rails does.
+      - -c
+      - pg_stat_statement_context.extractors=sqlcommenter(position=any), marginalia(position=any)
       # Lets observed-replica stream from here; see observed-pg_hba.conf.
       - -c
       - hba_file=/etc/rotten/observed-pg_hba.conf
@@ -34,16 +44,21 @@ services:
   # replication role and slot on the primary and clones it when needed, so
   # it works on an existing observed-data volume. See dev/README.md.
   observed-replica:
-    image: postgres:18
+    # Built by observed-postgres.
+    image: rotten-dev-observed:18
     entrypoint:
       - sh
       - /rotten/observed-replica-entrypoint.sh
     command:
       - postgres
       - -c
-      - shared_preload_libraries=pg_stat_statements
+      - shared_preload_libraries=pg_stat_statements, pg_stat_statement_context
       - -c
       - pg_stat_statements.track_planning=on
+      # Read marginalia wherever it is: pssc's default reads only appended
+      # comments, and the traffic prepends some, as Rails does.
+      - -c
+      - pg_stat_statement_context.extractors=sqlcommenter(position=any), marginalia(position=any)
       - -c
       - hot_standby_feedback=on
       - -c
