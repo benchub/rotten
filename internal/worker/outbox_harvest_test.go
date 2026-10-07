@@ -23,6 +23,7 @@ import (
 	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/harvestlimits"
 	"github.com/benchub/rotten/internal/pgss"
+	"github.com/benchub/rotten/internal/pssc"
 	"github.com/benchub/rotten/internal/state"
 	"github.com/benchub/rotten/internal/testdb"
 )
@@ -98,6 +99,12 @@ func startObservedForWorker(t *testing.T) *testdb.DB {
 func startObservedVersionForWorker(t *testing.T, version int, extra ...testcontainers.ContainerCustomizer) *testdb.DB {
 	t.Helper()
 	db := testdb.StartObserved(t, version, extra...)
+	setupObservedForWorker(t, db)
+	return db
+}
+
+func setupObservedForWorker(t *testing.T, db *testdb.DB) {
+	t.Helper()
 	if out, err := db.PSQL(t, filepath.Join(testdb.RepoRoot(), "schema", "observer.sql"), nil); err != nil {
 		t.Fatalf("observer.sql: %v\n%s", err, out)
 	}
@@ -112,7 +119,6 @@ func startObservedVersionForWorker(t *testing.T, version int, extra ...testconta
 			t.Fatalf("%.60s: %v", s, err)
 		}
 	}
-	return db
 }
 
 func observerConn(t *testing.T, dsn string) *pgx.Conn {
@@ -219,15 +225,15 @@ func (f *faultOutboxStore) Load(ctx context.Context) (state.Loaded, error) {
 	return f.inner.Load(ctx)
 }
 
-func (f *faultOutboxStore) Save(ctx context.Context, snap pgss.Snapshot, takenAt time.Time) error {
-	return f.inner.Save(ctx, snap, takenAt)
+func (f *faultOutboxStore) SaveSnapshots(ctx context.Context, snap pgss.Snapshot, psscSnap pssc.Snapshot, takenAt time.Time) error {
+	return f.inner.SaveSnapshots(ctx, snap, psscSnap, takenAt)
 }
 
-func (f *faultOutboxStore) SaveSnapshotAndEnqueue(ctx context.Context, snap pgss.Snapshot, takenAt time.Time, batch *rottenv1.SubmitHarvestRequest) (state.OutboxEnqueueResult, error) {
+func (f *faultOutboxStore) SaveSnapshotsAndEnqueue(ctx context.Context, snap pgss.Snapshot, psscSnap pssc.Snapshot, takenAt time.Time, batch *rottenv1.SubmitHarvestRequest) (state.OutboxEnqueueResult, error) {
 	if f.failSaveAndEnqueue {
 		return state.OutboxEnqueueResult{}, errors.New("injected save and enqueue failure")
 	}
-	return f.inner.SaveSnapshotAndEnqueue(ctx, snap, takenAt, batch)
+	return f.inner.SaveSnapshotsAndEnqueue(ctx, snap, psscSnap, takenAt, batch)
 }
 
 func (rn *running) window(t *testing.T) int64 {
@@ -785,7 +791,7 @@ func (s *blockingState) Load(context.Context) (state.Loaded, error) {
 	return emptyBaseline(), nil
 }
 
-func (s *blockingState) Save(ctx context.Context, snap pgss.Snapshot, takenAt time.Time) error {
+func (s *blockingState) SaveSnapshots(ctx context.Context, snap pgss.Snapshot, _ pssc.Snapshot, takenAt time.Time) error {
 	s.once.Do(func() { close(s.saveEntered) })
 	select {
 	case <-s.unblockSave:

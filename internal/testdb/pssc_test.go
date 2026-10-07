@@ -119,6 +119,20 @@ select coalesce(sum(calls_total), 0)::bigint
 					t.Errorf("%s (%q): calls_total = %d, want 1", c.controller, c.sql, calls)
 				}
 			}
+			// The dev traffic's job marginalia tag job_tag, which pssc's
+			// default tags allowlist drops.
+			if _, err := conn.Exec(ctx, "select 1 /*job_tag:Cleanup*/"); err != nil {
+				t.Fatal(err)
+			}
+			var jobCalls int64
+			if err := conn.QueryRow(ctx, `
+select coalesce(sum(calls_total), 0)::bigint
+  from pg_stat_statement_context_totals where tags->>'job_tag' = 'Cleanup'`).Scan(&jobCalls); err != nil {
+				t.Fatal(err)
+			}
+			if jobCalls != 1 {
+				t.Errorf("job_tag: calls_total = %d, want 1", jobCalls)
+			}
 		})
 	}
 }

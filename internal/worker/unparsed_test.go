@@ -14,6 +14,7 @@ import (
 	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
 	"github.com/benchub/rotten/internal/ingest"
 	"github.com/benchub/rotten/internal/pgss"
+	"github.com/benchub/rotten/internal/pssc"
 	"github.com/benchub/rotten/internal/testdb"
 )
 
@@ -102,7 +103,15 @@ func TestUnparseableStatementReachesServerAsUnparsedFallback(t *testing.T) {
 		ReJobTag:     j,
 	}, RealClock{})
 	end := time.Now().UTC().Truncate(time.Second)
-	batch := w.buildHarvestBatch(ctx, texts, deltas, end.Add(-time.Minute), end)
+	// Contexts come from pssc: every entry counts in full, as on a first
+	// window after the statements started.
+	psscStats, ok, err := pssc.NewReader(conn).ReadStats(ctx)
+	if err != nil || !ok {
+		t.Fatalf("pssc ReadStats ok=%v err=%v", ok, err)
+	}
+	psscDeltas, _ := pssc.Diff(pssc.Snapshot{}, psscStats)
+	contexts := newPSSCContexts(true, psscDeltas, pssc.Snapshot{}, pssc.Snapshot{}, time.Time{})
+	batch, _, _ := w.buildHarvestBatchAndSnapshotPSSC(ctx, texts, pgss.Snapshot{}, pgss.Snapshot{}, deltas, contexts, end.Add(-time.Minute), end)
 	if len(batch.GetAggregates()) != 1 {
 		t.Fatalf("want the unparseable entry in the batch, got %d aggregates", len(batch.GetAggregates()))
 	}

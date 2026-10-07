@@ -26,7 +26,9 @@ import (
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	fingerprinting "github.com/benchub/rotten/internal/fingerprint"
+	"github.com/benchub/rotten/internal/harvestlimits"
 	"github.com/benchub/rotten/internal/pgss"
+	"github.com/benchub/rotten/internal/pssc"
 	"github.com/benchub/rotten/internal/state"
 )
 
@@ -77,8 +79,11 @@ type QueryEvent struct {
 	blk_read_time       float64
 	blk_write_time      float64
 
-	// A histogram of the marginalia contexts observed for this query in this window
-	context map[string]uint64
+	// The contexts (see pssc_contexts.go) for this query in this window,
+	// keyed by serverContextKey: calls, and execution time in ms. The time
+	// isn't on the wire yet (task 20261007-120000-5).
+	context      map[string]uint64
+	context_time map[string]float64
 
 	// unparsed is true when the parser rejected query, so the event's
 	// fingerprint is fingerprint.Fallback's and fallbackText is its text.
@@ -141,11 +146,11 @@ type ObservedConnector func(context.Context) (*pgx.Conn, error)
 // StateStore is the part of *state.Store that Run uses.
 type StateStore interface {
 	Load(ctx context.Context) (state.Loaded, error)
-	Save(ctx context.Context, snap pgss.Snapshot, takenAt time.Time) error
+	SaveSnapshots(ctx context.Context, snap pgss.Snapshot, psscSnap pssc.Snapshot, takenAt time.Time) error
 }
 
 type ServerOutboxStore interface {
-	SaveSnapshotAndEnqueue(context.Context, pgss.Snapshot, time.Time, *rottenv1.SubmitHarvestRequest) (state.OutboxEnqueueResult, error)
+	SaveSnapshotsAndEnqueue(context.Context, pgss.Snapshot, pssc.Snapshot, time.Time, *rottenv1.SubmitHarvestRequest) (state.OutboxEnqueueResult, error)
 }
 
 const (
@@ -259,6 +264,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	interval := time.Duration(cfg.ObservationInterval) * time.Second
 	var observed *pgx.Conn
 	var reader *pgss.Reader
+	var psscReader *pssc.Reader
 	var texts *pgss.TextCache
 	ownsObserved := cfg.ObservedDBConnect != nil
 	defer func() {
@@ -288,6 +294,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			observed = conn
 			w.observedConnected(w.observedServerInfo(ctx, observed))
 			reader = pgss.NewReader(observed)
+			psscReader = pssc.NewReader(observed)
 			texts = pgss.NewTextCache(reader)
 			connectAttempt = 0
 		}
@@ -320,7 +327,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 
 		now := w.clk.Now()
-		if err := w.harvest(ctx, reader, texts, now); err != nil {
+		if err := w.harvest(ctx, reader, psscReader, texts, now); err != nil {
 			if retryObservedError(err) {
 				w.markAlive("harvest reconnect")
 				w.cfg.Logger.Warn("observed database harvest failed; reconnecting", "err", err)
@@ -485,7 +492,8 @@ func (w *Worker) sleepOrStop(ctx context.Context, d time.Duration) error {
 
 // emptyBaseline is a baseline Loaded with an empty snapshot.
 func emptyBaseline() state.Loaded {
-	return state.Loaded{Baseline: true, Snapshot: pgss.Snapshot{Entries: map[pgss.Key]pgss.Stat{}}}
+	return state.Loaded{Baseline: true, Snapshot: pgss.Snapshot{Entries: map[pgss.Key]pgss.Stat{}},
+		PSSC: pssc.Snapshot{Entries: map[pssc.Key]pssc.Stat{}}}
 }
 
 // harvest reads pg_stat_statements, diffs it against the saved snapshot, and
@@ -497,7 +505,14 @@ func emptyBaseline() state.Loaded {
 // A baseline harvest (no usable snapshot, a state store error on Load, or a
 // failed Save last time) saves the snapshot and sends nothing, because Diff
 // against it reports lifetime totals or counts a window twice.
-func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.TextCache, now time.Time) error {
+//
+// Each harvest also reads pg_stat_statement_context when it's available,
+// diffs it against the saved pssc snapshot for the shipped entries'
+// contexts (see pssc_contexts.go), and saves the new pssc snapshot (empty
+// when pssc isn't available) with the pgss one, baseline or not. A pssc
+// read error that isn't a connection failure counts as not available for
+// this harvest.
+func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, psscReader *pssc.Reader, texts *pgss.TextCache, now time.Time) error {
 	cfg := w.cfg
 	w.markAlive("harvest attempt")
 	w.resetParseFailures()
@@ -517,6 +532,18 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.T
 	if err := reader.MinmaxReset(ctx, cfg.MinmaxResetSchema); err != nil && !errors.Is(err, pgss.ErrNoMinmaxReset) {
 		log.Println("min/max reset failed, so the next window reports lifetime min and max:", err)
 	}
+	var psscStats []pssc.Stat
+	psscOK := false
+	if psscReader != nil {
+		psscStats, psscOK, err = psscReader.ReadStats(ctx)
+		if err != nil {
+			if retryObservedError(err) {
+				return err
+			}
+			log.Println("couldn't read pg_stat_statement_context, so this window's calls are untagged:", err)
+			psscStats, psscOK = nil, false
+		}
+	}
 	w.lastWindowEnd.Store(now.Unix())
 	w.lastHarvest.Store(now.Unix())
 
@@ -530,6 +557,8 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.T
 		loaded = emptyBaseline()
 	}
 	deltas, next := pgss.Diff(loaded.Snapshot, stats, info)
+	psscDeltas, psscNext := pssc.Diff(loaded.PSSC, psscStats)
+	contexts := newPSSCContexts(psscOK, psscDeltas, loaded.PSSC, psscNext, loaded.TakenAt)
 	texts.Retain(stats)
 	texts.Invalidate(pgss.Recreated(loaded.Snapshot, stats, info))
 
@@ -537,9 +566,9 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.T
 		log.Println("baseline harvest: saving the snapshot and sending nothing")
 	} else if cfg.ServerOutbox != nil {
 		var batch *rottenv1.SubmitHarvestRequest
-		batch, next = w.buildHarvestBatchAndSnapshot(ctx, texts, loaded.Snapshot, next, deltas, loaded.TakenAt, now)
+		batch, next, psscNext = w.buildHarvestBatchAndSnapshotPSSC(ctx, texts, loaded.Snapshot, next, deltas, contexts, loaded.TakenAt, now)
 		w.maybeWarnNoContexts()
-		result, err := cfg.ServerOutbox.SaveSnapshotAndEnqueue(ctx, next, now, batch)
+		result, err := cfg.ServerOutbox.SaveSnapshotsAndEnqueue(ctx, next, psscNext, now, batch)
 		if err != nil {
 			log.Println("couldn't save the snapshot and outbox batch, so the next harvest is a baseline:", err)
 			w.staleState = true
@@ -556,7 +585,7 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, texts *pgss.T
 		return nil
 	}
 
-	if err := cfg.State.Save(ctx, next, now); err != nil {
+	if err := cfg.State.SaveSnapshots(ctx, next, psscNext, now); err != nil {
 		log.Println("couldn't save the snapshot, so the next harvest is a baseline:", err)
 		w.staleState = true
 		return nil
@@ -576,7 +605,18 @@ func (w *Worker) buildHarvestBatch(ctx context.Context, texts *pgss.TextCache, d
 	return batch
 }
 
+// buildHarvestBatchAndSnapshot is buildHarvestBatchAndSnapshotPSSC without
+// pssc: every call is untagged.
 func (w *Worker) buildHarvestBatchAndSnapshot(ctx context.Context, texts queryTextFiller, prev, next pgss.Snapshot, deltas []pgss.Delta, start, end time.Time) (*rottenv1.SubmitHarvestRequest, pgss.Snapshot) {
+	batch, next, _ := w.buildHarvestBatchAndSnapshotPSSC(ctx, texts, prev, next, deltas, psscContexts{}, start, end)
+	return batch, next
+}
+
+// buildHarvestBatchAndSnapshotPSSC also returns the pssc snapshot to save.
+// When a text fetch fails, the pgss entries it carries keep their saved
+// pssc entries too (see carrySkippedTextPSSC).
+func (w *Worker) buildHarvestBatchAndSnapshotPSSC(ctx context.Context, texts queryTextFiller, prev, next pgss.Snapshot, deltas []pgss.Delta, contexts psscContexts, start, end time.Time) (*rottenv1.SubmitHarvestRequest, pgss.Snapshot, pssc.Snapshot) {
+	psscNext := contexts.next
 	picked := topNDeltas(deltas, topDeltasPerMetric)
 	rows := make([]pgss.Stat, len(picked))
 	for i := range picked {
@@ -586,8 +626,25 @@ func (w *Worker) buildHarvestBatchAndSnapshot(ctx context.Context, texts queryTe
 	if fillErr != nil {
 		log.Println("couldn't fetch query text, so entries without cached text are skipped this window:", fillErr)
 		next = carrySkippedTextSnapshot(prev, next, picked, rows)
+		carried := map[pgss.Key]bool{}
+		for i, d := range picked {
+			if d.QueryID != 0 && rows[i].Query == "" {
+				carried[pgss.KeyOf(d.Stat)] = true
+			}
+		}
+		psscNext = carrySkippedTextPSSC(contexts.prev, psscNext, carried)
 	}
-	return w.buildHarvestBatchFromRows(picked, rows, start, end), next
+	batch := w.buildHarvestBatchFromRowsPSSC(picked, rows, contexts, start, end)
+	if len(contexts.held) > 0 {
+		var calls int64
+		for _, h := range contexts.held {
+			calls += h.calls
+		}
+		// One line per harvest: read skew does this on busy queries every
+		// window, so a line per entry would flood the log.
+		log.Printf("pg_stat_statement_context was ahead of pg_stat_statements for %d entries; held back %d calls for the next window", len(contexts.held), calls)
+	}
+	return batch, next, holdBack(psscNext, contexts.held)
 }
 
 func (w *Worker) fillQueryTextWithRetry(ctx context.Context, texts queryTextFiller, rows []pgss.Stat) error {
@@ -705,6 +762,10 @@ func zeroStatCounters(s *pgss.Stat) {
 }
 
 func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat, start, end time.Time) *rottenv1.SubmitHarvestRequest {
+	return w.buildHarvestBatchFromRowsPSSC(picked, rows, psscContexts{}, start, end)
+}
+
+func (w *Worker) buildHarvestBatchFromRowsPSSC(picked []pgss.Delta, rows []pgss.Stat, contexts psscContexts, start, end time.Time) *rottenv1.SubmitHarvestRequest {
 	cfg := w.cfg
 	events := make(map[string]QueryEvent)
 	hidden, noText, unfingerprintable := 0, 0, 0
@@ -743,9 +804,7 @@ func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat
 			unfingerprintable++
 			continue
 		}
-		event.context = map[string]uint64{
-			serverContextKey(controller, action, jobTag): wholeCount(event.calls),
-		}
+		event.context, event.context_time = contexts.forDelta(d)
 		if existing, ok := events[fingerprint]; ok {
 			events[fingerprint] = mergeEvent(existing, event)
 		} else {
@@ -762,6 +821,7 @@ func (w *Worker) buildHarvestBatchFromRows(picked []pgss.Delta, rows []pgss.Stat
 	if unfingerprintable > 0 {
 		log.Println(unfingerprintable, "top entries couldn't be fingerprinted, so they're skipped")
 	}
+	capContexts(events, harvestlimits.MaxHarvestContexts)
 	failures, calls, samples := w.parseFailureSnapshot()
 	if failures > 0 {
 		log.Printf("window unparsed entries: %d (%d calls) sent under text fingerprints; unparsed samples (up to %d): %q", failures, calls, parseFailureSampleLimit, samples)

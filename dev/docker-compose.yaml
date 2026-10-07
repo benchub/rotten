@@ -17,6 +17,10 @@ services:
       # comments, and the traffic prepends some, as Rails does.
       - -c
       - pg_stat_statement_context.extractors=sqlcommenter(position=any), marginalia(position=any)
+      # Keep the job marginalia's job_tag too (pssc keeps only action,
+      # controller, and job by default).
+      - -c
+      - pg_stat_statement_context.tags=action, controller, job, job_tag
       # Lets observed-replica stream from here; see observed-pg_hba.conf.
       - -c
       - hba_file=/etc/rotten/observed-pg_hba.conf
@@ -59,6 +63,10 @@ services:
       # comments, and the traffic prepends some, as Rails does.
       - -c
       - pg_stat_statement_context.extractors=sqlcommenter(position=any), marginalia(position=any)
+      # Keep the job marginalia's job_tag too (pssc keeps only action,
+      # controller, and job by default).
+      - -c
+      - pg_stat_statement_context.tags=action, controller, job, job_tag
       - -c
       - hot_standby_feedback=on
       - -c

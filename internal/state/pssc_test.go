@@ -140,6 +140,42 @@ func TestPgssSaveClearsPSSC(t *testing.T) {
 	}
 }
 
+// TestSaveSnapshotsStoresPSSC: the worker's two save paths keep the pssc
+// snapshot with the pgss one.
+func TestSaveSnapshotsStoresPSSC(t *testing.T) {
+	now := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	want := psscSnapOf(psscStats()...)
+	for name, save := range map[string]func(*Store) error{
+		"SaveSnapshots": func(s *Store) error {
+			return s.SaveSnapshots(ctx, snapOf(testInfo, minimalStat()), want, now.Add(-time.Minute))
+		},
+		"SaveSnapshotsAndEnqueue": func(s *Store) error {
+			_, err := s.SaveSnapshotsAndEnqueue(ctx, snapOf(testInfo, minimalStat()), want, now.Add(-time.Minute), sampleHarvestBatch("42:1:2"))
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := open(t, t.TempDir(), now)
+			if err := save(s); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.Load(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Baseline || len(got.PSSC.Entries) != len(want.Entries) || len(want.Entries) == 0 {
+				t.Fatalf("baseline=%v pssc=%d, want %d entries", got.Baseline, len(got.PSSC.Entries), len(want.Entries))
+			}
+			for k, e := range want.Entries {
+				if g, ok := got.PSSC.Entries[k]; !ok || g.Calls != e.Calls {
+					t.Fatalf("entry %+v = %+v, want %+v", k, g, e)
+				}
+			}
+		})
+	}
+}
+
 func TestOpenMigratesV4StoreToPSSC(t *testing.T) {
 	dir := t.TempDir()
 	db, err := sql.Open("sqlite", filepath.Join(dir, FileName))

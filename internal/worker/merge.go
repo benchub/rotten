@@ -49,6 +49,12 @@ func mergeEvent(a, b QueryEvent) QueryEvent {
 	for hash, count := range b.context {
 		a.context[hash] += count
 	}
+	if len(b.context_time) > 0 && a.context_time == nil {
+		a.context_time = map[string]float64{}
+	}
+	for hash, t := range b.context_time {
+		a.context_time[hash] += t
+	}
 
 	return a
 }

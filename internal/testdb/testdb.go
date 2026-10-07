@@ -512,6 +512,10 @@ func ObservedImage(version int) string {
 // marginalia is prepended in production.
 const PSSCExtractors = "sqlcommenter(position=any), marginalia(position=any)"
 
+// PSSCTags is pssc's default tags allowlist plus job_tag, which the dev
+// traffic's job marginalia (and the worker, as a fallback for job) use.
+const PSSCTags = "action, controller, job, job_tag"
+
 // observedSetup returns the image, postgres arguments, and setup SQL for an
 // observed database, with or without pssc. pssc is preloaded after
 // pg_stat_statements, as it requires.
@@ -526,6 +530,7 @@ func observedSetup(version int, pssc bool) (image string, args []string, setup [
 			"-c", "shared_preload_libraries=pg_stat_statements, pg_stat_statement_context",
 			"-c", "pg_stat_statements.track_planning=on",
 			"-c", "pg_stat_statement_context.extractors=" + PSSCExtractors,
+			"-c", "pg_stat_statement_context.tags=" + PSSCTags,
 		},
 		[]string{"create extension pg_stat_statements", "create extension pg_stat_statement_context"}
 }

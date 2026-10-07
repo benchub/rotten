@@ -228,6 +228,7 @@ select count(*) filter (where r.rolname = $1 and s.query like $3),
 
 	seen := map[string]map[string]bool{}
 	var webSeen, jobSeen bool
+	var taggedCalls, untaggedCalls uint64
 	for _, msg := range sub.msgs {
 		for _, agg := range msg.GetAggregates() {
 			fp := agg.GetFingerprint()
@@ -240,6 +241,14 @@ select count(*) filter (where r.rolname = $1 and s.query like $3),
 			}
 			for _, qc := range agg.GetContexts() {
 				k := contextKey(qc.GetController(), qc.GetAction(), qc.GetJobTag())
+				// Untagged is pssc not attributing calls (e.g. calls that
+				// finished between the pgss and pssc reads), never a wrong
+				// attribution, so any shape may have it.
+				if k == contextKey("", "", "") {
+					untaggedCalls += qc.GetCount()
+					continue
+				}
+				taggedCalls += qc.GetCount()
 				if !allowed[fp][k] {
 					t.Errorf("shape %s attributed to context %q, which never runs it", name, k)
 				}
@@ -254,6 +263,9 @@ select count(*) filter (where r.rolname = $1 and s.query like $3),
 	}
 	if len(seen) < 20 {
 		t.Fatalf("worker saw %d of %d generator fingerprints, want at least 20", len(seen), len(devtraffic.Shapes()))
+	}
+	if untaggedCalls*10 > taggedCalls {
+		t.Fatalf("untagged calls %d against tagged %d, want under a tenth", untaggedCalls, taggedCalls)
 	}
 	if !webSeen || !jobSeen {
 		t.Fatalf("worker saw web contexts %v and job contexts %v, want both", webSeen, jobSeen)

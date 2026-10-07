@@ -725,10 +725,27 @@ func (s *Store) Save(ctx context.Context, snap pgss.Snapshot, takenAt time.Time)
 	return s.Tx(ctx, func(tx Tx) error { return SaveSnapshot(ctx, tx, snap, takenAt) })
 }
 
-// SaveSnapshotAndEnqueue saves the next snapshot and queues batch in the
-// same transaction. If the outbox exceeds its cap after the enqueue, the
-// oldest batches are dropped in that same transaction and counted.
+// SaveSnapshots atomically replaces the stored pgss and pssc snapshots.
+func (s *Store) SaveSnapshots(ctx context.Context, snap pgss.Snapshot, psscSnap pssc.Snapshot, takenAt time.Time) error {
+	return s.Tx(ctx, func(tx Tx) error {
+		if err := SaveSnapshot(ctx, tx, snap, takenAt); err != nil {
+			return err
+		}
+		return SavePSSCSnapshot(ctx, tx, psscSnap)
+	})
+}
+
+// SaveSnapshotAndEnqueue is SaveSnapshotsAndEnqueue with an empty pssc
+// snapshot.
 func (s *Store) SaveSnapshotAndEnqueue(ctx context.Context, snap pgss.Snapshot, takenAt time.Time, batch *rottenv1.SubmitHarvestRequest) (OutboxEnqueueResult, error) {
+	return s.SaveSnapshotsAndEnqueue(ctx, snap, pssc.Snapshot{}, takenAt, batch)
+}
+
+// SaveSnapshotsAndEnqueue saves the next pgss and pssc snapshots and queues
+// batch in the same transaction. If the outbox exceeds its cap after the
+// enqueue, the oldest batches are dropped in that same transaction and
+// counted.
+func (s *Store) SaveSnapshotsAndEnqueue(ctx context.Context, snap pgss.Snapshot, psscSnap pssc.Snapshot, takenAt time.Time, batch *rottenv1.SubmitHarvestRequest) (OutboxEnqueueResult, error) {
 	var result OutboxEnqueueResult
 	payload, err := marshalHarvest(batch)
 	if err != nil {
@@ -736,6 +753,9 @@ func (s *Store) SaveSnapshotAndEnqueue(ctx context.Context, snap pgss.Snapshot, 
 	}
 	err = s.Tx(ctx, func(tx Tx) error {
 		if err := SaveSnapshot(ctx, tx, snap, takenAt); err != nil {
+			return err
+		}
+		if err := SavePSSCSnapshot(ctx, tx, psscSnap); err != nil {
 			return err
 		}
 		var err error
