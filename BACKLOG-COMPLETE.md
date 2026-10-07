@@ -1555,3 +1555,9 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Red test:** The perf suite fails if `events_fingerprint_window` exists while a per-fingerprint case is no slower without it, or, in the other direction, a case that needs it fails its budget once it's dropped.
 - Completed: 2026-10-05, 3995f39
   - Migration 0014 drops the index (ACCESS EXCLUSIVE, brief); saves ~401MB per 10.4M events. No report regressed; fingerprint_all_sources relies on PG 18 skip scan (store is PG 18 only; noted in docs/plan.md). TestPerfManySources added with 400 sources. Review clean. Follow-ups 20261005-150200-1, -2.
+
+### 20261007-120000-1: Test and dev Postgres images ship pssc.
+- **Do:** Build pssc into the `internal/testdb` images and the dev observed databases for Postgres 14 through 18, preloaded after pgss (`shared_preload_libraries = 'pg_stat_statements, pg_stat_statement_context'`). Keep a way to start a database without pssc, for the optional path.
+- **Needs:** nothing.
+- **Red test:** A smoke check that, on each major version, a tagged statement shows up, with the comment both appended (`select 1 /*controller:a,action:b*/`) and prepended (`/*controller:a,action:b*/ select 1`, the production format), in `pg_stat_statement_context_totals`, and a no-pssc database reports the extension missing.
+- Completed: 2026-10-07, da6ab34

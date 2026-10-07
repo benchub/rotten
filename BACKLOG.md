@@ -85,16 +85,17 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** nothing.
 - **Red test:** Delay the replica's start past 8s (or shorten the hold) and watch the current test fail; it must pass after the fix.
 
+### 20261007-160000-1: `layout_spec.rb:78` flakes with a Selenium stale-node error.
+- **Why (found landing 20261007-120000-1):** One `make test-all` run failed "Layout shows an admin the top bar on every page, with Admin, including the one-time pass key page" with `unhandled inspector error: Node with given id does not belong to the document` inside `visible?`. The next `make test-ui` run passed. The spec likely checks visibility of an element the page has just replaced.
+- **Do:** Find the navigation or Turbo update that replaces the node and make the spec wait for the new page (e.g. assert on content of the destination page first) before checking the top bar.
+- **Needs:** nothing.
+- **Red test:** Reproduce by running the spec repeatedly (or under CPU load) until it fails, then show it passes the same number of runs after the fix.
+
 ## Phase F: Docs.
 
 ## Phase G: Context from pg_stat_statement_context.
 
 Background: contexts come from the first query text pgss kept for each entry, so their counts were always skewed, and Postgres 18 drops leading comments. pssc counts calls and execution time per (userid, dbid, queryid, toplevel, tag set). Read it as counters (`calls_total`, `exec_time_total`, `stats_since` from `pg_stat_statement_context_totals`) and diff them like pgss, so the worker's interval doesn't need to match pssc's `bucket_interval`.
-
-### 20261007-120000-1: Test and dev Postgres images ship pssc.
-- **Do:** Build pssc into the `internal/testdb` images and the dev observed databases for Postgres 14 through 18, preloaded after pgss (`shared_preload_libraries = 'pg_stat_statements, pg_stat_statement_context'`). Keep a way to start a database without pssc, for the optional path.
-- **Needs:** nothing.
-- **Red test:** A smoke check that, on each major version, a tagged statement shows up, with the comment both appended (`select 1 /*controller:a,action:b*/`) and prepended (`/*controller:a,action:b*/ select 1`, the production format), in `pg_stat_statement_context_totals`, and a no-pssc database reports the extension missing.
 
 ### 20261007-120000-2: pssc reader and snapshot diff.
 - **Do:** Add a reader next to `internal/pgss` that detects pssc (preloaded, extension created, its schema) and reads the totals view. Store its snapshot in the worker's state and diff it like `pgss.Diff`: an entry is new when it's missing, its `stats_since` changed, or a counter went down. A missing extension isn't an error.
