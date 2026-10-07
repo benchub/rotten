@@ -1561,3 +1561,9 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Needs:** nothing.
 - **Red test:** A smoke check that, on each major version, a tagged statement shows up, with the comment both appended (`select 1 /*controller:a,action:b*/`) and prepended (`/*controller:a,action:b*/ select 1`, the production format), in `pg_stat_statement_context_totals`, and a no-pssc database reports the extension missing.
 - Completed: 2026-10-07, da6ab34
+
+### 20261007-120000-2: pssc reader and snapshot diff.
+- **Do:** Add a reader next to `internal/pgss` that detects pssc (preloaded, extension created, its schema) and reads the totals view. Store its snapshot in the worker's state and diff it like `pgss.Diff`: an entry is new when it's missing, its `stats_since` changed, or a counter went down. A missing extension isn't an error.
+- **Needs:** 20261007-120000-1.
+- **Red test:** Diff tests for reset, eviction (new `stats_since`), and a counter going down; a reader test against real Postgres with and without pssc.
+- Completed: 2026-10-07, 8bc3af2

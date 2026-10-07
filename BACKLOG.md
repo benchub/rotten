@@ -97,11 +97,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 Background: contexts come from the first query text pgss kept for each entry, so their counts were always skewed, and Postgres 18 drops leading comments. pssc counts calls and execution time per (userid, dbid, queryid, toplevel, tag set). Read it as counters (`calls_total`, `exec_time_total`, `stats_since` from `pg_stat_statement_context_totals`) and diff them like pgss, so the worker's interval doesn't need to match pssc's `bucket_interval`.
 
-### 20261007-120000-2: pssc reader and snapshot diff.
-- **Do:** Add a reader next to `internal/pgss` that detects pssc (preloaded, extension created, its schema) and reads the totals view. Store its snapshot in the worker's state and diff it like `pgss.Diff`: an entry is new when it's missing, its `stats_since` changed, or a counter went down. A missing extension isn't an error.
-- **Needs:** 20261007-120000-1.
-- **Red test:** Diff tests for reset, eviction (new `stats_since`), and a counter going down; a reader test against real Postgres with and without pssc.
-
 ### 20261007-120000-3: Attach pssc contexts to harvested fingerprints, with an untagged remainder.
 - **Do:** For the keys `topNDeltas` picks, attach their pssc deltas as contexts (tags `controller`, `action`, and `job` map to controller, action, and job tag), with real counts and real execution time. Calls in the pgss delta minus the sum of pssc calls become one untagged context (clamped at zero; a negative difference is logged, since the two diffs can disagree briefly around resets). Without pssc, each fingerprint gets only the untagged context. Keep the existing context limits.
 - **Needs:** 20261007-120000-2.
