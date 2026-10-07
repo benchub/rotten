@@ -97,11 +97,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 Background: contexts come from the first query text pgss kept for each entry, so their counts were always skewed, and Postgres 18 drops leading comments. pssc counts calls and execution time per (userid, dbid, queryid, toplevel, tag set). Read it as counters (`calls_total`, `exec_time_total`, `stats_since` from `pg_stat_statement_context_totals`) and diff them like pgss, so the worker's interval doesn't need to match pssc's `bucket_interval`.
 
-### 20261007-120000-4: Remove query-text context parsing and the Postgres 18 warning.
-- **Do:** Delete `extractContextValue`, `serverContextKey`, the three regexes, `context_warning.go`, and the unused `internal/identity` package. Drop `ContextController`, `ContextAction`, and `ContextJob` from the worker config: fail fast with a clear message if they're present. Add an optional `ContextSchema` if pssc isn't found on the search path. At startup, log whether pssc is in use, and warn if it's loaded before pgss, if `utility_missing_queryid` keeps rising, or if `pg_stat_statement_context.extractors` can't see prepended comments (pssc's default is append-only, and production marginalia is prepended; it needs `position=any` or `position=prepend`), or if `pg_stat_statement_context.tags` leaves out a key the worker maps (pssc's default is `action, controller, job`; marginalia that uses `job_tag` needs it added). Update `dev/worker*.json` and `docs/worker.md`.
-- **Needs:** 20261007-120000-3.
-- **Red test:** A config with the old keys fails with the new message; a startup test logs pssc's state.
-
 ### 20261007-120000-5: Server stores real context time and the untagged context.
 - **Do:** Carry each context's execution time on the wire (`QueryContext`) and store it as `attributed_time` instead of the proportional estimate. Store the untagged context (all three IDs null, or a marker, whichever reports can tell apart from a missing value). Retire `repair_context_utilization` for new data, keeping it for rows ingested before the change if needed. The worker already keeps each context's time in `QueryEvent.context_time` (from -3); ship it from there. Since -3 the worker ships the untagged context as all three IDs empty, and a tag pssc capped (`pssc.Capped`) as the literal value `(capped)`; decide whether the server stores either as a marker.
 - **Needs:** 20261007-120000-3.
@@ -111,6 +106,12 @@ Background: contexts come from the first query text pgss kept for each entry, so
 - **Do:** Show the untagged context in "Top contexts" and the utilization reports, labelled clearly (for example "untagged"). Remove `CONTEXT_CAVEAT` and the "first seen" wording. Mark `docs/decisions/context-sampling.md` superseded and update the `docscheck` tests. Remove the Postgres 18 append advice from `docs/worker.md`, `docs/observed.md`, `README.md`, and `dev/README.md`, and document how to install pssc, that it's optional, and that prepended marginalia needs `pg_stat_statement_context.extractors` with `position=any` (or `prepend`), and that `pg_stat_statement_context.tags` must list `job_tag` if job marginalia uses it.
 - **Needs:** 20261007-120000-5.
 - **Red test:** A system spec that shows the untagged context on the fingerprint page, and one that the caveat is gone.
+
+### 20261007-200000-1: pssc health checks only run at connect time.
+- **Why (found in 20261007-120000-4):** The "pssc in use" log and the `extractors`/`tags` warnings run when the worker connects, once per process. If pssc is created after the worker connects, or a reload breaks those settings later, nothing is logged until a reconnect or restart. The `tags` check also ignores pssc's `rename` setting, so a renamed key can warn falsely or be missed.
+- **Do:** Re-run the settings check when it's cheap to (for example, when the per-harvest detection result or the settings change), warning once per change rather than once per process. Account for `rename` in the `tags` check, or document that it doesn't.
+- **Needs:** nothing.
+- **Red test:** Create pssc after the worker connects and see the "in use" log; change `tags` with a reload and see the warning.
 
 ### 20261007-120000-7: Generic tag sets (v2).
 - **Why:** pssc can keep any tag keys, not just controller, action, and job.

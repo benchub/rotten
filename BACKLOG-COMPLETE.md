@@ -1573,3 +1573,9 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Needs:** 20261007-120000-2.
 - **Red test:** One fingerprint called from two controllers in different proportions ships those exact counts (today it ships the first text's context for all calls). An untagged share and the no-pssc case each have a test.
 - Completed: 2026-10-07, 3119d9d
+
+### 20261007-120000-4: Remove query-text context parsing and the Postgres 18 warning.
+- **Do:** Delete `extractContextValue`, `serverContextKey`, the three regexes, `context_warning.go`, and the unused `internal/identity` package. Drop `ContextController`, `ContextAction`, and `ContextJob` from the worker config: fail fast with a clear message if they're present. Add an optional `ContextSchema` if pssc isn't found on the search path. At startup, log whether pssc is in use, and warn if it's loaded before pgss, if `utility_missing_queryid` keeps rising, or if `pg_stat_statement_context.extractors` can't see prepended comments (pssc's default is append-only, and production marginalia is prepended; it needs `position=any` or `position=prepend`), or if `pg_stat_statement_context.tags` leaves out a key the worker maps (pssc's default is `action, controller, job`; marginalia that uses `job_tag` needs it added). Update `dev/worker*.json` and `docs/worker.md`.
+- **Needs:** 20261007-120000-3.
+- **Red test:** A config with the old keys fails with the new message; a startup test logs pssc's state.
+- Completed: 2026-10-07, 4922c56
