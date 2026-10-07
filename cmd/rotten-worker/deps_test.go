@@ -30,6 +30,7 @@ func allowedWorkerDep(dep string) bool {
 		"github.com/benchub/rotten/internal/fingerprint",
 		"github.com/benchub/rotten/internal/harvestlimits",
 		"github.com/benchub/rotten/internal/pgss",
+		"github.com/benchub/rotten/internal/pssc",
 		"github.com/benchub/rotten/internal/serverclient",
 		"github.com/benchub/rotten/internal/state",
 		"github.com/benchub/rotten/internal/worker":

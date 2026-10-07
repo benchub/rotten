@@ -37,6 +37,7 @@ import (
 
 	rottenv1 "github.com/benchub/rotten/gen/rotten/v1"
 	"github.com/benchub/rotten/internal/pgss"
+	"github.com/benchub/rotten/internal/pssc"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -49,7 +50,7 @@ const FileName = "state.db"
 const DefaultOutboxCap = 288
 
 // schemaVersion is PRAGMA user_version.
-const schemaVersion = 4
+const schemaVersion = 5
 
 const schemaV1 = `
 CREATE TABLE snapshot_meta (
@@ -134,6 +135,22 @@ const schemaV4StaleSourceDrops = `
 ALTER TABLE outbox_stats ADD COLUMN dropped_stale_source INTEGER NOT NULL DEFAULT 0;
 `
 
+// schemaV5PSSC holds the pg_stat_statement_context snapshot. It shares
+// snapshot_meta's taken_at: both snapshots come from one harvest.
+const schemaV5PSSC = `
+CREATE TABLE pssc_snapshot (
+	userid      INTEGER NOT NULL,
+	dbid        INTEGER NOT NULL,
+	queryid     INTEGER NOT NULL,
+	toplevel    INTEGER NOT NULL,
+	tags        TEXT NOT NULL, -- pssc.CanonicalTags
+	calls       INTEGER NOT NULL,
+	exec_time   INTEGER NOT NULL, -- float64 bits
+	stats_since INTEGER NOT NULL, -- µs since epoch
+	PRIMARY KEY (userid, dbid, queryid, toplevel, tags)
+) STRICT;
+`
+
 // Options configures Open.
 type Options struct {
 	// MaxSnapshotAge: Load treats an older snapshot as a baseline. Zero
@@ -170,7 +187,10 @@ type Loaded struct {
 	// and TakenAt is zero, so diffing against it treats everything as new.
 	Baseline bool
 	Snapshot pgss.Snapshot
-	TakenAt  time.Time
+	// PSSC is the pg_stat_statement_context snapshot saved with Snapshot
+	// (empty, non-nil Entries when Baseline, or when pssc wasn't read).
+	PSSC    pssc.Snapshot
+	TakenAt time.Time
 }
 
 // OutboxBatch is one serialized SubmitHarvest request waiting to be sent.
@@ -441,6 +461,9 @@ func initDB(db *sql.DB) error {
 		if _, err := tx.Exec(schemaV4StaleSourceDrops); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(schemaV5PSSC); err != nil {
+			return err
+		}
 	case 1:
 		if _, err := tx.Exec(schemaV2Outbox); err != nil {
 			return err
@@ -451,6 +474,9 @@ func initDB(db *sql.DB) error {
 		if _, err := tx.Exec(schemaV4StaleSourceDrops); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(schemaV5PSSC); err != nil {
+			return err
+		}
 	case 2:
 		if _, err := tx.Exec(schemaV3SourceRegistration); err != nil {
 			return err
@@ -458,8 +484,18 @@ func initDB(db *sql.DB) error {
 		if _, err := tx.Exec(schemaV4StaleSourceDrops); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(schemaV5PSSC); err != nil {
+			return err
+		}
 	case 3:
 		if _, err := tx.Exec(schemaV4StaleSourceDrops); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(schemaV5PSSC); err != nil {
+			return err
+		}
+	case 4:
+		if _, err := tx.Exec(schemaV5PSSC); err != nil {
 			return err
 		}
 	default:
@@ -851,8 +887,13 @@ func (s *Store) OutboxCounts(ctx context.Context) (OutboxCounts, error) {
 // SaveSnapshot replaces the stored snapshot inside tx. It's atomic only as
 // part of tx.
 func SaveSnapshot(ctx context.Context, tx Tx, snap pgss.Snapshot, takenAt time.Time) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM snapshot"); err != nil {
-		return err
+	// The pssc snapshot shares taken_at, so it's cleared too: a harvest
+	// that didn't read pssc mustn't leave old pssc rows looking current.
+	// Call SavePSSCSnapshot after this to store one.
+	for _, q := range []string{"DELETE FROM snapshot", "DELETE FROM pssc_snapshot"} {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO snapshot_meta (id, taken_at, stats_reset, dealloc)
 		VALUES (1, ?, ?, ?)`, takenAt.UnixMicro(), snap.Info.StatsReset.UnixMicro(), snap.Info.Dealloc); err != nil {
@@ -924,7 +965,8 @@ func micros(us int64) time.Time { return time.UnixMicro(us).UTC() }
 
 // Load reads the snapshot. See Loaded for when it's a baseline.
 func (s *Store) Load(ctx context.Context) (Loaded, error) {
-	baseline := Loaded{Baseline: true, Snapshot: pgss.Snapshot{Entries: map[pgss.Key]pgss.Stat{}}}
+	baseline := Loaded{Baseline: true, Snapshot: pgss.Snapshot{Entries: map[pgss.Key]pgss.Stat{}},
+		PSSC: pssc.Snapshot{Entries: map[pssc.Key]pssc.Stat{}}}
 	var out Loaded
 	err := s.Tx(ctx, func(tx Tx) error {
 		var taken, reset int64
@@ -944,7 +986,10 @@ func (s *Store) Load(ctx context.Context) (Loaded, error) {
 			out = baseline
 			return nil
 		}
-		return loadEntries(ctx, tx, &out.Snapshot)
+		if err := loadEntries(ctx, tx, &out.Snapshot); err != nil {
+			return err
+		}
+		return loadPSSCEntries(ctx, tx, &out.PSSC)
 	})
 	if err != nil {
 		return Loaded{}, fmt.Errorf("load snapshot: %w", err)
@@ -1003,6 +1048,54 @@ func loadEntries(ctx context.Context, tx Tx, snap *pgss.Snapshot) error {
 		e.StatsSince, e.MinmaxStatsSince = ot(ss), ot(mss)
 		e.WALBuffersFull, e.ParallelWorkersToLaunch, e.ParallelWorkersLaunched = oi(wbf), oi(pwl), oi(pwd)
 		snap.Entries[pgss.KeyOf(e)] = e
+	}
+	return rows.Err()
+}
+
+// SavePSSCSnapshot replaces the stored pg_stat_statement_context snapshot
+// inside tx. Call it after SaveSnapshot (which clears it) in the same tx,
+// since it shares SaveSnapshot's taken_at.
+func SavePSSCSnapshot(ctx context.Context, tx Tx, snap pssc.Snapshot) error {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM pssc_snapshot"); err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO pssc_snapshot
+		(userid, dbid, queryid, toplevel, tags, calls, exec_time, stats_since) VALUES (?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for k, e := range snap.Entries {
+		if _, err := stmt.ExecContext(ctx, int64(e.UserID), int64(e.DBID), e.QueryID, e.TopLevel,
+			k.Tags, e.Calls, fbits(e.ExecTime), e.StatsSince.UnixMicro()); err != nil {
+			return fmt.Errorf("save pssc snapshot entry %d: %w", e.QueryID, err)
+		}
+	}
+	return nil
+}
+
+func loadPSSCEntries(ctx context.Context, tx Tx, snap *pssc.Snapshot) error {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT userid, dbid, queryid, toplevel, tags, calls, exec_time, stats_since FROM pssc_snapshot")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	snap.Entries = map[pssc.Key]pssc.Stat{}
+	for rows.Next() {
+		var e pssc.Stat
+		var uid, dbid, et, since int64
+		var tags string
+		if err := rows.Scan(&uid, &dbid, &e.QueryID, &e.TopLevel, &tags, &e.Calls, &et, &since); err != nil {
+			return err
+		}
+		if e.Tags, err = pssc.ParseTags(tags); err != nil {
+			return fmt.Errorf("pssc snapshot tags %q: %w", tags, err)
+		}
+		e.UserID, e.DBID = uint32(uid), uint32(dbid)
+		e.ExecTime = math.Float64frombits(uint64(et))
+		e.StatsSince = micros(since)
+		snap.Entries[pssc.KeyOf(e)] = e
 	}
 	return rows.Err()
 }
