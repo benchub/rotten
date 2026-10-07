@@ -1567,3 +1567,9 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Needs:** 20261007-120000-1.
 - **Red test:** Diff tests for reset, eviction (new `stats_since`), and a counter going down; a reader test against real Postgres with and without pssc.
 - Completed: 2026-10-07, 8bc3af2
+
+### 20261007-120000-3: Attach pssc contexts to harvested fingerprints, with an untagged remainder.
+- **Do:** For the keys `topNDeltas` picks, attach their pssc deltas as contexts (tags `controller`, `action`, and `job` map to controller, action, and job tag), with real counts and real execution time. Calls in the pgss delta minus the sum of pssc calls become one untagged context (clamped at zero; a negative difference is logged, since the two diffs can disagree briefly around resets). Without pssc, each fingerprint gets only the untagged context. Keep the existing context limits.
+- **Needs:** 20261007-120000-2.
+- **Red test:** One fingerprint called from two controllers in different proportions ships those exact counts (today it ships the first text's context for all calls). An untagged share and the no-pssc case each have a test.
+- Completed: 2026-10-07, 3119d9d
