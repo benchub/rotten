@@ -8,7 +8,6 @@ import (
 	"log"
 	"log/slog"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,10 +28,7 @@ import (
 )
 
 const (
-	sampleController = `/\*.*controller(_with_namespace)?:([^,]+).*\*/`
-	sampleAction     = `/\*.*action:([^,]+).*\*/`
-	sampleJob        = `/\*.*job(_tag)?:([^,]+).*\*/`
-	diffQuery        = `select count(*) from widgets where id > 3 /*diff_marker*/`
+	diffQuery = `select count(*) from widgets where id > 3 /*diff_marker*/`
 )
 
 type stepClock struct {
@@ -74,21 +70,6 @@ func (c *stepClock) waitSleep(t *testing.T) time.Duration {
 		t.Fatal("worker never reached its sleep")
 		return 0
 	}
-}
-
-func sampleRegexes(t *testing.T) (c, a, j *regexp.Regexp) {
-	t.Helper()
-	var err error
-	if c, err = regexp.Compile(sampleController); err != nil {
-		t.Fatal(err)
-	}
-	if a, err = regexp.Compile(sampleAction); err != nil {
-		t.Fatal(err)
-	}
-	if j, err = regexp.Compile(sampleJob); err != nil {
-		t.Fatal(err)
-	}
-	return c, a, j
 }
 
 func startObservedForWorker(t *testing.T) *testdb.DB {
@@ -189,18 +170,20 @@ type running struct {
 
 func startOutboxWorker(t *testing.T, obsDSN string, logical, physical uint32, snapshot StateStore, outbox ServerOutboxStore) *running {
 	t.Helper()
-	reC, reA, reJ := sampleRegexes(t)
+	return startOutboxWorkerWith(t, obsDSN, logical, physical, snapshot, outbox, nil)
+}
+
+func startOutboxWorkerWith(t *testing.T, obsDSN string, logical, physical uint32, snapshot StateStore, outbox ServerOutboxStore, logger *slog.Logger) *running {
+	t.Helper()
 	cfg := Config{
 		ObservedDB:          observerConn(t, obsDSN),
 		ObservationInterval: 2,
 		SanityCheck:         "select true",
 		LogicalID:           logical,
 		PhysicalID:          physical,
-		ReController:        reC,
-		ReAction:            reA,
-		ReJobTag:            reJ,
 		State:               snapshot,
 		ServerOutbox:        outbox,
+		Logger:              logger,
 	}
 	clk := &stepClock{sleeping: make(chan time.Duration), proceed: make(chan struct{})}
 	w := New(cfg, clk)
@@ -688,7 +671,6 @@ func TestWorkerReconnectsToObservedDatabaseAfterRestart(t *testing.T) {
 		}
 		return conn, err
 	}
-	reC, reA, reJ := sampleRegexes(t)
 	cfg := Config{
 		ObservedDBConnect:   connector,
 		ReconnectBackoff:    func(int) time.Duration { return 10 * time.Millisecond },
@@ -696,9 +678,6 @@ func TestWorkerReconnectsToObservedDatabaseAfterRestart(t *testing.T) {
 		SanityCheck:         "select true",
 		LogicalID:           11,
 		PhysicalID:          46,
-		ReController:        reC,
-		ReAction:            reA,
-		ReJobTag:            reJ,
 		State:               store,
 		ServerOutbox:        store,
 		Logger:              slog.Default(),

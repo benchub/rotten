@@ -19,9 +19,6 @@ import (
 // counted that pssc didn't attribute become the untagged context (all three
 // empty). Without pssc, every call is untagged.
 //
-// The context regexes in Config still run, but only for the Postgres 18
-// marginalia warning (noteContext); task 20261007-120000-4 removes both.
-//
 // pgss and pssc are read one after the other, so calls that finish between
 // the two reads are in one view and not the other. That shows up as a pssc
 // sum slightly above pgss's calls in one window. forDelta ships only pgss's
@@ -38,7 +35,12 @@ import (
 // pssc.Capped itself (it rejects NUL bytes).
 const cappedTagValue = "(capped)"
 
-var untaggedContextKey = serverContextKey("", "", "")
+// contextKey is the key of a context in QueryEvent.context.
+func contextKey(controller, action, jobTag string) string {
+	return controller + "\x00" + action + "\x00" + jobTag
+}
+
+var untaggedContextKey = contextKey("", "", "")
 
 // psscContexts is one harvest's pssc deltas, indexed by pgss key.
 type psscContexts struct {
@@ -186,7 +188,7 @@ func (pc psscContexts) forDelta(d pgss.Delta) (map[string]uint64, map[string]flo
 	}
 	for _, p := range entries {
 		e := pssc.CanonicalTags(p.Tags)
-		k := serverContextKey(tagValue(p.Tags, "controller"), tagValue(p.Tags, "action"), jobTagValue(p.Tags))
+		k := contextKey(tagValue(p.Tags, "controller"), tagValue(p.Tags, "action"), jobTagValue(p.Tags))
 		counts[k] += ec[e]
 		times[k] += et[e]
 	}

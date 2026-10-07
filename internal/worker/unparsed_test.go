@@ -94,13 +94,9 @@ func TestUnparseableStatementReachesServerAsUnparsedFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c, a, j := sampleRegexes(t)
 	w := New(Config{
-		LogicalID:    reg.Msg.GetLogicalSourceId(),
-		PhysicalID:   reg.Msg.GetPhysicalSourceId(),
-		ReController: c,
-		ReAction:     a,
-		ReJobTag:     j,
+		LogicalID:  reg.Msg.GetLogicalSourceId(),
+		PhysicalID: reg.Msg.GetPhysicalSourceId(),
 	}, RealClock{})
 	end := time.Now().UTC().Truncate(time.Second)
 	// Contexts come from pssc: every entry counts in full, as on a first

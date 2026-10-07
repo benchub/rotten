@@ -97,30 +97,50 @@ the worker reconnects with backoff.
 
 ### Query context
 
-Rotten pulls a controller, an action and a job tag out of comments in the
-query text, like the ones the Rails `marginalia` gem and Rails query logs
-add. Each key is a Go regular expression. The value is the last capture
-group in the first match, and a statement with no match has no value.
+Rotten reads each query's controller, action, and job from the
+[`pg_stat_statement_context`](https://github.com/benchub/pg_stat_statement_context)
+extension (pssc), never from query text. pssc counts calls and execution
+time per query and per set of tags it pulls from comments, like the ones
+the Rails `marginalia` gem and Rails query logs add. The worker maps the
+`controller` and `action` tags, and `job` (or `job_tag` when there's no
+`job`), and ignores other tags. Calls that `pg_stat_statements` counted and
+pssc didn't attribute ship as an untagged context. There's nothing to set
+in the worker's config.
 
-| Key | Required | Example |
-| --- | --- | --- |
-| `ContextController` | yes | `/\\*.*controller(_with_namespace)?:([^,]+).*\\*/` |
-| `ContextAction` | yes | `/\\*.*action:([^,]+).*\\*/` |
-| `ContextJob` | yes | `/\\*.*job(_tag)?:([^,]+).*\\*/` |
+pssc is optional on each observed database. Without it, the worker ships no
+contexts, and every call is untagged. To use it, install it on the observed
+server, list it after `pg_stat_statements` in `shared_preload_libraries`, and
+run `create extension pg_stat_statement_context` in the database the worker
+connects to. The worker finds it in whatever schema it's created in. Two of
+pssc's defaults need changing for typical Rails marginalia:
 
-The examples are in JSON form, with each backslash doubled. If your
-application doesn't add comments, use a pattern that never matches, such as
-`a^`, since the keys can't be blank. An invalid pattern stops the worker at
-startup with an error that names the key.
+- `pg_stat_statement_context.extractors`: the default
+  (`sqlcommenter, marginalia`) reads only appended comments, and production
+  marginalia is usually prepended. Use
+  `sqlcommenter(position=any), marginalia(position=any)` (or
+  `position=prepend`).
+- `pg_stat_statement_context.tags`: the default is
+  `action, controller, job`. If your job marginalia uses `job_tag`, add it,
+  for example `action, controller, job, job_tag`.
 
-Contexts are credited per entry, not per call. `pg_stat_statements` keeps
-one query text for each entry (user, database, top-level flag and query ID):
-the first text it saw. The worker reads the context from that text and
-credits all of the entry's calls in a window to it, even when that text is
-from before the window. Entries are then merged by fingerprint, so one
-fingerprint can carry several contexts, one per entry (say, one per user).
-After a reset or an eviction, Postgres keeps a new first text for the new
-entry. The worker caches texts by key, and drops a key's text when the key is
+Each time the worker connects to the observed database, it logs whether
+pssc is in use. When it is, the worker warns if `extractors` has no
+`sqlcommenter`, `marginalia`, or `regex` extractor with `position=any` or
+`position=prepend` (`regex` defaults to `any`), or if `tags` (other than `*`) leaves out `controller`,
+`action`, or both `job` and `job_tag`. With `tags = '*'`, pssc's
+`exclude_tags` could still drop a mapped key, and the worker doesn't check
+that. It also warns if pssc's
+`pg_stat_statement_context_info().utility_missing_queryid` rises in 3 of the
+last 6 harvests. That usually means pssc is loaded before
+`pg_stat_statements`, but the counter also rises when a utility statement
+is re-run from a plan cache (for example a named prepared `SET`), so check
+that `shared_preload_libraries` lists `pg_stat_statements` first. The
+observer role can't read `shared_preload_libraries`, so the worker can't
+check the order directly.
+Each warning is logged at most once per worker process.
+
+The worker still reads query text from `pg_stat_statements` to fingerprint
+each entry. It caches texts by key, and drops a key's text when the key is
 missing from a harvest or its entry looks recreated, then fetches the new
 text in the same harvest. An entry looks recreated when a full reset moved
 `pg_stat_statements_info.stats_reset`, a counter went down, or, on 17 and
@@ -129,36 +149,7 @@ later, its `stats_since` changed. On 14 through 16, which have no
 cached text, since Postgres doesn't say which entries it evicted. A server
 that evicts entries between most harvests then fetches text for the sent
 entries every harvest, one query that reads the whole query text file; raise
-`pg_stat_statements.max` to avoid that. One case still slips through on 14
-through 16: an entry reset on its own with
-`pg_stat_statements_reset(userid, dbid, queryid)`, whose counters climb past
-their old values before the next harvest, keeps its old text. So a query
-that many controllers or jobs run under one entry is credited to whichever
-ran it first, for as long as the entry lasts. Per-context counts in the UI mean calls of
-entries first seen under that context, not every call the context made, and
-the UI says so under each table that shows contexts.
-
-On Postgres 18, `pg_stat_statements` drops a leading comment from the query
-text it keeps, while 14 through 17 keep it. Trailing and inline comments
-survive on every version, and Postgres has no setting for this. So on 18,
-have your application append its comments instead of prepending them:
-
-- `marginalia` gem: `Marginalia::Comment.prepend_comment = false`
-- Rails query logs: `config.active_record.query_log_tags_prepend_comment = false`
-
-Both append by default. If the observed server is 18 or later, the worker
-watches for context matches on each connection. After at least 3 harvest
-windows and 1,000 calls without a single match, it logs this warning:
-
-```
-No marginalia contexts found in sampled calls on PostgreSQL 18+. If your application emits leading comments, PostgreSQL 18 removes them from pg_stat_statements; configure it to append them (e.g. prepend_comment = false)
-```
-
-Only top-level statements count, and not the ones run by the worker's
-observer role, such as its own reads and sanity check. One match on the connection ends the
-check. It warns at most once per worker process, and checks again only after
-a restart. It doesn't warn if all three patterns can never match, such as
-`a^`.
+`pg_stat_statements.max` to avoid that.
 
 ### Fingerprinting
 
@@ -236,6 +227,11 @@ server marks any it stored later the next time a worker sends one
 `RottenDBConn`, `LogicalID` and `PhysicalID` belong to the old worker, which
 wrote to the rotten database directly. If any of them is present, the worker
 stops at startup and says so.
+
+`ContextController`, `ContextAction` and `ContextJob` held regular
+expressions that read contexts from query text. Contexts now come from
+pg_stat_statement_context (see [Query context](#query-context)), so if any
+of them is present, the worker stops at startup and says to remove it.
 
 ## State and the outbox
 

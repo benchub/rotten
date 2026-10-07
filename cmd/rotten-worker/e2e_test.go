@@ -68,9 +68,6 @@ func TestWorkerServerEndToEndSurvivesServerRestart(t *testing.T) {
 	"Environment": "test",
 	"Cluster": "cluster",
 	"Role": "primary",
-	"ContextController": "/\\\\*.*controller:([^,\\\\*]+).*\\\\*/",
-	"ContextAction": "/\\\\*.*action:([^,\\\\*]+).*\\\\*/",
-	"ContextJob": "/\\\\*.*job:([^,\\\\*]+).*\\\\*/",
 	"MinmaxResetSchema": "rotten"
 }`, topology.ObservedInternalDSN("rotten_observer"), testdb.ServerAlias)
 	if err := os.WriteFile(confFile, []byte(conf), 0o600); err != nil {

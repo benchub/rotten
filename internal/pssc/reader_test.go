@@ -250,3 +250,26 @@ func TestReaderSchema(t *testing.T) {
 		t.Fatalf("tagged call missing: %+v", stats)
 	}
 }
+
+// The observer can read pssc's extractors and tags settings and its
+// utility_missing_queryid counter.
+func TestReaderSettingsAndInfo(t *testing.T) {
+	ctx := context.Background()
+	db := testdb.StartObserved(t, 16)
+	r := pssc.NewReader(observer(t, db))
+	s, err := r.Settings(ctx)
+	if err != nil {
+		t.Fatalf("Settings: %v", err)
+	}
+	if s.Extractors != testdb.PSSCExtractors || s.Tags != testdb.PSSCTags {
+		t.Fatalf("Settings = %+v, want extractors %q and tags %q", s, testdb.PSSCExtractors, testdb.PSSCTags)
+	}
+	det, err := r.Detect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := r.UtilityMissingQueryID(ctx, det.Schema)
+	if err != nil || n < 0 {
+		t.Fatalf("UtilityMissingQueryID = %d, %v", n, err)
+	}
+}

@@ -9,7 +9,7 @@ import (
 
 // TestDevWorkerConfigs loads both dev stack worker configs with the real
 // loader. They report the same project, environment and cluster, differ in
-// role and FQDN, use the same context and fingerprint settings, and each
+// role and FQDN, use the same fingerprint settings, and each
 // checks it's pointed at the right kind of server.
 func TestDevWorkerConfigs(t *testing.T) {
 	load := func(name string) *Configuration {
@@ -38,9 +38,6 @@ func TestDevWorkerConfigs(t *testing.T) {
 			t.Errorf("%s differs: %q and %q", field, a, b)
 		}
 	}
-	same("ContextController", p.ContextController, r.ContextController)
-	same("ContextAction", p.ContextAction, r.ContextAction)
-	same("ContextJob", p.ContextJob, r.ContextJob)
 	same("CursorPattern", p.CursorPattern, r.CursorPattern)
 	same("TempTablePattern", p.TempTablePattern, r.TempTablePattern)
 	same("MinmaxResetSchema", p.MinmaxResetSchema, r.MinmaxResetSchema)

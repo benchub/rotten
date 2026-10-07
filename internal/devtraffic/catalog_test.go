@@ -12,18 +12,14 @@ import (
 
 	"github.com/benchub/rotten/internal/devtraffic"
 	"github.com/benchub/rotten/internal/fingerprint"
-	"github.com/benchub/rotten/internal/identity"
 	"github.com/benchub/rotten/internal/testdb"
 )
 
 // devWorkerConfig is the part of dev/worker.json these tests need.
 type devWorkerConfig struct {
-	ContextController string
-	ContextAction     string
-	ContextJob        string
-	KeepSchemas       bool
-	CursorPattern     string
-	TempTablePattern  string
+	KeepSchemas      bool
+	CursorPattern    string
+	TempTablePattern string
 }
 
 func loadDevWorkerConfig(t *testing.T) devWorkerConfig {
@@ -39,18 +35,6 @@ func loadDevWorkerConfig(t *testing.T) devWorkerConfig {
 	return cfg
 }
 
-// devRegexes compiles dev/worker.json's context regexes with the worker's
-// own compile step.
-func devRegexes(t *testing.T) (c, a, j *regexp.Regexp) {
-	t.Helper()
-	cfg := loadDevWorkerConfig(t)
-	c, a, j, err := identity.CompileRegexes(cfg.ContextController, cfg.ContextAction, cfg.ContextJob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c, a, j
-}
-
 func devFingerprintOptions(t *testing.T) fingerprint.Options {
 	t.Helper()
 	cfg := loadDevWorkerConfig(t)
@@ -59,18 +43,6 @@ func devFingerprintOptions(t *testing.T) fingerprint.Options {
 		t.Fatal(err)
 	}
 	return opts
-}
-
-// lastGroup is how identity.Cache.Find and the worker read a context value:
-// the last capture group of the first match, or "" when there's none. The
-// real-Postgres test runs the worker itself, so its extraction is covered
-// there too.
-func lastGroup(re *regexp.Regexp, query string) string {
-	m := re.FindStringSubmatch(query)
-	if len(m) <= 1 {
-		return ""
-	}
-	return m[len(m)-1]
 }
 
 var (
@@ -171,13 +143,13 @@ func TestPositionFor(t *testing.T) {
 	}
 }
 
-// TestEveryStatementCommentMatchesDevWorkerRegexes renders every shape under
+// TestEveryStatementCommentCarriesItsContext renders every shape under
 // every context that runs it, in both comment positions, many times with
 // fresh random request metadata, and checks the comment's format and that
-// dev/worker.json's regexes pull out exactly the intended controller, action,
-// or job tag.
-func TestEveryStatementCommentMatchesDevWorkerRegexes(t *testing.T) {
-	reC, reA, reJ := devRegexes(t)
+// its controller, action, or job_tag fields (the tags pssc's marginalia
+// extractor reads) are exactly the intended context. The real-Postgres test
+// checks what pssc and the worker make of them.
+func TestEveryStatementCommentCarriesItsContext(t *testing.T) {
 	sz := devtraffic.SizesFor(1)
 	r := rand.New(rand.NewPCG(1, 2))
 	pool := devtraffic.NewHostPool(r)
@@ -197,7 +169,7 @@ func TestEveryStatementCommentMatchesDevWorkerRegexes(t *testing.T) {
 						t.Fatalf("%s/%s: pid %q", c.Label(), name, vals["pid"])
 					}
 
-					gotC, gotA, gotJ := lastGroup(reC, stmt), lastGroup(reA, stmt), lastGroup(reJ, stmt)
+					gotC, gotA, gotJ := vals["controller"], vals["action"], vals["job_tag"]
 					if c.IsJob() {
 						if want := []string{"context_id", "hostname", "job_tag", "pid"}; !slices.Equal(keys, want) {
 							t.Fatalf("%s/%s: job comment keys %v, want %v", c.Label(), name, keys, want)

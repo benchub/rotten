@@ -107,6 +107,20 @@ func TestSampleConfLoads(t *testing.T) {
 	}
 }
 
+// Contexts come from pg_stat_statement_context now, so the old context
+// regexes fail fast instead of being silently ignored.
+func TestOldContextRegexesFailFast(t *testing.T) {
+	for _, key := range []string{"ContextController", "ContextAction", "ContextJob", "contextcontroller"} {
+		t.Run(key, func(t *testing.T) {
+			path := writeConfig(t, map[string]string{key: `"x"`})
+			_, err := loadConfiguration(path)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(key)+" is no longer supported; contexts come from pg_stat_statement_context") {
+				t.Fatalf("loadConfiguration err = %v, want clear %s failure", err, key)
+			}
+		})
+	}
+}
+
 func TestOldRottenDBConnFailsFast(t *testing.T) {
 	for _, key := range []string{"RottenDBConn", "LogicalID", "PhysicalID"} {
 		t.Run(key, func(t *testing.T) {
@@ -135,9 +149,6 @@ func TestLoadConfigurationMissingRequiredKeys(t *testing.T) {
 		"Environment",
 		"Cluster",
 		"Role",
-		"ContextController",
-		"ContextAction",
-		"ContextJob",
 	} {
 		t.Run(key, func(t *testing.T) {
 			path := writeConfigWithout(t, key)
@@ -177,9 +188,6 @@ func writeConfig(t *testing.T, overrides map[string]string) string {
 		"Environment":         `"e"`,
 		"Cluster":             `"c"`,
 		"Role":                `"r"`,
-		"ContextController":   `"x"`,
-		"ContextAction":       `"x"`,
-		"ContextJob":          `"x"`,
 	}
 	for key, value := range overrides {
 		if value == "" {

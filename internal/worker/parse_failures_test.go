@@ -205,16 +205,12 @@ func TestNoIdleHandsWatchdogDoesNotFireOnHealthyRunLoop(t *testing.T) {
 	store := openStore(t, t.TempDir())
 	defer store.Close()
 	fired := make(chan string, 1)
-	reC, reA, reJ := sampleRegexes(t)
 	w := New(Config{
 		ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
 		ObservationInterval: 2,
 		SanityCheck:         "select true",
 		LogicalID:           12,
 		PhysicalID:          47,
-		ReController:        reC,
-		ReAction:            reA,
-		ReJobTag:            reJ,
 		State:               store,
 		ServerOutbox:        store,
 		MaxReconnectBackoff: 100 * time.Millisecond,

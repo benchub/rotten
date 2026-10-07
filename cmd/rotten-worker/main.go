@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"runtime/pprof"
 	"strings"
@@ -59,9 +58,6 @@ type Configuration struct {
 	Environment         string
 	Cluster             string
 	Role                string
-	ContextController   string
-	ContextAction       string
-	ContextJob          string
 	// KeepSchemas is optional. Leaving it out (false) collapses schema
 	// names in fingerprints. True keeps them apart.
 	KeepSchemas bool
@@ -449,6 +445,14 @@ func loadConfiguration(path string) (*Configuration, error) {
 			return nil, fmt.Errorf("%s is no longer supported; configure ServerURL, PassKeyFile, ServerCAFile, StateDir, and MaxSnapshotAge", old)
 		}
 	}
+	// Matched without case, as encoding/json would have matched them.
+	for key := range raw {
+		for _, old := range []string{"ContextController", "ContextAction", "ContextJob"} {
+			if strings.EqualFold(key, old) {
+				return nil, fmt.Errorf("%s is no longer supported; contexts come from pg_stat_statement_context (see docs/worker.md), so remove it", old)
+			}
+		}
+	}
 	var c Configuration
 	for key, value := range raw {
 		if strings.EqualFold(key, "OutboxCap") {
@@ -478,9 +482,6 @@ func loadConfiguration(path string) (*Configuration, error) {
 		{"Environment", c.Environment},
 		{"Cluster", c.Cluster},
 		{"Role", c.Role},
-		{"ContextController", c.ContextController},
-		{"ContextAction", c.ContextAction},
-		{"ContextJob", c.ContextJob},
 	}
 	for _, r := range required {
 		if strings.TrimSpace(r.value) == "" {
@@ -497,19 +498,6 @@ func loadConfiguration(path string) (*Configuration, error) {
 		return nil, fmt.Errorf("MaxSnapshotAge is required")
 	}
 	return &c, nil
-}
-
-func compileRegexes(controller, action, job string) (c, a, j *regexp.Regexp, err error) {
-	if c, err = regexp.Compile(controller); err != nil {
-		return nil, nil, nil, fmt.Errorf("compile ContextController: %w", err)
-	}
-	if a, err = regexp.Compile(action); err != nil {
-		return nil, nil, nil, fmt.Errorf("compile ContextAction: %w", err)
-	}
-	if j, err = regexp.Compile(job); err != nil {
-		return nil, nil, nil, fmt.Errorf("compile ContextJob: %w", err)
-	}
-	return c, a, j, nil
 }
 
 type outboxDrainer interface {
@@ -948,11 +936,6 @@ func main() {
 	cfg.Fingerprint, err = fingerprint.NewOptions(configuration.KeepSchemas, configuration.CursorPattern, configuration.TempTablePattern)
 	if err != nil {
 		log.Println("bad fingerprint pattern in config:", err)
-		os.Exit(1)
-	}
-	cfg.ReController, cfg.ReAction, cfg.ReJobTag, err = compileRegexes(configuration.ContextController, configuration.ContextAction, configuration.ContextJob)
-	if err != nil {
-		log.Println(err)
 		os.Exit(1)
 	}
 	cfg.WatchdogExit = func(reason string) { os.Exit(1) }

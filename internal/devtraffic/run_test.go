@@ -122,7 +122,6 @@ func runFeedsTheWorker(t *testing.T, version int) {
 	}
 	defer store.Close()
 
-	reC, reA, reJ := devRegexes(t)
 	fpOpts := devFingerprintOptions(t)
 	w := worker.New(worker.Config{
 		ObservedDB:          obs,
@@ -130,9 +129,6 @@ func runFeedsTheWorker(t *testing.T, version int) {
 		SanityCheck:         "select true",
 		LogicalID:           1,
 		PhysicalID:          1,
-		ReController:        reC,
-		ReAction:            reA,
-		ReJobTag:            reJ,
 		Fingerprint:         fpOpts,
 		State:               store,
 		ServerOutbox:        store,

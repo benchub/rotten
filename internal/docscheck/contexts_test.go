@@ -26,22 +26,41 @@ func docSubsection(t *testing.T, doc, title string) string {
 	return rest
 }
 
-// pg_stat_statements keeps one text per entry, the first it saw, and the
-// worker credits all the entry's calls to the context in that text. The
-// docs that describe contexts must say so, and say what a count means.
-func TestContextCreditingDocumented(t *testing.T) {
+// Contexts come from pg_stat_statement_context, which is optional, and it
+// needs two settings changed for marginalia. docs/worker.md must say so,
+// and that the old context keys are gone.
+func TestWorkerContextsDocumented(t *testing.T) {
 	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 	worker := flat(docSubsection(t, "docs/worker.md", "Query context"))
 	for _, want := range []string{
-		"`pg_stat_statements` keeps one query text for each entry",
-		"first seen under that context",
+		"pg_stat_statement_context",
+		"optional",
+		"untagged",
+		"position=any",
+		"job_tag",
+		"utility_missing_queryid",
 	} {
 		if !strings.Contains(worker, want) {
 			t.Errorf("docs/worker.md, Query context: missing %q", want)
 		}
 	}
+	for _, gone := range []string{"first seen under that context", "No marginalia contexts found"} {
+		if strings.Contains(worker, gone) {
+			t.Errorf("docs/worker.md, Query context: still says %q", gone)
+		}
+	}
+	removed := flat(docSubsection(t, "docs/worker.md", "Removed keys"))
+	for _, key := range []string{"`ContextController`", "`ContextAction`", "`ContextJob`"} {
+		if !strings.Contains(removed, key) {
+			t.Errorf("docs/worker.md, Removed keys: missing %s", key)
+		}
+	}
+}
 
+// The UI still shows the first-seen caveat until task 20261007-120000-6.
+func TestContextCaveatInUIReadme(t *testing.T) {
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	b, err := os.ReadFile(filepath.Join(Root(t), "ui/README.md"))
 	if err != nil {
 		t.Fatal(err)

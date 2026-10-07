@@ -45,14 +45,14 @@ func TestForDeltaRealCountsAndTimesWithUntaggedRemainder(t *testing.T) {
 	}, pssc.Snapshot{}, pssc.Snapshot{}, time.Unix(50, 0))
 	counts, times := pc.forDelta(pgssDelta(7, 12, 100))
 	wantCounts := map[string]uint64{
-		serverContextKey("users", "show", ""):   4,
-		serverContextKey("posts", "index", "J"): 5,
-		untaggedContextKey:                      3,
+		contextKey("users", "show", ""):   4,
+		contextKey("posts", "index", "J"): 5,
+		untaggedContextKey:                3,
 	}
 	wantTimes := map[string]float64{
-		serverContextKey("users", "show", ""):   32,
-		serverContextKey("posts", "index", "J"): 5,
-		untaggedContextKey:                      63,
+		contextKey("users", "show", ""):   32,
+		contextKey("posts", "index", "J"): 5,
+		untaggedContextKey:                63,
 	}
 	if fmt.Sprint(counts) != fmt.Sprint(wantCounts) || fmt.Sprint(times) != fmt.Sprint(wantTimes) {
 		t.Fatalf("counts=%v times=%v, want %v %v", counts, times, wantCounts, wantTimes)
@@ -65,7 +65,7 @@ func TestForDeltaJobTagKey(t *testing.T) {
 		psscDelta(7, 1, 1, map[string]string{"job": "A", "job_tag": "B"}),
 	}, pssc.Snapshot{}, pssc.Snapshot{}, time.Unix(50, 0))
 	counts, _ := pc.forDelta(pgssDelta(7, 3, 2))
-	if counts[serverContextKey("", "", "Cleanup")] != 2 || counts[serverContextKey("", "", "A")] != 1 || len(counts) != 2 {
+	if counts[contextKey("", "", "Cleanup")] != 2 || counts[contextKey("", "", "A")] != 1 || len(counts) != 2 {
 		t.Fatalf("counts = %v, want job_tag Cleanup 2 and job A 1", counts)
 	}
 }
@@ -91,13 +91,13 @@ func TestForDeltaPSSCAbovePGSSClampsUntaggedAndLogs(t *testing.T) {
 	if sum > 4 {
 		t.Fatalf("counts %v sum to %d, over pgss's 4", counts, sum)
 	}
-	if counts[serverContextKey("a", "", "")] != 3 || counts[serverContextKey("b", "", "")] != 1 {
+	if counts[contextKey("a", "", "")] != 3 || counts[contextKey("b", "", "")] != 1 {
 		t.Fatalf("counts = %v, want a:3 b:1 (scaled by 4/8)", counts)
 	}
 	if _, ok := counts[untaggedContextKey]; ok {
 		t.Fatalf("counts = %v, want no untagged context", counts)
 	}
-	if times[serverContextKey("a", "", "")] != 30 {
+	if times[contextKey("a", "", "")] != 30 {
 		t.Fatalf("times = %v, want a scaled to 30", times)
 	}
 	var held int64
@@ -119,7 +119,7 @@ func TestForDeltaCappedTagShipsMarker(t *testing.T) {
 		psscDelta(7, 2, 1, map[string]string{"controller": pssc.Capped, "action": "show"}),
 	}, pssc.Snapshot{}, pssc.Snapshot{}, time.Unix(50, 0))
 	counts, _ := pc.forDelta(pgssDelta(7, 2, 1))
-	if counts[serverContextKey(cappedTagValue, "show", "")] != 2 || len(counts) != 1 {
+	if counts[contextKey(cappedTagValue, "show", "")] != 2 || len(counts) != 1 {
 		t.Fatalf("counts = %v, want (capped)/show 2", counts)
 	}
 }
@@ -135,7 +135,7 @@ func TestNewPSSCEntryFromBeforeTheWindowIsUntagged(t *testing.T) {
 	fresh.StatsSince = time.Unix(200, 0)
 	pc := newPSSCContexts(true, []pssc.Delta{old, fresh}, pssc.Snapshot{}, pssc.Snapshot{}, time.Unix(150, 0))
 	counts, _ := pc.forDelta(pgssDelta(7, 5, 5))
-	if len(counts) != 2 || counts[serverContextKey("fresh", "", "")] != 2 || counts[untaggedContextKey] != 3 {
+	if len(counts) != 2 || counts[contextKey("fresh", "", "")] != 2 || counts[untaggedContextKey] != 3 {
 		t.Fatalf("counts = %v, want fresh 2 and untagged 3", counts)
 	}
 	if !strings.Contains(logs.String(), "started before this window") {
@@ -154,7 +154,7 @@ func TestNewPSSCEntryStaysTaggedWhenPreviousSnapshotIsNotEmpty(t *testing.T) {
 	fresh.StatsSince = time.Unix(149, 0)
 	pc := newPSSCContexts(true, []pssc.Delta{fresh}, prev, pssc.Snapshot{}, time.Unix(150, 0))
 	counts, _ := pc.forDelta(pgssDelta(7, 2, 2))
-	if len(counts) != 1 || counts[serverContextKey("fresh", "", "")] != 2 {
+	if len(counts) != 1 || counts[contextKey("fresh", "", "")] != 2 {
 		t.Fatalf("counts = %v, want fresh 2", counts)
 	}
 }

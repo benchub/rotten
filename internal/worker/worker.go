@@ -12,7 +12,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -80,7 +79,7 @@ type QueryEvent struct {
 	blk_write_time      float64
 
 	// The contexts (see pssc_contexts.go) for this query in this window,
-	// keyed by serverContextKey: calls, and execution time in ms. The time
+	// keyed by contextKey: calls, and execution time in ms. The time
 	// isn't on the wire yet (task 20261007-120000-5).
 	context      map[string]uint64
 	context_time map[string]float64
@@ -113,9 +112,6 @@ type Config struct {
 	SanityCheck         string
 	LogicalID           uint32
 	PhysicalID          uint32
-	ReController        *regexp.Regexp
-	ReAction            *regexp.Regexp
-	ReJobTag            *regexp.Regexp
 	Fingerprint         fingerprinting.Options
 	// MinmaxResetSchema holds <schema>.pg_stat_statements_minmax_reset()
 	// on 17+. Run calls it right after each harvest's read. Empty means
@@ -214,9 +210,9 @@ type Worker struct {
 	// is behind what was sent. Only Run's goroutine touches it.
 	staleState bool
 
-	// ctxWatch backs the Postgres 18 leading-marginalia warning. Only Run's
-	// goroutine touches it.
-	ctxWatch contextWatch
+	// psscWatch backs the pssc startup log and warnings (pssc_health.go).
+	// Only Run's goroutine touches it.
+	psscWatch psscWatch
 
 	// How many event-processing goroutines are running. The server-outbox
 	// worker path never starts any; this remains for progress log continuity.
@@ -292,9 +288,9 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			w.markAlive("connected")
 			observed = conn
-			w.observedConnected(w.observedServerInfo(ctx, observed))
 			reader = pgss.NewReader(observed)
 			psscReader = pssc.NewReader(observed)
+			w.checkPSSCAtConnect(ctx, psscReader)
 			texts = pgss.NewTextCache(reader)
 			connectAttempt = 0
 		}
@@ -543,6 +539,11 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, psscReader *p
 			log.Println("couldn't read pg_stat_statement_context, so this window's calls are untagged:", err)
 			psscStats, psscOK = nil, false
 		}
+		if psscOK {
+			if err := w.checkPSSCUtility(ctx, psscReader); err != nil && retryObservedError(err) {
+				return err
+			}
+		}
 	}
 	w.lastWindowEnd.Store(now.Unix())
 	w.lastHarvest.Store(now.Unix())
@@ -567,7 +568,6 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, psscReader *p
 	} else if cfg.ServerOutbox != nil {
 		var batch *rottenv1.SubmitHarvestRequest
 		batch, next, psscNext = w.buildHarvestBatchAndSnapshotPSSC(ctx, texts, loaded.Snapshot, next, deltas, contexts, loaded.TakenAt, now)
-		w.maybeWarnNoContexts()
 		result, err := cfg.ServerOutbox.SaveSnapshotsAndEnqueue(ctx, next, psscNext, now, batch)
 		if err != nil {
 			log.Println("couldn't save the snapshot and outbox batch, so the next harvest is a baseline:", err)
@@ -787,10 +787,6 @@ func (w *Worker) buildHarvestBatchFromRowsPSSC(picked []pgss.Delta, rows []pgss.
 		event.observationTimeStart = PoorMansTime{sec: start.Unix()}
 		event.observationTimeEnd = PoorMansTime{sec: end.Unix()}
 		w.eventCount.Add(1)
-		controller := extractContextValue(event.query, cfg.ReController)
-		action := extractContextValue(event.query, cfg.ReAction)
-		jobTag := extractContextValue(event.query, cfg.ReJobTag)
-		w.noteContext(d.UserID, d.TopLevel, wholeCount(event.calls), controller != "" || action != "" || jobTag != "")
 		fingerprint, err := fingerprinting.Normalized(event.query, cfg.Fingerprint)
 		if errors.Is(err, fingerprinting.ErrParse) {
 			// Ship it under a text-derived fingerprint rather than drop its
@@ -906,21 +902,6 @@ func eventAggregate(fingerprint, normalized string, event QueryEvent) *rottenv1.
 		Metrics:        metrics,
 		MinmaxLifetime: event.minmax_lifetime,
 	}
-}
-
-func extractContextValue(query string, re *regexp.Regexp) string {
-	if re == nil {
-		return ""
-	}
-	matches := re.FindStringSubmatch(query)
-	if len(matches) <= 1 {
-		return ""
-	}
-	return matches[len(matches)-1]
-}
-
-func serverContextKey(controller, action, jobTag string) string {
-	return controller + "\x00" + action + "\x00" + jobTag
 }
 
 // ReportProgress logs the progress counters every interval seconds. It
