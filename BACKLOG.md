@@ -41,6 +41,12 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **-140000-2, login rate limits:** keep the in-process memory store. Document in `docs/ui.md` that each process keeps its own counters, so N Puma workers or replicas allow N× the limit, and recommend one UI process (or scale the limits to match).
 - **-140000-1, forced password change at first login:** don't build it.
 
+**Decisions (user, 2026-10-07): context from pg_stat_statement_context (pssc).**
+- **Source:** Read context from the pssc extension (https://github.com/benchub/pg_stat_statement_context), not from query text. Tasks 20261007-120000-1 through -6.
+- **Optional:** pssc is optional on each observed database (RDS likely won't allow it). Without it the worker ships no contexts, and every call is untagged. No regex fallback: the user's marginalia is prepended on Postgres 18, so text parsing wouldn't help.
+- **Untagged calls show in the UI.** Calls pgss counted that pssc didn't attribute appear as an "untagged" context, with their count and time.
+- **Generic tag sets are v2.** v1 maps the `controller`, `action`, and `job` tags into today's columns. Arbitrary keys are 20261007-120000-7.
+
 ---
 
 ## Phase A: Test harness and characterization.
@@ -80,3 +86,44 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Red test:** Delay the replica's start past 8s (or shorten the hold) and watch the current test fail; it must pass after the fix.
 
 ## Phase F: Docs.
+
+## Phase G: Context from pg_stat_statement_context.
+
+Background: contexts come from the first query text pgss kept for each entry, so their counts were always skewed, and Postgres 18 drops leading comments. pssc counts calls and execution time per (userid, dbid, queryid, toplevel, tag set). Read it as counters (`calls_total`, `exec_time_total`, `stats_since` from `pg_stat_statement_context_totals`) and diff them like pgss, so the worker's interval doesn't need to match pssc's `bucket_interval`.
+
+### 20261007-120000-1: Test and dev Postgres images ship pssc.
+- **Do:** Build pssc into the `internal/testdb` images and the dev observed databases for Postgres 14 through 18, preloaded after pgss (`shared_preload_libraries = 'pg_stat_statements, pg_stat_statement_context'`). Keep a way to start a database without pssc, for the optional path.
+- **Needs:** nothing.
+- **Red test:** A smoke check that, on each major version, a tagged statement shows up, with the comment both appended (`select 1 /*controller:a,action:b*/`) and prepended (`/*controller:a,action:b*/ select 1`, the production format), in `pg_stat_statement_context_totals`, and a no-pssc database reports the extension missing.
+
+### 20261007-120000-2: pssc reader and snapshot diff.
+- **Do:** Add a reader next to `internal/pgss` that detects pssc (preloaded, extension created, its schema) and reads the totals view. Store its snapshot in the worker's state and diff it like `pgss.Diff`: an entry is new when it's missing, its `stats_since` changed, or a counter went down. A missing extension isn't an error.
+- **Needs:** 20261007-120000-1.
+- **Red test:** Diff tests for reset, eviction (new `stats_since`), and a counter going down; a reader test against real Postgres with and without pssc.
+
+### 20261007-120000-3: Attach pssc contexts to harvested fingerprints, with an untagged remainder.
+- **Do:** For the keys `topNDeltas` picks, attach their pssc deltas as contexts (tags `controller`, `action`, and `job` map to controller, action, and job tag), with real counts and real execution time. Calls in the pgss delta minus the sum of pssc calls become one untagged context (clamped at zero; a negative difference is logged, since the two diffs can disagree briefly around resets). Without pssc, each fingerprint gets only the untagged context. Keep the existing context limits.
+- **Needs:** 20261007-120000-2.
+- **Red test:** One fingerprint called from two controllers in different proportions ships those exact counts (today it ships the first text's context for all calls). An untagged share and the no-pssc case each have a test.
+
+### 20261007-120000-4: Remove query-text context parsing and the Postgres 18 warning.
+- **Do:** Delete `extractContextValue`, `serverContextKey`, the three regexes, `context_warning.go`, and the unused `internal/identity` package. Drop `ContextController`, `ContextAction`, and `ContextJob` from the worker config: fail fast with a clear message if they're present. Add an optional `ContextSchema` if pssc isn't found on the search path. At startup, log whether pssc is in use, and warn if it's loaded before pgss or `utility_missing_queryid` keeps rising. Update `dev/worker*.json` and `docs/worker.md`.
+- **Needs:** 20261007-120000-3.
+- **Red test:** A config with the old keys fails with the new message; a startup test logs pssc's state.
+
+### 20261007-120000-5: Server stores real context time and the untagged context.
+- **Do:** Carry each context's execution time on the wire (`QueryContext`) and store it as `attributed_time` instead of the proportional estimate. Store the untagged context (all three IDs null, or a marker, whichever reports can tell apart from a missing value). Retire `repair_context_utilization` for new data, keeping it for rows ingested before the change if needed.
+- **Needs:** 20261007-120000-3.
+- **Red test:** An ingest test where two contexts with different times are stored with those times, not split by count.
+
+### 20261007-120000-6: UI and docs for exact contexts.
+- **Do:** Show the untagged context in "Top contexts" and the utilization reports, labelled clearly (for example "untagged"). Remove `CONTEXT_CAVEAT` and the "first seen" wording. Mark `docs/decisions/context-sampling.md` superseded and update the `docscheck` tests. Remove the Postgres 18 append advice from `docs/worker.md`, `docs/observed.md`, `README.md`, and `dev/README.md`, and document how to install pssc and that it's optional.
+- **Needs:** 20261007-120000-5.
+- **Red test:** A system spec that shows the untagged context on the fingerprint page, and one that the caveat is gone.
+
+### 20261007-120000-7: Generic tag sets (v2).
+- **Why:** pssc can keep any tag keys, not just controller, action, and job.
+- **Do:** First, benchmark pssc with `tags = '*'` against the default allowlist (pssc's `bench/run.sh`), since its published numbers don't cover that. Then replace the three ID columns with a deduplicated `tagsets(id, tags jsonb unique)` table, ship a per-fingerprint top K plus an "other" row so one noisy key can't crowd out the rest, add a worker setting for which keys to ship, and make the reports and match filter work on jsonb keys. Document the advice to set `cardinality_cap`.
+- **Needs:** 20261007-120000-6.
+- **Red test:** A harvest with a non-default key (e.g. `route`) is stored and shown in reports.
+
