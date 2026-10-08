@@ -33,6 +33,13 @@ const (
 	MaxSourceStringBytes  = 255
 	MaxWorkerVersionBytes = 128
 	MaxFloatMetricValue   = 1e15
+	// ContextTimeRelativeSlack and ContextTimeAbsoluteSlackMS bound how far
+	// the sum of an aggregate's context times may exceed its total_time.
+	// The worker sums per-context float deltas, so the sum can drift a few
+	// ulps above total_time; anything beyond that is rejected.
+	ContextTimeRelativeSlack   = 1e-9
+	ContextTimeAbsoluteSlackMS = 1e-6
+
 	// MaxContextCount caps values that are stored in event_context.c and may be
 	// summed by reports. 2^53 is exactly representable in float64, matches the
 	// events.calls precision, and leaves over 1000 rows of summing headroom before
@@ -117,6 +124,8 @@ func ValidateHarvest(msg *rottenv1.SubmitHarvestRequest, now time.Time, futureSk
 		}
 		seenContexts := map[string]struct{}{}
 		var contextCountSum uint64
+		var contextTimeSum float64
+		timed := 0
 		for _, qc := range aggregate.GetContexts() {
 			contexts++
 			if contexts > MaxHarvestContexts {
@@ -143,9 +152,24 @@ func ValidateHarvest(msg *rottenv1.SubmitHarvestRequest, now time.Time, futureSk
 			}
 			seenContexts[key] = struct{}{}
 			contextCountSum += qc.GetCount()
+			if qc.Time != nil {
+				v := qc.GetTime()
+				if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+					return time.Time{}, time.Time{}, errors.New("context time is out of range")
+				}
+				timed++
+				contextTimeSum += v
+			}
 		}
 		if contextCountSum > aggregate.GetMetrics().GetCalls() {
 			return time.Time{}, time.Time{}, errors.New("context counts exceed aggregate calls")
+		}
+		if timed != 0 && timed != len(aggregate.GetContexts()) {
+			return time.Time{}, time.Time{}, errors.New("aggregate contexts must all set time or none")
+		}
+		total := aggregate.GetMetrics().GetTotalTime()
+		if contextTimeSum > total+total*ContextTimeRelativeSlack+ContextTimeAbsoluteSlackMS {
+			return time.Time{}, time.Time{}, errors.New("context times exceed aggregate total_time")
 		}
 	}
 	return start, end, nil

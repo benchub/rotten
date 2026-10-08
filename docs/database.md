@@ -168,6 +168,26 @@ batch of 1,000 events at a time. It logs `repaired context utilization` with
 the row count each time. A partial index, `event_context_utilization_missing`,
 finds those rows, and it's empty the rest of the time.
 
+**Context time comes from the worker since migration 0015.** Workers from
+this release on send each context's own time (`QueryContext.time`), and the
+server stores it as `attributed_time` as is. The worker starts from
+`pg_stat_statement_context`'s execution time and scales it so a fingerprint's
+contexts sum to `events.time`, which also counts planning time. That spreads
+planning across contexts by their share of execution time. If pssc recorded
+no execution time, the worker splits `events.time` by count. Older workers
+don't send time, and their rows keep the proportional estimate,
+`events.time * c / sum(c)`. Migration 0015 only updates the column comment.
+`repair_context_utilization()` and `event_context_utilization_missing` stay,
+for rows a pre-0011 `serve` writes; a current `serve` always writes
+`attributed_time`.
+
+The untagged context, calls that pgss counted and pssc didn't attribute, is a
+row with `controller_id`, `action_id` and `job_tag_id` all NULL.
+`fingerprint_contexts.sql` returns it, but `top_by_calls.sql`,
+`top_by_total_time.sql`, `outliers.sql` and the replica utilization reports still filter it
+out until task 20261007-120000-6. A tag pssc capped is stored as the literal
+value `(capped)`, an ordinary tag value in its lookup table.
+
 **Run migration 0012 before you start the matching `serve`.** It adds
 `rotten.fingerprints.unparsed` (`boolean not null default false`, which
 doesn't rewrite the table), sets it on every fingerprint that starts with

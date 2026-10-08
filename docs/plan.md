@@ -121,6 +121,7 @@ Semantic validation runs before any database transaction:
 | Normalized query string | 8 KiB |
 | Context strings | 512 bytes |
 | Context counts | 1 through 2^53 |
+| Context times | finite, ≥ 0, summing to at most total_time plus 1e-9 relative and 1e-6 ms; all set or all unset per aggregate |
 | Floating metric values | 1e15 ms |
 | Harvest window duration | 24 hours |
 | Harvest window future skew | 5 minutes |
@@ -142,7 +143,10 @@ field) and are stored as PostgreSQL `bigint`. The server caps calls and
 context counts at 2^53: exact in `float8` for `events.calls`, exact in the
 top-query reports' numeric `jsonb` context `times`, and the precision boundary
 for clients that decode report totals as `float64`. Replica-utilization call
-totals are returned as `double precision`.
+totals are returned as `double precision`. Context times (`QueryContext.time`)
+are optional; an aggregate whose contexts leave them unset gets the
+proportional estimate. The slack on their sum covers float summation drift,
+and the worker scales them to sum to total_time.
 Stored text must be valid UTF-8 and NUL-free, matching PostgreSQL `text`.
 
 ### Fault tolerance.

@@ -452,11 +452,26 @@ func (x *FingerprintAggregate) GetUnparsed() bool {
 // decoding report totals as float64 lose integer precision above 2^53, so the
 // server accepts 1 through 2^53 and rejects anything else with InvalidArgument.
 type QueryContext struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Controller    string                 `protobuf:"bytes,1,opt,name=controller,proto3" json:"controller,omitempty"`
-	Action        string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
-	JobTag        string                 `protobuf:"bytes,3,opt,name=job_tag,json=jobTag,proto3" json:"job_tag,omitempty"`
-	Count         uint64                 `protobuf:"varint,4,opt,name=count,proto3" json:"count,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Controller string                 `protobuf:"bytes,1,opt,name=controller,proto3" json:"controller,omitempty"`
+	Action     string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	JobTag     string                 `protobuf:"bytes,3,opt,name=job_tag,json=jobTag,proto3" json:"job_tag,omitempty"`
+	Count      uint64                 `protobuf:"varint,4,opt,name=count,proto3" json:"count,omitempty"`
+	// The time in ms of the calls this context carried: its execution time
+	// from pg_stat_statement_context, scaled by the worker so an aggregate's
+	// contexts sum to metrics.total_time (planning plus execution), which
+	// spreads planning time by execution share. With no execution time
+	// recorded, the worker splits total_time by count. The server stores it as
+	// event_context.attributed_time. Unset (as from workers before task
+	// 20261007-120000-5) means unknown, and the server falls back to the
+	// aggregate's total_time split by count. Within one aggregate, either
+	// every context sets it or none does. Each value must be finite and >= 0,
+	// and their sum must not exceed metrics.total_time by more than a relative
+	// 1e-9 plus 1e-6 ms (float summation slack); otherwise InvalidArgument.
+	//
+	// All three tags empty is the untagged context: calls pgss counted that
+	// pssc didn't attribute. It's stored with all three IDs NULL.
+	Time          *float64 `protobuf:"fixed64,5,opt,name=time,proto3,oneof" json:"time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -515,6 +530,13 @@ func (x *QueryContext) GetJobTag() string {
 func (x *QueryContext) GetCount() uint64 {
 	if x != nil {
 		return x.Count
+	}
+	return 0
+}
+
+func (x *QueryContext) GetTime() float64 {
+	if x != nil && x.Time != nil {
+		return *x.Time
 	}
 	return 0
 }
@@ -799,14 +821,16 @@ const file_rotten_v1_ingest_proto_rawDesc = "" +
 	"\bcontexts\x18\x03 \x03(\v2\x17.rotten.v1.QueryContextR\bcontexts\x12,\n" +
 	"\ametrics\x18\x04 \x01(\v2\x12.rotten.v1.MetricsR\ametrics\x12'\n" +
 	"\x0fminmax_lifetime\x18\x05 \x01(\bR\x0eminmaxLifetime\x12\x1a\n" +
-	"\bunparsed\x18\x06 \x01(\bR\bunparsed\"u\n" +
+	"\bunparsed\x18\x06 \x01(\bR\bunparsed\"\x97\x01\n" +
 	"\fQueryContext\x12\x1e\n" +
 	"\n" +
 	"controller\x18\x01 \x01(\tR\n" +
 	"controller\x12\x16\n" +
 	"\x06action\x18\x02 \x01(\tR\x06action\x12\x17\n" +
 	"\ajob_tag\x18\x03 \x01(\tR\x06jobTag\x12\x14\n" +
-	"\x05count\x18\x04 \x01(\x04R\x05count\"\xd3\x05\n" +
+	"\x05count\x18\x04 \x01(\x04R\x05count\x12\x17\n" +
+	"\x04time\x18\x05 \x01(\x01H\x00R\x04time\x88\x01\x01B\a\n" +
+	"\x05_time\"\xd3\x05\n" +
 	"\aMetrics\x12\x14\n" +
 	"\x05calls\x18\x01 \x01(\x04R\x05calls\x12\x1d\n" +
 	"\n" +
@@ -891,6 +915,7 @@ func file_rotten_v1_ingest_proto_init() {
 		return
 	}
 	file_rotten_v1_ingest_proto_msgTypes[0].OneofWrappers = []any{}
+	file_rotten_v1_ingest_proto_msgTypes[4].OneofWrappers = []any{}
 	file_rotten_v1_ingest_proto_msgTypes[5].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

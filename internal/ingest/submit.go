@@ -303,8 +303,13 @@ func insertAggregate(ctx context.Context, tx pgx.Tx, msg *rottenv1.SubmitHarvest
 		controllerID := optionalID(ids.controllers, qc.GetController())
 		actionID := optionalID(ids.actions, qc.GetAction())
 		jobTagID := optionalID(ids.jobTags, qc.GetJobTag())
-		// The same arithmetic, in the same order, as migration 0011's backfill.
+		// A worker that ships the context's time gets it stored as is. Older
+		// workers don't, so fall back to the same arithmetic, in the same
+		// order, as migration 0011's backfill.
 		attributedTime := metrics.GetTotalTime() * float64(qc.GetCount()) / float64(contextTotal)
+		if qc.Time != nil {
+			attributedTime = qc.GetTime()
+		}
 		if _, err := tx.Exec(ctx, `insert into rotten.event_context
 			(event_id, observed_window_start, observed_window_end, controller_id, action_id, job_tag_id, c,
 			 logical_source_id, attributed_time)

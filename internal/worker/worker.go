@@ -79,8 +79,8 @@ type QueryEvent struct {
 	blk_write_time      float64
 
 	// The contexts (see pssc_contexts.go) for this query in this window,
-	// keyed by contextKey: calls, and execution time in ms. The time
-	// isn't on the wire yet (task 20261007-120000-5).
+	// keyed by contextKey: calls, and execution time in ms, shipped as
+	// QueryContext.time. A nil context_time ships no times.
 	context      map[string]uint64
 	context_time map[string]float64
 
@@ -873,18 +873,49 @@ func eventAggregate(fingerprint, normalized string, event QueryEvent) *rottenv1.
 	if !event.stddev_absent {
 		metrics.StddevTime = &event.stddev_time
 	}
+	// Context times are pssc's execution time; pgss's total_time also has
+	// planning time, and the two count separately. Scale them (up or down)
+	// so they sum to total_time: planning is spread by execution share, and
+	// the server, which rejects sums above total_time (harvestlimits), sees
+	// events.time split across contexts. With no execution time recorded,
+	// split total_time by count instead.
+	contextTime := func(string, uint64) float64 { return 0 }
+	if event.context_time != nil {
+		var sum float64
+		var countSum uint64
+		for key, count := range event.context {
+			sum += event.context_time[key]
+			countSum += count
+		}
+		switch {
+		case sum > 0:
+			// Divide first: total/sum overflows to Inf for a subnormal sum.
+			contextTime = func(key string, _ uint64) float64 {
+				return event.context_time[key] / sum * event.total_time
+			}
+		case countSum > 0:
+			contextTime = func(_ string, count uint64) float64 {
+				return event.total_time * float64(count) / float64(countSum)
+			}
+		}
+	}
 	contexts := make([]*rottenv1.QueryContext, 0, len(event.context))
 	for key, count := range event.context {
 		parts := strings.SplitN(key, "\x00", 3)
 		for len(parts) < 3 {
 			parts = append(parts, "")
 		}
-		contexts = append(contexts, &rottenv1.QueryContext{
+		qc := &rottenv1.QueryContext{
 			Controller: parts[0],
 			Action:     parts[1],
 			JobTag:     parts[2],
 			Count:      count,
-		})
+		}
+		if event.context_time != nil {
+			t := contextTime(key, count)
+			qc.Time = &t
+		}
+		contexts = append(contexts, qc)
 	}
 	sort.Slice(contexts, func(i, j int) bool {
 		if contexts[i].GetController() != contexts[j].GetController() {

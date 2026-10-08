@@ -130,6 +130,21 @@ message QueryContext {
   string action = 2;
   string job_tag = 3;
   uint64 count = 4;
+  // The time in ms of the calls this context carried: its execution time
+  // from pg_stat_statement_context, scaled by the worker so an aggregate's
+  // contexts sum to metrics.total_time (planning plus execution), which
+  // spreads planning time by execution share. With no execution time
+  // recorded, the worker splits total_time by count. The server stores it as
+  // event_context.attributed_time. Unset (as from workers before task
+  // 20261007-120000-5) means unknown, and the server falls back to the
+  // aggregate's total_time split by count. Within one aggregate, either
+  // every context sets it or none does. Each value must be finite and >= 0,
+  // and their sum must not exceed metrics.total_time by more than a relative
+  // 1e-9 plus 1e-6 ms (float summation slack); otherwise InvalidArgument.
+  //
+  // All three tags empty is the untagged context: calls pgss counted that
+  // pssc didn't attribute. It's stored with all three IDs NULL.
+  optional double time = 5;
 }
 
 // Metrics holds the 19 stats domains from internal/worker for one window.
