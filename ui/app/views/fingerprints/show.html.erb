@@ -63,21 +63,20 @@
           <table class="report fingerprint-contexts">
             <thead>
               <tr>
-                <th scope="col" title="<%= ReportsHelper::CONTEXT_HEADER_TITLE %>" aria-describedby="context-caveat">Context</th>
+                <th scope="col" title="<%= ReportsHelper::CONTEXT_HEADER_TITLE %>">Context</th>
                 <th scope="col" class="numeric">Calls</th>
               </tr>
             </thead>
             <tbody>
               <% @contexts.each do |context| %>
                 <tr>
-                  <td><%= report_context_name(context) %></td>
+                  <td><%= report_context_label(context) %></td>
                   <td class="numeric"><%= number_with_delimiter(context["times"].to_i) %></td>
                 </tr>
               <% end %>
             </tbody>
           </table>
         </div>
-        <%= context_caveat %>
       <% end %>
     </section>
 

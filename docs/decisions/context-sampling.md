@@ -5,10 +5,16 @@ two review rounds (see [Changes after review](#changes-after-review)).
 
 ## Status.
 
-Rejected (user, 2026-10-04). Periodic sampling measures each context's share of
+Superseded (user, 2026-10-07). Contexts now come from the
+`pg_stat_statement_context` extension (pssc), which counts calls and time
+for each set of tags exactly, so neither first-text attribution nor sampling
+is used, and the UI no longer shows a caveat. Calls pssc didn't attribute
+show as "untagged". See "Query context" in [worker.md](../worker.md).
+
+Before that: rejected (user, 2026-10-04). Periodic sampling measures each context's share of
 a query's running time, not its calls. It rarely sees fast queries, so it can't
-give useful per-context accuracy for typical workloads. Contexts keep
-first-text attribution, and the UI caveat stays. Nothing here is to be built.
+give useful per-context accuracy for typical workloads. Contexts kept
+first-text attribution, with a UI caveat, until pssc. Nothing here is to be built.
 The open questions and proposed tasks below are kept for the record only.
 The original trade-off is in [Is this worth building?](#is-this-worth-building).
 

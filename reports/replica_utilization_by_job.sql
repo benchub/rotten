@@ -9,7 +9,14 @@
 --   $6 primary role name
 --   $7 replica role name
 --   $8 match: a case-insensitive POSIX regex (~*) on the job tag, or NULL
---      for every row
+--      for every row. The untagged row never matches a pattern.
+--
+-- Rows:
+--   One row per job tag. Untagged calls, context rows with no controller,
+--   action or job tag, are one row of their own with job_tag NULL and
+--   untagged true: calls pg_stat_statement_context didn't attribute, and
+--   every call from a database without it. Rows with a controller or action
+--   but no job tag aren't here (they're in the controller/action report).
 --
 -- Utilization:
 --   This report returns both call utilization and time utilization. Call
@@ -49,7 +56,8 @@ with sources as (
   where ec.observed_window_start >= $4::timestamptz
     and ec.observed_window_start < $5::timestamptz
     and ec.observed_window_end <= $5::timestamptz
-    and ec.job_tag_id is not null
+    and (ec.job_tag_id is not null
+      or (ec.controller_id is null and ec.action_id is null))
   group by s.cluster, s.role, ec.job_tag_id
 ), primary_events as (
   select *
@@ -69,10 +77,11 @@ with sources as (
     coalesce(r.total_ms, 0)::double precision as replica_total_ms
   from primary_events p
   full outer join replica_events r on r.cluster = p.cluster
-    and r.job_tag_id = p.job_tag_id
+    and r.job_tag_id is not distinct from p.job_tag_id
 ), totals as (
   select
     c.*,
+    (c.job_tag_id is null) as untagged,
     (c.primary_calls + c.replica_calls)::numeric as total_calls,
     (c.primary_total_ms + c.replica_total_ms)::double precision as total_ms,
     case
@@ -97,8 +106,9 @@ select
   t.replica_total_ms,
   t.total_ms,
   t.primary_time_percent::double precision as primary_time_percent,
-  case when t.total_ms > 0 then (100::numeric - t.primary_time_percent)::double precision else 0::double precision end as replica_time_percent
+  case when t.total_ms > 0 then (100::numeric - t.primary_time_percent)::double precision else 0::double precision end as replica_time_percent,
+  t.untagged
 from totals t
-join rotten.job_tags jt on jt.id = t.job_tag_id
-where $8::text is null or jt.job_tag ~* $8::text
+left join rotten.job_tags jt on jt.id = t.job_tag_id
+where $8::text is null or (not t.untagged and jt.job_tag ~* $8::text)
 order by total_calls desc, total_ms desc, jt.job_tag, t.cluster;

@@ -42,10 +42,6 @@ class Report
 
   def column(key) = columns.find { |column| column.key == key }
 
-  # Whether the report shows contexts, so its results carry the caveat on
-  # how they're credited.
-  def contexts? = columns.any?(&:context?)
-
   # Top and outlier reports filter by one optional role. Utilization compares
   # a primary and a replica role instead.
   def role_filter? = kind != :utilization

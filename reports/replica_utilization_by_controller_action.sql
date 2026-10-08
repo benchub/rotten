@@ -9,7 +9,15 @@
 --   $6 primary role name
 --   $7 replica role name
 --   $8 match: a case-insensitive POSIX regex (~*) on the controller#action, or NULL
---      for every row
+--      for every row. The untagged row never matches a pattern.
+--
+-- Rows:
+--   One row per controller and action, from context rows with a controller
+--   or an action. Context rows with only a job tag aren't here (they're in the
+--   job report). Untagged calls, context rows with no controller, action or
+--   job tag, are one row of their own with controller_action NULL and
+--   untagged true: calls pg_stat_statement_context didn't attribute, and
+--   every call from a database without it.
 --
 -- Utilization:
 --   This report returns both call utilization and time utilization. Call
@@ -50,7 +58,8 @@ with sources as (
   where ec.observed_window_start >= $4::timestamptz
     and ec.observed_window_start < $5::timestamptz
     and ec.observed_window_end <= $5::timestamptz
-    and (ec.controller_id is not null or ec.action_id is not null)
+    and (ec.controller_id is not null or ec.action_id is not null
+      or ec.job_tag_id is null)
   group by s.cluster, s.role, ec.controller_id, ec.action_id
 ), primary_events as (
   select *
@@ -76,6 +85,7 @@ with sources as (
 ), totals as (
   select
     c.*,
+    (c.controller_id is null and c.action_id is null) as untagged,
     (c.primary_calls + c.replica_calls)::numeric as total_calls,
     (c.primary_total_ms + c.replica_total_ms)::double precision as total_ms,
     case
@@ -89,7 +99,7 @@ with sources as (
   from combined c
 )
 select
-  coalesce(ctrl.controller, '') || '#' || coalesce(act.action, '') as controller_action,
+  case when not t.untagged then coalesce(ctrl.controller, '') || '#' || coalesce(act.action, '') end as controller_action,
   t.cluster,
   t.primary_calls::double precision as primary_calls,
   t.replica_calls::double precision as replica_calls,
@@ -100,9 +110,11 @@ select
   t.replica_total_ms,
   t.total_ms,
   t.primary_time_percent::double precision as primary_time_percent,
-  case when t.total_ms > 0 then (100::numeric - t.primary_time_percent)::double precision else 0::double precision end as replica_time_percent
+  case when t.total_ms > 0 then (100::numeric - t.primary_time_percent)::double precision else 0::double precision end as replica_time_percent,
+  t.untagged
 from totals t
 left join rotten.controllers ctrl on ctrl.id = t.controller_id
 left join rotten.actions act on act.id = t.action_id
-where $8::text is null or coalesce(ctrl.controller, '') || '#' || coalesce(act.action, '') ~* $8::text
+where $8::text is null
+  or (not t.untagged and coalesce(ctrl.controller, '') || '#' || coalesce(act.action, '') ~* $8::text)
 order by total_calls desc, total_ms desc, controller_action, t.cluster;

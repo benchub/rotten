@@ -226,8 +226,8 @@ ratios. Marginalia comments are the same on both sides. Each side has its
 own `pg_stat_statements`, and the warm-up runs a shape on a side only under
 contexts that run it there, so a 100% context has no primary entries and a
 0% one no replica entries: the replica utilization reports show true 0% and
-100% rows. Mixed contexts are approximate, since each entry credits its calls
-to its first context (see [What the worker can attribute](#what-the-worker-can-attribute)).
+100% rows. pssc counts each context's calls exactly, so mixed contexts show
+close to their target ratios too (see [What the worker can attribute](#what-the-worker-can-attribute)).
 
 Episodes: `slow_read` (`export_enrollments`) runs on the replica only,
 `lock_wait` (`touch_user` and the lock holders, which write) on the primary
@@ -289,31 +289,19 @@ deviation.
 
 ### What the worker can attribute
 
-These findings shaped the generator. The worker is unchanged.
+These findings shaped the generator.
 
-- **One context per pg_stat_statements entry.** `pg_stat_statements` keeps
-  one query text per (user, database, top-level, queryid) entry, the first it
-  saw, and comments don't change the queryid. The worker extracts one
-  controller, action or job tag from that text and credits all of the entry's
-  calls in the window to it. So a query that runs under many contexts is
-  credited to whichever context happened to run it first, for as long as the
-  entry lives. Several contexts per fingerprint appear only when several
-  entries share a rotten fingerprint. The generator gets that by running every
-  shape in 4 shard databases as 2 roles (and, for `bulk_insert_page_views`,
-  with `VALUES` lists of 2 to 10 rows; rotten's fingerprint folds `IN` and
-  `VALUES` lists and schema names). Each fingerprint gets up to 8 entries. A
-  warm-up pass then runs each shape once per entry, under a different context
-  that runs it, so each entry's first, attributed context differs. The UI
-  shows 3 to 6 contexts on about 10 fingerprints, and the rest show 1 or 2.
-  New entries, after `pg_stat_statements` evicts or resets, take whichever
-  context comes next.
-- **Postgres 18 drops leading comments.** On Postgres 18, the text
-  `pg_stat_statements` keeps starts at the statement, without a leading
-  comment; 14 to 17 keep it. Comments elsewhere in the statement survive on
-  all versions. Production-style leading marginalia gives rotten no contexts
-  on 18. So `-comments auto` (the default) puts the comment first on 14 to 17
-  and last on 18 and later. The dev stack runs 18, so its comments trail.
-  `-comments leading` shows what production sees on 18.
+- **Contexts come from pssc.** `pg_stat_statement_context` counts calls and
+  time for each (user, database, queryid, tag set), so every context that
+  runs a query gets its own exact count. The dev stack sets
+  `pg_stat_statement_context.extractors` to `position=any`, so it reads
+  leading and trailing comments on every Postgres version, and `-comments`
+  only changes where the generator puts them. Calls pssc didn't tag show as
+  "untagged". The generator was built when contexts came from the first query
+  text of each `pg_stat_statements` entry, so it still runs every shape in
+  4 shard databases as 2 roles, with a warm-up pass under varied contexts.
+  That spreads each fingerprint across up to 8 entries, which no longer
+  matters for contexts but still exercises fingerprint grouping.
 - **Shard schemas don't split entries on 18.** Postgres 18 computes queryids
   from relation names rather than OIDs, so the same table name in two schemas
   of one database is a single entry. That's why shards are databases, not

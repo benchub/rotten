@@ -58,14 +58,64 @@ func TestWorkerContextsDocumented(t *testing.T) {
 	}
 }
 
-// The UI still shows the first-seen caveat until task 20261007-120000-6.
-func TestContextCaveatInUIReadme(t *testing.T) {
+// Context counts are exact since task 20261007-120000-6, so ui/README.md
+// drops the first-seen caveat and says how untagged calls show.
+func TestContextCaveatGoneFromUIReadme(t *testing.T) {
 	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	b, err := os.ReadFile(filepath.Join(Root(t), "ui/README.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(flat(string(b)), "first seen under that context") {
-		t.Errorf("ui/README.md: missing the context caveat (%q)", "first seen under that context")
+	doc := flat(string(b))
+	for _, gone := range []string{"first seen under that context", "Contexts are approximate", "context-caveat"} {
+		if strings.Contains(doc, gone) {
+			t.Errorf("ui/README.md: still says %q", gone)
+		}
+	}
+	for _, want := range []string{"untagged", "pg_stat_statement_context"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("ui/README.md: missing %q", want)
+		}
+	}
+}
+
+// The Postgres 18 advice to append marginalia is gone: pssc reads
+// prepended comments. docs/observed.md says how to install pssc, that it's
+// optional, and which settings marginalia needs.
+func TestObservedDocsUsePssc(t *testing.T) {
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	read := func(doc string) string {
+		b, err := os.ReadFile(filepath.Join(Root(t), doc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return flat(string(b))
+	}
+	for _, doc := range []string{"docs/observed.md", "docs/worker.md", "dev/README.md", "ui/README.md"} {
+		text := read(doc)
+		for _, gone := range []string{"prepend_comment", "appended, not prepended", "drops a leading comment",
+			"credits its calls to its first context"} {
+			if strings.Contains(text, gone) {
+				t.Errorf("%s: still says %q", doc, gone)
+			}
+		}
+	}
+	observed := read("docs/observed.md")
+	for _, want := range []string{
+		"pg_stat_statement_context",
+		"optional",
+		"shared_preload_libraries = 'pg_stat_statements,pg_stat_statement_context'",
+		"CREATE EXTENSION pg_stat_statement_context;",
+		"pg_stat_statement_context.extractors",
+		"position=any",
+		"position=prepend",
+		"pg_stat_statement_context.tags",
+		"job_tag",
+		"untagged",
+		"RDS",
+	} {
+		if !strings.Contains(observed, want) {
+			t.Errorf("docs/observed.md: missing %q", want)
+		}
 	}
 }

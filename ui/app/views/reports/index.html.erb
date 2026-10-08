@@ -19,7 +19,7 @@
         <%= label_tag :match, "Match" %>
         <%= text_field_tag :match, @query.match, maxlength: ReportQuery::MAX_MATCH_LENGTH, autocomplete: "off",
                            spellcheck: false, placeholder: "e.g. users|#index", aria: { describedby: "match-hint" } %>
-        <p class="hint" id="match-hint">Optional. A case-insensitive Postgres regex on the query text and the contexts (controller#action, job). The time series ignores it. Contexts come from the query text Postgres kept for each pg_stat_statements entry, not from each call.</p>
+        <p class="hint" id="match-hint">Optional. A case-insensitive Postgres regex on the query text and the contexts (controller#action, job). The time series ignores it. Untagged calls never match by context.</p>
       </div>
     </fieldset>
     <fieldset class="report-chooser">
@@ -90,8 +90,7 @@
                       <%= tag.th(column.sortable? ? report_sort_link(@query, column) : column.label,
                                  scope: "col", class: ("numeric" if column.numeric?), data: { column: column.key },
                                  title: (ReportsHelper::CONTEXT_HEADER_TITLE if column.context?),
-                                 aria: { sort: report_aria_sort(@query, column),
-                                         describedby: ("context-caveat" if column.context?) }) %>
+                                 aria: { sort: report_aria_sort(@query, column) }) %>
                     <% end %>
                   </tr>
                 </thead>
@@ -106,7 +105,6 @@
                 </tbody>
               </table>
             </div>
-            <%= context_caveat if @report.contexts? %>
           <% end %>
           <%= unparsed_summary(@unparsed) %>
         <% end %>

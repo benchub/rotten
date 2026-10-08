@@ -11,6 +11,10 @@
 --   $7 row limit
 --   $8 role, or NULL for every role in the project, environment and cluster
 --
+-- The untagged context, calls pg_stat_statement_context didn't attribute and
+-- every call from a database without it, has controller, action and job_tag
+-- all null.
+--
 -- times is the sum of event_context.c, so a context's calls across every
 -- matching role. Ties sort by controller, action, then job tag. Only windows
 -- fully inside [$5, $6) are counted; straddling windows are excluded on

@@ -268,16 +268,49 @@ RSpec.describe "Reports", type: :system do
     ])
   end
 
-  describe "the context caveat" do
-    let(:caveat) do
-      "Contexts are approximate. Postgres keeps one query text for each pg_stat_statements entry (per " \
-        "user, database and query): the first it saw, which may be from before this time range. All of an " \
-        "entry's calls are credited to the context in that text, so a count means calls of entries first seen " \
-        "under that context, not every call the context made."
+  describe "untagged calls" do
+    before do
+      users_id = @fixture.fingerprint_ids.fetch("users")
+      ReportFixture.add_untagged!(users_id, 150)
+      ReportFixture.add_untagged!(users_id, 60, role: "replica")
     end
-    let(:header_title) { "From the first query text of each pg_stat_statements entry, not from each call" }
 
-    it "notes how contexts are credited under each report that shows them, and on their column headers" do
+    it "shows them as their own context in the top reports" do
+      visit "/reports"
+      pick_source(project: "canvas", cluster: "13")
+      ["Top queries by calls", "Top queries by total time"].each do |title|
+        run_report(title)
+        row = find("table.report tbody tr", text: "select * from users where id = $1")
+        expect(row.all("td[data-column='context'] li").map(&:text)).to include("untagged (210)")
+        expect(row).to have_css("td[data-column='context'] .context-untagged", exact_text: "untagged")
+      end
+    end
+
+    it "shows them as their own row in both utilization reports" do
+      visit "/reports"
+      pick_source(project: "canvas", cluster: "13")
+
+      run_report("Replica utilization by job")
+      expect(report_rows("job_tag", "primary_calls", "replica_calls").first).to eq(["untagged", "150", "60"])
+      expect(page).to have_css("td[data-column='job_tag'] .context-untagged", exact_text: "untagged")
+
+      run_report("Replica utilization by controller and action")
+      expect(report_rows("controller_action", "primary_calls", "replica_calls").first(2))
+        .to eq([["users#show", "600", "0"], ["untagged", "150", "60"]])
+      expect(page).to have_css("td[data-column='controller_action'] .context-untagged", exact_text: "untagged")
+    end
+
+    it "never matches a pattern by their context" do
+      visit "/reports"
+      pick_source(project: "canvas", cluster: "13")
+      fill_in "Match", with: "untagged"
+      run_report("Replica utilization by job")
+      expect(page).to have_no_css(".context-untagged")
+    end
+  end
+
+  describe "context counts" do
+    it "says they're exact on context column headers, with no caveat" do
       visit "/reports"
       pick_source(project: "canvas", cluster: "13")
 
@@ -286,58 +319,25 @@ RSpec.describe "Reports", type: :system do
        ["Replica utilization by controller and action", "controller_action"]].each do |title, column|
         run_report(title)
         expect(page).to have_css("table.report")
-        expect(page).to have_css("p.context-caveat#context-caveat", exact_text: caveat)
-        expect(page).to have_css("th[data-column='#{column}'][title='#{header_title}'][aria-describedby='context-caveat']")
-        expect(page).to have_css("th[title]", count: 1)
+        header = find("th[data-column='#{column}']")
+        expect(header["title"]).to eq(ReportsHelper::CONTEXT_HEADER_TITLE)
+        expect(header["aria-describedby"]).to be_nil
+        expect(page).to have_no_css(".context-caveat")
+        expect(page).to have_no_text(/approximate|first seen/i)
       end
-
-      # A sortable context column keeps its sort state alongside the note.
-      within("table.report thead") { click_link "Controller#action" }
-      expect(page).to have_css("th[data-column='controller_action'][aria-sort='ascending']" \
-                               "[title='#{header_title}'][aria-describedby='context-caveat']")
+      expect(ReportsHelper::CONTEXT_HEADER_TITLE).to include("Exact", "pg_stat_statement_context", "Untagged")
+      expect(ReportsHelper.const_defined?(:CONTEXT_CAVEAT)).to be(false)
 
       pick_source(project: "canvas", cluster: "7")
       run_report("Outliers")
-      expect(page).to have_css("table.report")
-      expect(page).to have_css("p.context-caveat", exact_text: caveat)
-      expect(page).to have_css("th[data-column='context'][title='#{header_title}']")
-    end
-
-    it "notes on the match hint that contexts come from each entry's kept text, not from each call" do
-      visit "/reports"
-
-      expect(page).to have_css("#match-hint", text: "Contexts come from the query text Postgres kept for each " \
-                                                    "pg_stat_statements entry, not from each call.")
-    end
-
-    # The meaning, apart from the exact wording: attribution is per
-    # pg_stat_statements entry, from text that may predate the range.
-    it "says contexts are credited per entry, from text that may predate the range, not per call or query" do
-      visit "/reports"
-      pick_source(project: "canvas", cluster: "13")
-      run_report("Replica utilization by job")
-
-      note = find("p.context-caveat").text
-      expect(note).to include("pg_stat_statements entry", "before this time range", "not every call")
-      expect(note).not_to match(/each query,|that query's calls|first ran/)
-      expect(find("th[data-column='job_tag']")["title"]).to include("entry", "not from each call")
-      expect(find("#match-hint").text).to include("entry", "not from each call")
-    end
-
-    it "leaves the caveat off reports without contexts and off empty results" do
-      users_id = @fixture.fingerprint_ids.fetch("users")
-      visit "/reports?report=fingerprint_timeseries&project=canvas&environment=production&cluster=13&range=3h" \
-            "&fingerprint_id=#{users_id}&bucket=10m"
-      expect(page).to have_css("table.report")
+      expect(page).to have_css("th[data-column='context'][title='#{ReportsHelper::CONTEXT_HEADER_TITLE}']")
       expect(page).to have_no_css(".context-caveat")
-      expect(page).to have_no_css("th[title]")
+    end
 
+    it "doesn't say on the match hint that contexts come from query text" do
       visit "/reports"
-      pick_source(project: "canvas", cluster: "13", role: "replica")
-      fill_in "Match", with: "matches-nothing-at-all"
-      run_report("Top queries by calls")
-      expect(page).to have_css(".empty-state")
-      expect(page).to have_no_css(".context-caveat")
+      expect(find("#match-hint").text).not_to match(/query text Postgres kept|not from each call/)
+      expect(find("#match-hint").text).to include("Untagged calls never match by context")
     end
   end
 

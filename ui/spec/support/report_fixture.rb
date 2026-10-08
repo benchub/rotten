@@ -194,6 +194,28 @@ module ReportFixture
     conn&.close
   end
 
+  # Adds an untagged context (no controller, action or job tag) with c calls
+  # to the newest recent event of the fingerprint on the source, as ingest
+  # stores calls pg_stat_statement_context didn't attribute.
+  def self.add_untagged!(fingerprint_id, c, project: "canvas", cluster: "13", role: "primary", attributed_time: 1)
+    conn = connect
+    result = conn.exec_params(<<~SQL, [fingerprint_id, project, cluster, role, c, attributed_time])
+      insert into rotten.event_context
+        (event_id, observed_window_start, observed_window_end, controller_id, action_id, job_tag_id, c,
+         logical_source_id, attributed_time)
+      select e.id, e.observed_window_start, e.observed_window_end, null, null, null, $5, e.logical_source_id, $6
+      from rotten.events e
+      join rotten.logical_sources s on s.id = e.logical_source_id
+      where e.fingerprint_id = $1 and s.project = $2 and s.cluster = $3 and s.role = $4
+        and e.observed_window_start > now() - interval '3 hours'
+      order by e.observed_window_start desc
+      limit 1
+    SQL
+    raise "no recent event to add an untagged context to" unless result.cmd_tuples == 1
+  ensure
+    conn&.close
+  end
+
   CROWD_SIZE = 60
   # The crowd's needles: each matches /needle/i one way, its query text, a
   # controller#action or a job tag, and each is small enough to rank below

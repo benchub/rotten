@@ -8,6 +8,7 @@ module ReportsHelper
   # row is the whole result row, for cells that read more than their own
   # column: a fingerprint's unparsed flag.
   def report_cell(query, column, value, row = nil)
+    return untagged_label if value.nil? && column.context? && row&.dig("untagged")
     return "" if value.nil?
 
     pattern = query&.report&.matches? ? query.match_pattern : nil
@@ -83,30 +84,31 @@ module ReportsHelper
     items = Array(contexts).filter_map do |context|
       next unless context.is_a?(Hash)
 
-      tag.li(safe_join([highlight_match(report_context_name(context), pattern),
+      tag.li(safe_join([report_context_label(context, pattern),
                         " (#{number_with_delimiter(context['times'].to_i)})"]))
     end
     items.empty? ? "" : tag.ul(safe_join(items), class: "report-contexts")
   end
 
-  # A job tag, or controller#action.
-  # pg_stat_statements keeps one text per entry, the first it saw, and the
-  # worker credits all the entry's calls to the context in that text. One
-  # fingerprint can span several entries, each with its own context.
-  CONTEXT_CAVEAT = "Contexts are approximate. Postgres keeps one query text for each pg_stat_statements entry (per " \
-                   "user, database and query): the first it saw, which may be from before this time range. All of " \
-                   "an entry's calls are credited to the context in that text, so a count means calls of entries " \
-                   "first seen under that context, not every call the context made."
-  CONTEXT_HEADER_TITLE = "From the first query text of each pg_stat_statements entry, not from each call"
+  # Calls pg_stat_statement_context didn't attribute, and every call from a
+  # database without it. Stored as a context with no controller, action or
+  # job tag. A match pattern never matches it.
+  UNTAGGED_TITLE = "Calls without a context, or from databases without pg_stat_statement_context".freeze
+  CONTEXT_HEADER_TITLE = "Exact call counts from pg_stat_statement_context. Untagged: calls without a context, " \
+                         "or from databases without pg_stat_statement_context.".freeze
 
-  # The note under a table that shows contexts. Context column headers point
-  # at it with aria-describedby.
-  def context_caveat
-    tag.p(CONTEXT_CAVEAT, id: "context-caveat", class: "context-caveat")
+  def untagged_label
+    tag.span("untagged", class: "context-untagged", title: UNTAGGED_TITLE)
   end
 
-  def report_context_name(context)
-    context["job_tag"].presence || "#{context['controller']}##{context['action']}"
+  def untagged_context?(context)
+    %w[controller action job_tag].all? { |key| context[key].nil? }
+  end
+
+  # The context's name, HTML-safe: the untagged label, a job tag, or
+  # controller#action, with matches of pattern marked.
+  def report_context_label(context, pattern = nil)
+    untagged_context?(context) ? untagged_label : highlight_match(report_context_name(context), pattern)
   end
 
   # A sort link for a column header: the first click sorts numbers
@@ -147,6 +149,13 @@ module ReportsHelper
     return if keys.empty?
 
     tag.div(class: "field", data: { report_chooser_target: "field", reports: keys.join(" "), report_chooser_keep: (true if keep) }, &block)
+  end
+
+  # A job tag, or controller#action. A tag value of "(capped)" shows as it
+  # is: the worker stores that literal when pg_stat_statement_context reports
+  # a value as JSON null because the key passed its cardinality cap.
+  def report_context_name(context)
+    context["job_tag"].presence || "#{context['controller']}##{context['action']}"
   end
 
   def report_aria_sort(query, column)

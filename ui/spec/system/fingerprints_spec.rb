@@ -76,28 +76,31 @@ RSpec.describe "Fingerprint detail", type: :system do
     expect(csp_violations).to be_empty
   end
 
-  it "notes how contexts are credited under the top contexts, and only when there are some" do
+  it "shows untagged calls as their own context in the top contexts" do
+    users_id = @fixture.fingerprint_ids.fetch("users")
+    ReportFixture.add_untagged!(users_id, 150)
+    visit "/fingerprints/#{users_id}?project=canvas&environment=production&cluster=13&range=3h&bucket=10m"
+
+    # Ordered by calls with the rest: 600, 200, then untagged's 150.
+    expect(table_rows("table.fingerprint-contexts").first(3)).to eq([
+      ["users#show", "600"],
+      ["grades#show", "200"],
+      ["untagged", "150"]
+    ])
+    expect(page).to have_css("table.fingerprint-contexts td .context-untagged", exact_text: "untagged")
+  end
+
+  it "says the top contexts are exact counts, with no caveat" do
     users_id = @fixture.fingerprint_ids.fetch("users")
     visit "/fingerprints/#{users_id}?project=canvas&environment=production&cluster=13&range=3h&bucket=10m"
 
     within("section[aria-labelledby='fingerprint-contexts-heading']") do
-      expect(page).to have_css("table.fingerprint-contexts")
-      expect(page).to have_css("p.context-caveat#context-caveat",
-                               exact_text: "Contexts are approximate. Postgres keeps one query text for each " \
-                                           "pg_stat_statements entry (per user, database and query): the first it " \
-                                           "saw, which may be from before this time range. All of an entry's " \
-                                           "calls are credited to the context in that text, so a count means " \
-                                           "calls of entries first seen under that context, not every call the " \
-                                           "context made.")
-      expect(page).to have_css("th[title='From the first query text of each pg_stat_statements entry, not from each call']" \
-                               "[aria-describedby='context-caveat']", text: /\Acontext\z/i)
+      header = find("table.fingerprint-contexts th", text: /\Acontext\z/i)
+      expect(header["title"]).to include("Exact", "pg_stat_statement_context", "Untagged")
+      expect(header["aria-describedby"]).to be_nil
     end
-    expect(page).to have_css(".context-caveat", count: 1)
-
-    # Before a source is picked there are no contexts, so no note.
-    visit "/fingerprints/#{users_id}"
-    expect(page).to have_css("pre.fingerprint-sql")
     expect(page).to have_no_css(".context-caveat")
+    expect(page).to have_no_text(/approximate|first seen|first query text/i)
   end
 
   it "narrows the chart, contexts and stats to one role" do

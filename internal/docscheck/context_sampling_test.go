@@ -22,6 +22,16 @@ func TestContextSamplingDesignCoversTheTask(t *testing.T) {
 	flat := strings.ToLower(strings.Join(strings.Fields(doc), " "))
 
 	sections := level2Sections(doc)
+	// Superseded by pg_stat_statement_context (task 20261007-120000-6).
+	status := strings.Join(strings.Fields(sections["Status."]), " ")
+	for _, want := range []string{"Superseded", "pg_stat_statement_context"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("%s: the Status section doesn't say %q", contextSamplingDoc, want)
+		}
+	}
+	if strings.Contains(status, "the UI caveat stays") {
+		t.Errorf("%s: the Status section still says the UI caveat stays", contextSamplingDoc)
+	}
 	for _, h := range []string{
 		"Status.",
 		"The problem.",

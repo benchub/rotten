@@ -29,6 +29,10 @@ type replicaUtilizationRow struct {
 	ReplicaTimePercent float64
 }
 
+// untaggedName stands in for the untagged row's name, which is NULL with
+// untagged true.
+const untaggedName = "<untagged>"
+
 func readReplicaUtilization(t *testing.T, conn *pgx.Conn, path string, args ...any) []replicaUtilizationRow {
 	t.Helper()
 	query, err := os.ReadFile(path)
@@ -43,9 +47,13 @@ func readReplicaUtilization(t *testing.T, conn *pgx.Conn, path string, args ...a
 
 	var out []replicaUtilizationRow
 	for rows.Next() {
-		var r replicaUtilizationRow
+		var (
+			r        replicaUtilizationRow
+			name     *string
+			untagged bool
+		)
 		if err := rows.Scan(
-			&r.Name,
+			&name,
 			&r.Cluster,
 			&r.PrimaryCalls,
 			&r.ReplicaCalls,
@@ -57,8 +65,17 @@ func readReplicaUtilization(t *testing.T, conn *pgx.Conn, path string, args ...a
 			&r.TotalMS,
 			&r.PrimaryTimePercent,
 			&r.ReplicaTimePercent,
+			&untagged,
 		); err != nil {
 			t.Fatal(err)
+		}
+		switch {
+		case untagged && name == nil:
+			r.Name = untaggedName
+		case untagged || name == nil:
+			t.Fatalf("row name %v with untagged %v; want a name or untagged, not both", name, untagged)
+		default:
+			r.Name = *name
 		}
 		out = append(out, r)
 	}

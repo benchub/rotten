@@ -12,6 +12,14 @@
 --      A query matches if its normalized text does, or if it ran in the range
 --      in a context whose controller#action or job tag does. It filters
 --      before the row limit.
+--      The untagged context never matches: it has no controller, action or
+--      job tag.
+--
+-- Contexts:
+--   context lists a fingerprint's top five contexts by calls. The untagged
+--   context, calls pg_stat_statement_context didn't attribute and every call
+--   from a database without it, is one with controller, action and job_tag
+--   all null.
 with sources as (
   select id
   from rotten.logical_sources

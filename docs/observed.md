@@ -31,6 +31,41 @@ extension is older. The worker checks `extversion`, not the server version:
 on an older extension it skips the reset without an error, so min and max
 cover the entry's whole lifetime.
 
+### Install pg_stat_statement_context (optional)
+
+Rotten reads each query's controller, action and job from the
+[`pg_stat_statement_context`](https://github.com/benchub/pg_stat_statement_context)
+extension (pssc). It counts calls and time for each set of tags it reads
+from comments like marginalia's, so the counts are exact. It's optional.
+Managed services such as RDS likely won't let you install it. Without it,
+the worker still reports every query, and all calls show as "untagged".
+
+To install it, build and install pssc on the server, then load it after
+`pg_stat_statements` and restart Postgres:
+
+```
+shared_preload_libraries = 'pg_stat_statements,pg_stat_statement_context'
+```
+
+Then, in the database the worker connects to:
+
+```sql
+CREATE EXTENSION pg_stat_statement_context;
+```
+
+Two of pssc's defaults need changing for typical Rails marginalia:
+
+- `pg_stat_statement_context.extractors`: the default reads only comments
+  at the end of a query, and marginalia is usually at the start. Set
+  `sqlcommenter(position=any), marginalia(position=any)` (or
+  `position=prepend`).
+- `pg_stat_statement_context.tags`: the default is
+  `action, controller, job`. If your job marginalia uses `job_tag`, add it:
+  `action, controller, job, job_tag`.
+
+Calls pssc didn't tag show as "untagged". See "Query context" in
+[worker.md](worker.md) for what the worker checks and logs.
+
 ## 2. Create the observer role and its grants
 
 As a superuser, run `schema/observer.sql` with psql in the same database:
@@ -73,12 +108,8 @@ statistics.
   planning plus execution.
 - It reads the most interesting statements, not all of them: the top 100 by
   each of 19 metrics.
-- On 18, `pg_stat_statements` drops a leading comment from the query text,
-  so controller, action and job contexts only come from comments your
-  application appends. 14 through 17 keep leading comments. Set
-  `Marginalia::Comment.prepend_comment = false` (marginalia gem) or
-  `config.active_record.query_log_tags_prepend_comment = false` (Rails query
-  logs); both append by default. See "Query context" in
-  [worker.md](worker.md).
+- Controller, action and job contexts come from `pg_stat_statement_context`
+  (see "Install pg_stat_statement_context (optional)" above), not from query
+  text. Without it, every call is untagged.
 
 Then configure the worker; see [worker.md](worker.md).
