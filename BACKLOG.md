@@ -97,11 +97,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 Background: contexts come from the first query text pgss kept for each entry, so their counts were always skewed, and Postgres 18 drops leading comments. pssc counts calls and execution time per (userid, dbid, queryid, toplevel, tag set). Read it as counters (`calls_total`, `exec_time_total`, `stats_since` from `pg_stat_statement_context_totals`) and diff them like pgss, so the worker's interval doesn't need to match pssc's `bucket_interval`.
 
-### 20261007-120000-6: UI and docs for exact contexts.
-- **Do:** Show the untagged context in "Top contexts", the `top_by_*` and `outliers` reports, and the utilization reports (since -5, all of these except `fingerprint_contexts.sql` filter out rows with all three IDs null), labelled clearly (for example "untagged"). Remove `CONTEXT_CAVEAT` and the "first seen" wording. Mark `docs/decisions/context-sampling.md` superseded and update the `docscheck` tests. Remove the Postgres 18 append advice from `docs/worker.md`, `docs/observed.md`, `README.md`, and `dev/README.md`, and document how to install pssc, that it's optional, and that prepended marginalia needs `pg_stat_statement_context.extractors` with `position=any` (or `prepend`), and that `pg_stat_statement_context.tags` must list `job_tag` if job marginalia uses it.
-- **Needs:** 20261007-120000-5.
-- **Red test:** A system spec that shows the untagged context on the fingerprint page, and one that the caveat is gone.
-
 ### 20261007-200000-1: pssc health checks only run at connect time.
 - **Why (found in 20261007-120000-4):** The "pssc in use" log and the `extractors`/`tags` warnings run when the worker connects, once per process. If pssc is created after the worker connects, or a reload breaks those settings later, nothing is logged until a reconnect or restart. The `tags` check also ignores pssc's `rename` setting, so a renamed key can warn falsely or be missed.
 - **Do:** Re-run the settings check when it's cheap to (for example, when the per-harvest detection result or the settings change), warning once per change rather than once per process. Account for `rename` in the `tags` check, or document that it doesn't.

@@ -1585,3 +1585,9 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Needs:** 20261007-120000-3.
 - **Red test:** An ingest test where two contexts with different times are stored with those times, not split by count.
 - Completed: 2026-10-07, 258010a
+
+### 20261007-120000-6: UI and docs for exact contexts.
+- **Do:** Show the untagged context in "Top contexts", the `top_by_*` and `outliers` reports, and the utilization reports (since -5, all of these except `fingerprint_contexts.sql` filter out rows with all three IDs null), labelled clearly (for example "untagged"). Remove `CONTEXT_CAVEAT` and the "first seen" wording. Mark `docs/decisions/context-sampling.md` superseded and update the `docscheck` tests. Remove the Postgres 18 append advice from `docs/worker.md`, `docs/observed.md`, `README.md`, and `dev/README.md`, and document how to install pssc, that it's optional, and that prepended marginalia needs `pg_stat_statement_context.extractors` with `position=any` (or `prepend`), and that `pg_stat_statement_context.tags` must list `job_tag` if job marginalia uses it.
+- **Needs:** 20261007-120000-5.
+- **Red test:** A system spec that shows the untagged context on the fingerprint page, and one that the caveat is gone.
+- Completed: 2026-10-07, 52c048b
