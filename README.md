@@ -59,7 +59,7 @@ flowchart LR
     keys -- "as rotten_owner" --> db
     ui -- "as rotten_ui" --> db
 ```
-* **`rotten worker`**: A long-running daemon. Run as many as you would like per server or container. Rotten workers periodically connect to a single DB as `rotten-observer` and use `pg_read_all_stats` to pull from `pg_stat_statements`. Results are compared against a local cache to find changes since the last pull, and new queries are fingerprinted. Also parses marginalia comments to find controller, action and job. Queues up results in a durable SQLite db to be sent to the rotten server.
+* **`rotten worker`**: A long-running daemon. Run as many as you would like per server or container. Rotten workers periodically connect to a single DB as `rotten-observer` and use `pg_read_all_stats` to pull from `pg_stat_statements`. Results are compared against a local cache to find changes since the last pull, and new queries are fingerprinted. When the optional pg_stat_statement_context extension is installed, it also reads exact controller, action, and job counts from it. Queues up results in a durable SQLite db to be sent to the rotten server.
 
   On PG 17+, also does a min/max-only reset.
 * **`rotten-server service`**: A long-running service which receives stats dumps from rotten workers. Validates the authenticity of each worker using pass keys and pinned FQDNs, and the integrity of the data packet. Dumps each harvest to the Rotten DB in one transaction.
@@ -152,10 +152,12 @@ Known issues
   environment, cluster and role combination that doesn't exist.
 - **Postgres 14 through 16** keep min and max times for each statement's
   whole lifetime, since they can't reset them on their own.
-- **Postgres 18 drops leading comments** from `pg_stat_statements` query
-  text, so contexts on an observed 18 server need marginalia appended, not
-  prepended. The worker warns if it sees none. See "Query context" in
-  `docs/worker.md`.
+- **Contexts need pg_stat_statement_context.** Controller, action, and job
+  counts come from the optional pg_stat_statement_context extension, which
+  managed services like RDS may not allow. Without it, every call shows as
+  "untagged". Prepended marginalia needs `pg_stat_statement_context.extractors`
+  with `position=any`. See [docs/observed.md](docs/observed.md) and "Query
+  context" in `docs/worker.md`.
 - **The fingerprinter doesn't have the Postgres 18 parser yet.** It uses
   `pg_query_go`'s Postgres 17 parser until a release with 18 ships.
 - **A test flake:** testcontainers sometimes times out inspecting a port when
