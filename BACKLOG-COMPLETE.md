@@ -1579,3 +1579,9 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Needs:** 20261007-120000-3.
 - **Red test:** A config with the old keys fails with the new message; a startup test logs pssc's state.
 - Completed: 2026-10-07, 4922c56
+
+### 20261007-120000-5: Server stores real context time and the untagged context.
+- **Do:** Carry each context's execution time on the wire (`QueryContext`) and store it as `attributed_time` instead of the proportional estimate. Store the untagged context (all three IDs null, or a marker, whichever reports can tell apart from a missing value). Retire `repair_context_utilization` for new data, keeping it for rows ingested before the change if needed. The worker already keeps each context's time in `QueryEvent.context_time` (from -3); ship it from there. Since -3 the worker ships the untagged context as all three IDs empty, and a tag pssc capped (`pssc.Capped`) as the literal value `(capped)`; decide whether the server stores either as a marker.
+- **Needs:** 20261007-120000-3.
+- **Red test:** An ingest test where two contexts with different times are stored with those times, not split by count.
+- Completed: 2026-10-07, 258010a
