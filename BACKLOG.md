@@ -91,6 +91,12 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** nothing.
 - **Red test:** Reproduce by running the spec repeatedly (or under CPU load) until it fails, then show it passes the same number of runs after the fix.
 
+### 20261007-220000-1: `report_busy_spec.rb:119` flakes under load.
+- **Why (found landing the go-archive bump, 301d5a4):** One `make test-all` run at load average about 32 failed "Report busy indicator clears it when the report times out" with `Capybara::ElementNotFound: Unable to find xpath "/html"` inside `run_and_expect_busy`. The next `make test-ui` passed all 1,240 examples.
+- **Do:** Find why the page has no document at that point (likely a navigation still in flight when the spec looks) and make the spec wait for the timed-out page before asserting.
+- **Needs:** nothing.
+- **Red test:** Reproduce by running the spec repeatedly or under CPU load until it fails, then show it passes the same number of runs after the fix.
+
 ## Phase F: Docs.
 
 ## Phase G: Context from pg_stat_statement_context.
