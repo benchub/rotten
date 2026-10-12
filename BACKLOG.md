@@ -97,11 +97,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** nothing.
 - **Red test:** Reproduce by running the spec repeatedly or under CPU load until it fails, then show it passes the same number of runs after the fix.
 
-### 20261012-091702-1: Click a context on the fingerprint page to restrict the chart to it.
-- **Why (user, 2026-10-12):** The fingerprint page lists context calls under the time series chart. You can't see how one context behaves over time.
-- **Do:** Make each row in the contexts list a link that reloads the page with a context filter, and have the chart (and its zoom links) show only that context's series. Show which context is active, with a clear way to drop the filter. Keep the filter through zoom and reset-zoom. Validate the filter like every other report parameter. Check first that the stored data supports a per-context time series; if it needs a new query or index, keep it inside the report timeout.
+### 20261012-103653-1: Audit system specs for Turbo snapshot-preview reads.
+- **Why (found in 20261012-091702-1):** When a link goes back to a URL already visited in the same test, Turbo shows its cached snapshot as a preview, then swaps in the fresh page. Turbo drops `data-turbo-preview` before that swap. A spec that waits on a count the preview also satisfies, then reads attributes, can read detached nodes. `fingerprints_spec.rb:299` flaked this way and now uses `mark_leaving` and `fresh_calls_sum`.
+- **Do:** Check the other `click_link` and `visit` navigations in `ui/spec/system/` that return to a URL visited earlier in the same example and then read attributes or text. Fix any that can read the preview, sharing the helpers if more than one spec needs them.
 - **Needs:** nothing.
-- **Red test:** A system spec: click a context on the fingerprint page and the chart's points match that context's calls only, and the filter survives a zoom. Add a security spec for a malformed or foreign context parameter.
+- **Red test:** Hard to make red on demand. Show for each changed spec that its wait can't pass on the cached snapshot.
 
 ## Phase F: Docs.
 
