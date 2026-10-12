@@ -27,9 +27,18 @@ RSpec.describe "Reports", type: :system do
 
   # Runs the report and waits for its results, since the page before may
   # show a table too.
+  #
+  # The form submits without Turbo, so click_button returns before the
+  # next page loads. When the page before shows another report, it has an
+  # h2.report-title too, and checking that node while Chrome unloads it
+  # raises an inspector error Capybara doesn't retry. The URL names the
+  # new report once its document commits, so wait on that first; it reads
+  # no nodes.
   def run_report(title)
+    key = Report.all.find { |report| report.title == title }.key
     choose title
     click_button "Run report"
+    expect(page).to have_current_path(/[?&]report=#{Regexp.escape(key)}(&|\z)/)
     expect(page).to have_css("h2.report-title", text: title)
   end
 
