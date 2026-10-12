@@ -445,7 +445,21 @@ The suite now requires 0013's index and checks 0008's in both directions: it fai
 - **outliers at 7d** takes about 3.5–5.2s custom and 4.8s generic without a match, and about 4.6s and 4.8s with one, because it also reads 7 days of history. It grows linearly in the range's events plus the history's.
 - **outliers at 3h and 24h** takes about 0.8s and 1.3s, because fingerprints short of samples look up to 7 days back, one index probe per short group (see "Outliers history index"). 24h's budget stays at 10s.
 - **Match reports at 7d with hundreds of sources** (`TestPerfManySources`) take about 2.8–3.5s in either plan at load average 6–18, and 5.7–6.9s with a match on every context, under the 15s timeout. Custom plans are as fast as master's (3.37s against 3.27s for top_by_total_time 7d match in the same run). In one earlier run at load average about 11–13, top_by_total_time 7d match was canceled in both plans while top_by_calls took 3.4–3.8s. That run's cause wasn't confirmed; it may be the load sensitivity task 20261005-123457-2 tracks.
-- **A broad match holds every matched event id in memory.** The hashed subplan doesn't spill to disk. The planner chooses the hash only while its estimate of `matched_events` fits in hash_mem; it has estimated about 10 rows in every case measured, and the repo sets no `work_mem`. If that estimate grows, the plan could flip to a plain subplan that rescans the CTE per event; `TestPerfManySources`'s check that each match plan reads `matched_events` at most 16 times would notice. A match on every context at 7d puts about 2 million ids in the hash, and how much memory that takes hasn't been measured.
+- **A broad match holds every matched event id in memory.** The hashed subplan doesn't spill to disk. The planner chooses the hash only while its estimate of `matched_events` fits in hash_mem; it has estimated about 10 rows in every case measured, and the repo sets no `work_mem`. If that estimate grows, the plan could flip to a plain subplan that rescans the CTE per event; `TestPerfManySources`'s check that each match plan reads `matched_events` at most 16 times would notice. A match on every context at 7d puts about 2 million ids in the hash.
+  - Measured (task 20261012-140405-1, `TestPerfManySources`, Postgres 18, quiet machine): `perfPeakMemory` calls `pg_log_backend_memory_contexts` on the report's backend every 50ms during one extra run and takes the largest "Grand total" (private memory, not shared buffers). Peak per backend, custom / generic:
+
+    | Case | Peak |
+    |---|---|
+    | top_by_calls 7d match | 33.9MB / 38.9MB |
+    | top_by_total_time 7d match | 33.3MB / 38.9MB |
+    | outliers 7d match | 52.4MB / 52.6MB |
+    | top_by_calls 7d match all | 176.1MB / 174.7MB |
+    | top_by_total_time 7d match all | 176.2MB / 174.8MB |
+    | outliers 7d match all | 224.7MB / 217.8MB |
+
+  - With a match on every context, the "Subplan HashTable Context" holds 80MB (the hashed entries) and ExecutorState grows from about 4–7MB to 70–80MB, which fits the hash's bucket array, allocated in the query's context. So about 150MB of a broad match is the hashed subplan, and concurrent broad matches multiply it. Everything else in the plans stays near `work_mem` (4MB tuplestores and sorts).
+  - `TestPerfManySources` fails any 7d match case above `perfMatchMemLimit` (256MB). That's a regression ceiling over today's numbers, not a cap on the design. It failed as intended with a 1MB limit.
+  - Not capped yet. `work_mem` doesn't bound a hashed subplan, and the forms that do spill (a hash join or semi join to `matched_events`) are the ones generic plans turned into nested loops (see "Fleet match red").
 - **fingerprint_all_sources relies on btree skip scan**, so on Postgres 18 only (see "Dropping `events_fingerprint_window`").
 - **JIT** is off for reports (see "JIT off" above), so plan costs crossing `jit_above_cost` or `jit_optimize_above_cost` as data grows no longer add compile time. Other queries on the rotten database keep the server's JIT settings.
 - **Not covered:**

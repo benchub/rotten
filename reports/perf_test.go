@@ -507,6 +507,9 @@ type perfCase struct {
 	// and probes, not once per event: by a nested loop over its scan, or a
 	// subplan that isn't hashed (task 20261005-150200-1).
 	matchedOnce bool
+	// memLimit, if set, is the most private memory, in bytes, the report's
+	// backend may hold at its peak (perfPeakMemory).
+	memLimit int64
 }
 
 type planNode struct {
@@ -539,6 +542,13 @@ type planSummary struct {
 // aggregate around it spills); a nested loop or a plain subplan runs it once
 // per event, tens of thousands of times at 3h.
 const perfMatchedMaxLoops = 16
+
+// perfMatchMemLimit bounds the peak private memory of a 7d match report's
+// backend (task 20261012-140405-1). It's a ceiling just above what a match on
+// every context measures today (175–225MB, most of it the hashed subplan of
+// matched event ids), so growth fails the suite. It isn't a target: see
+// "A broad match holds every matched event id in memory" in docs/perf.md.
+const perfMatchMemLimit = 256 << 20
 
 func summarizePlan(t *testing.T, raw []byte, partitionsOf map[string]string) planSummary {
 	t.Helper()
@@ -860,7 +870,7 @@ func TestPerfReports(t *testing.T) {
 	ui := db.ConnectAs(t, testdb.UIRole)
 	partitionsOf := perfPartitionsOf(t, conn)
 	cases := perfCases(f)
-	runPerfBudgets(t, conn, ui, f, cases, partitionsOf)
+	runPerfBudgets(t, db, conn, ui, f, cases, partitionsOf)
 
 	requirePerfIndex(t, conn)
 	logPerfIndexSizes(t, conn)
@@ -889,6 +899,9 @@ func TestPerfManySources(t *testing.T) {
 			cases = append(cases, c)
 		case perfFleetMatchCase(c.name):
 			c.matchedOnce = true
+			if strings.HasSuffix(c.name, " 7d match") {
+				c.memLimit = perfMatchMemLimit
+			}
 			cases = append(cases, c)
 			// A match on every tagged context, so matched_events holds most
 			// of the range's events: the hash must still be built once.
@@ -901,7 +914,7 @@ func TestPerfManySources(t *testing.T) {
 			}
 		}
 	}
-	runPerfBudgets(t, conn, ui, f, cases, partitionsOf)
+	runPerfBudgets(t, db, conn, ui, f, cases, partitionsOf)
 
 	requirePerfIndex(t, conn)
 	logPerfIndexSizes(t, conn)
@@ -925,7 +938,7 @@ func perfFleetMatchCase(name string) bool {
 
 // runPerfBudgets runs each case under both plan cache modes, as the UI does,
 // and checks its pruning and its budget.
-func runPerfBudgets(t *testing.T, conn, ui *pgx.Conn, f perfFixture, cases []perfCase, partitionsOf map[string]string) {
+func runPerfBudgets(t *testing.T, db *testdb.DB, conn, ui *pgx.Conn, f perfFixture, cases []perfCase, partitionsOf map[string]string) {
 	t.Helper()
 	var lines []string
 	for _, c := range cases {
@@ -943,7 +956,15 @@ func runPerfBudgets(t *testing.T, conn, ui *pgx.Conn, f perfFixture, cases []per
 			if r.median > c.budget {
 				t.Errorf("%s (%s): median %s over budget %s (runs %v)", c.name, mode, r.median, c.budget, r.runs)
 			}
-			lines = append(lines, perfLine(c, mode, r))
+			line := perfLine(c, mode, r)
+			if c.memLimit > 0 && !r.timedOut {
+				peak := perfPeakMemory(t, db, ui, c, mode)
+				line += fmt.Sprintf(" peak_mem=%.1fMB", float64(peak)/(1<<20))
+				if peak > c.memLimit {
+					t.Errorf("%s (%s): backend peak memory %.1fMB over limit %.1fMB", c.name, mode, float64(peak)/(1<<20), float64(c.memLimit)/(1<<20))
+				}
+			}
+			lines = append(lines, line)
 		}
 	}
 	t.Logf("results (anchor %s):\n%s", f.anchor.Format(time.RFC3339), strings.Join(lines, "\n"))
