@@ -97,6 +97,12 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** nothing.
 - **Red test:** Reproduce by running the spec repeatedly or under CPU load until it fails, then show it passes the same number of runs after the fix.
 
+### 20261012-091702-1: Click a context on the fingerprint page to restrict the chart to it.
+- **Why (user, 2026-10-12):** The fingerprint page lists context calls under the time series chart. You can't see how one context behaves over time.
+- **Do:** Make each row in the contexts list a link that reloads the page with a context filter, and have the chart (and its zoom links) show only that context's series. Show which context is active, with a clear way to drop the filter. Keep the filter through zoom and reset-zoom. Validate the filter like every other report parameter. Check first that the stored data supports a per-context time series; if it needs a new query or index, keep it inside the report timeout.
+- **Needs:** nothing.
+- **Red test:** A system spec: click a context on the fingerprint page and the chart's points match that context's calls only, and the filter survives a zoom. Add a security spec for a malformed or foreign context parameter.
+
 ## Phase F: Docs.
 
 ## Phase G: Context from pg_stat_statement_context.
