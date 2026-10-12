@@ -61,12 +61,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261012-140405-1: Measure and cap the memory of a broad match's hashed subplan.
-- **Why (found in 20261005-150200-1):** The match reports now test `e.id in (select event_id from matched_events)`, which Postgres hashes. A hashed subplan doesn't spill to disk, so a 7d match on every context holds about 2 million ids in memory per backend, unbounded by `work_mem`. Nobody has measured it, and concurrent broad matches multiply it. The planner keeps choosing the hash only while its estimate of `matched_events` (about 10 rows today) fits in hash_mem; the repo sets no `work_mem`.
-- **Do:** Measure peak memory for the 7d match-everything cases (for example with `pg_backend_memory_contexts` or `log_statement_stats`). If it's large, cap it: limit the match to a bounded number of ids, set a report-local `work_mem`, or switch to a form that spills. Document the result in `docs/perf.md`.
-- **Needs:** nothing.
-- **Red test:** A perf case that records peak memory for the broad 7d match and fails above a set limit.
-
 ### 20261005-123457-2: 7d match reports hit the statement timeout under heavy load.
 - **Why (found in 20261004-231500-1):** In one perf run on master at load average 30–69 (other projects' containers), outliers 7d match (both plans) and top_by_total_time 7d match (generic) were canceled by the 15s statement_timeout. At load average 15–25 they take about 3.5–4.5s. Seen again in task 20261005-123457-1 on the main seed: two of three `make test-perf` runs at load average about 20–27 each had one 7d match generic case canceled (outliers, then top_by_calls) that took 3.7–5.8s in other runs; the third run, at load average 13–17, passed. They read 7 days of a cluster's events plus contexts, so a busy database could show users an error page.
 - **Do:** Reproduce under controlled load (for example, run the suite with a CPU-bound container alongside), and find which part of those plans degrades most (hash spills at the default `work_mem`, the context match, parallel workers). Fix it or document the limit.

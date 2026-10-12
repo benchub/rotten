@@ -1654,3 +1654,11 @@ Completed: 2026-10-12, b5e1f43
 - **Needs:** nothing.
 - **Red test:** Hard to make red on demand. Show for each changed spec that its wait can't pass on the cached snapshot.
 Completed: 2026-10-12, 1bf6485
+
+### 20261012-140405-1: Measure and cap the memory of a broad match's hashed subplan.
+- **Why (found in 20261005-150200-1):** The match reports now test `e.id in (select event_id from matched_events)`, which Postgres hashes. A hashed subplan doesn't spill to disk, so a 7d match on every context holds about 2 million ids in memory per backend, unbounded by `work_mem`. Nobody has measured it, and concurrent broad matches multiply it. The planner keeps choosing the hash only while its estimate of `matched_events` (about 10 rows today) fits in hash_mem; the repo sets no `work_mem`.
+- **Do:** Measure peak memory for the 7d match-everything cases (for example with `pg_backend_memory_contexts` or `log_statement_stats`). If it's large, cap it: limit the match to a bounded number of ids, set a report-local `work_mem`, or switch to a form that spills. Document the result in `docs/perf.md`.
+- **Needs:** nothing.
+- **Red test:** A perf case that records peak memory for the broad 7d match and fails above a set limit.
+- **Outcome:** Measured, not capped. 7d match peaks at 34–54MB per backend; match-all at 175–227MB. User accepted that as a documented limit (2026-10-12). `reports/perf_mem_test.go` fails above 256MB.
+- Completed: 2026-10-12, bcb57e2
