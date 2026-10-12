@@ -539,10 +539,8 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, psscReader *p
 			log.Println("couldn't read pg_stat_statement_context, so this window's calls are untagged:", err)
 			psscStats, psscOK = nil, false
 		}
-		if psscOK {
-			if err := w.checkPSSCUtility(ctx, psscReader); err != nil && retryObservedError(err) {
-				return err
-			}
+		if err := w.checkPSSCHarvest(ctx, psscReader, psscOK); err != nil && retryObservedError(err) {
+			return err
 		}
 	}
 	w.lastWindowEnd.Store(now.Unix())

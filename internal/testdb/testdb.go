@@ -535,6 +535,33 @@ func observedSetup(version int, pssc bool) (image string, args []string, setup [
 		[]string{"create extension pg_stat_statements", "create extension pg_stat_statement_context"}
 }
 
+// PSSCTagsFromConfig leaves pssc's tags out of the postgres command line,
+// where it would outrank ALTER SYSTEM, so a test can change it with ALTER
+// SYSTEM and a reload. tags starts at pssc's default until the test sets it.
+func PSSCTagsFromConfig() testcontainers.ContainerCustomizer {
+	return dropCmdSetting("pg_stat_statement_context.tags")
+}
+
+// PSSCExtractorsFromConfig is PSSCTagsFromConfig for extractors.
+func PSSCExtractorsFromConfig() testcontainers.ContainerCustomizer {
+	return dropCmdSetting("pg_stat_statement_context.extractors")
+}
+
+func dropCmdSetting(name string) testcontainers.ContainerCustomizer {
+	return testcontainers.CustomizeRequestOption(func(req *testcontainers.GenericContainerRequest) error {
+		var cmd []string
+		for i := 0; i < len(req.Cmd); i++ {
+			if req.Cmd[i] == "-c" && i+1 < len(req.Cmd) && strings.HasPrefix(req.Cmd[i+1], name+"=") {
+				i++
+				continue
+			}
+			cmd = append(cmd, req.Cmd[i])
+		}
+		req.Cmd = cmd
+		return nil
+	})
+}
+
 // SmallTCPSendBuffer caps the container's TCP send buffers at 128 KiB, so a
 // client that reads a big result slowly, connected by the container address
 // (see ContainerDSN), makes Postgres block on the socket mid-query. On

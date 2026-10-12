@@ -9,13 +9,21 @@ import (
 
 // pssc is optional, and a misconfigured pssc quietly ships calls as
 // untagged, so the worker says what it found. On each connection to the
-// observed database it logs whether pssc is in use. When it is, the worker
-// warns if pssc's settings can't produce the contexts it maps, and if
+// observed database it logs whether pssc is in use, and each harvest logs
+// again when that changes (pssc created or dropped while connected). While
+// pssc is in use, each harvest rereads its settings (one pg_settings query)
+// and warns if they can't produce the contexts the worker maps. A settings
+// warning is logged once per distinct bad value, so a reload that breaks a
+// setting warns at the next harvest, and an unchanged bad value stays quiet
+// across harvests and reconnects. The worker also warns if
 // utility_missing_queryid keeps rising (the usual sign that pssc is loaded
 // before pg_stat_statements; the observer can't read
-// shared_preload_libraries to check the order directly). Each warning is
-// logged once per process: the settings change with a config reload, not on
-// their own, so repeating them would only add noise.
+// shared_preload_libraries to check the order directly).
+//
+// The tags check compares the allowlist with the mapped keys as written. It
+// doesn't model pssc renaming keys before matching them (the pinned pssc
+// has no rename setting to read), so a rename that produces a mapped key
+// could make it warn falsely.
 
 const (
 	psscInUseMessage          = "pg_stat_statement_context is in use, so contexts come from it"
@@ -43,7 +51,13 @@ type psscWatch struct {
 	// psscUtilityWindow harvests saw a rise.
 	recent []bool
 	// Per process.
-	warnedExtractors, warnedTags, warnedUtility bool
+	inUse, haveInUse               bool
+	checkedExtractors, checkedTags string
+	haveSettings                   bool
+	warnedUtility                  bool
+	// settingsErr is the last settings read error warned about, so each
+	// distinct error warns once.
+	settingsErr string
 }
 
 // psscConnected starts the per-connection part of the watch afresh.
@@ -57,56 +71,117 @@ func (w *Worker) psscConnected() {
 // reads decide whether the connection works.
 func (w *Worker) checkPSSCAtConnect(ctx context.Context, r *pssc.Reader) {
 	w.psscConnected()
-	log := w.cfg.Logger
 	d, err := r.Detect(ctx)
 	if err != nil {
-		log.Warn("couldn't check for pg_stat_statement_context", "err", err)
+		w.cfg.Logger.Warn("couldn't check for pg_stat_statement_context", "err", err)
 		return
 	}
+	w.notePSSCDetection(d, true)
 	if !d.Available() {
-		reason := "the library isn't in shared_preload_libraries"
-		if d.Preloaded {
-			reason = "the extension isn't created in this database"
-		}
-		log.Info(psscNotInUseMessage, "reason", reason)
 		return
 	}
-	w.psscWatch.schema = d.Schema
-	log.Info(psscInUseMessage, "schema", d.Schema)
 	s, err := r.Settings(ctx)
 	if err != nil {
-		log.Warn("couldn't read pg_stat_statement_context's settings", "err", err)
+		w.cfg.Logger.Warn("couldn't read pg_stat_statement_context's settings", "err", err)
 		return
 	}
 	w.checkPSSCSettings(s)
 }
 
-// checkPSSCSettings warns, once per process each, about extractors that
-// can't see prepended comments and a tags allowlist missing mapped keys.
+// notePSSCDetection records a detection and logs whether pssc is in use:
+// always on connect, otherwise only when that changed since the last log.
+func (w *Worker) notePSSCDetection(d pssc.Detection, connect bool) {
+	pw := &w.psscWatch
+	inUse := d.Available()
+	pw.schema = ""
+	if inUse {
+		pw.schema = d.Schema
+	}
+	if !connect && pw.haveInUse && pw.inUse == inUse {
+		return
+	}
+	pw.inUse, pw.haveInUse = inUse, true
+	if inUse {
+		w.cfg.Logger.Info(psscInUseMessage, "schema", d.Schema)
+		return
+	}
+	reason := "the library isn't in shared_preload_libraries"
+	if d.Preloaded {
+		reason = "the extension isn't created in this database"
+	}
+	w.cfg.Logger.Info(psscNotInUseMessage, "reason", reason)
+}
+
+// checkPSSCSettings warns about extractors that can't see prepended comments
+// and a tags allowlist missing mapped keys, once for each value it sees.
 func (w *Worker) checkPSSCSettings(s pssc.Settings) {
 	pw := &w.psscWatch
-	if !pw.warnedExtractors && !pssc.SeesPrepended(s.Extractors) {
-		pw.warnedExtractors = true
-		w.cfg.Logger.Warn(psscExtractorsWarning, "extractors", s.Extractors)
+	first := !pw.haveSettings
+	pw.haveSettings = true
+	if first || s.Extractors != pw.checkedExtractors {
+		pw.checkedExtractors = s.Extractors
+		if !pssc.SeesPrepended(s.Extractors) {
+			w.cfg.Logger.Warn(psscExtractorsWarning, "extractors", s.Extractors)
+		}
 	}
-	if missing := pssc.MissingMappedTags(s.Tags); !pw.warnedTags && len(missing) > 0 {
-		pw.warnedTags = true
-		w.cfg.Logger.Warn(psscTagsWarning, "tags", s.Tags, "missing", strings.Join(missing, ", "))
+	if first || s.Tags != pw.checkedTags {
+		pw.checkedTags = s.Tags
+		if missing := pssc.MissingMappedTags(s.Tags); len(missing) > 0 {
+			w.cfg.Logger.Warn(psscTagsWarning, "tags", s.Tags, "missing", strings.Join(missing, ", "))
+		}
 	}
 }
 
-// checkPSSCUtility reads utility_missing_queryid for the rising check. harvest
-// calls it when pssc was read. A pssc created after the connection opened is
-// picked up here.
-func (w *Worker) checkPSSCUtility(ctx context.Context, r *pssc.Reader) error {
+// checkPSSCHarvest runs the per-harvest checks. harvest calls it after
+// reading pssc, with whether that read found pssc available. It logs pssc
+// appearing or vanishing, rechecks the settings, and feeds the
+// utility_missing_queryid rule. Errors are returned so harvest can reconnect
+// on a broken connection; anything else is only logged.
+func (w *Worker) checkPSSCHarvest(ctx context.Context, r *pssc.Reader, available bool) error {
 	pw := &w.psscWatch
-	if pw.schema == "" {
+	if !available {
+		if !pw.haveInUse || !pw.inUse {
+			return nil
+		}
 		d, err := r.Detect(ctx)
-		if err != nil || !d.Available() {
+		if err != nil {
 			return err
 		}
-		pw.schema = d.Schema
+		w.notePSSCDetection(d, false)
+		return nil
 	}
+	if pw.schema == "" {
+		d, err := r.Detect(ctx)
+		if err != nil {
+			return err
+		}
+		w.notePSSCDetection(d, false)
+		if !d.Available() {
+			return nil
+		}
+	}
+	s, settingsErr := r.Settings(ctx)
+	if settingsErr != nil {
+		if msg := settingsErr.Error(); msg != pw.settingsErr {
+			pw.settingsErr = msg
+			w.cfg.Logger.Warn("couldn't read pg_stat_statement_context's settings", "err", settingsErr)
+		}
+		// A broken connection fails the utility read too; return that
+		// error, so harvest reconnects.
+		if err := w.checkPSSCUtility(ctx, r); err != nil {
+			return err
+		}
+		return settingsErr
+	}
+	pw.settingsErr = ""
+	w.checkPSSCSettings(s)
+	return w.checkPSSCUtility(ctx, r)
+}
+
+// checkPSSCUtility reads utility_missing_queryid for the rising check, from
+// the schema the last detection found.
+func (w *Worker) checkPSSCUtility(ctx context.Context, r *pssc.Reader) error {
+	pw := &w.psscWatch
 	n, err := r.UtilityMissingQueryID(ctx, pw.schema)
 	if err != nil {
 		// The schema may have moved; detect again next time.

@@ -2,10 +2,12 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/benchub/rotten/internal/pssc"
 	"github.com/benchub/rotten/internal/testdb"
@@ -76,8 +78,9 @@ func startLoggingWorker(t *testing.T, db *testdb.DB, logs *syncBuffer) *running 
 
 // pssc's defaults (append-only extractors) can't see prepended marginalia,
 // and an allowlist without job or job_tag drops jobs. Each warns once per
-// process, however often the worker reconnects.
-func TestPSSCSettingsWarnOncePerProcess(t *testing.T) {
+// distinct value, however often it's rechecked; a fix and a relapse warns
+// again.
+func TestPSSCSettingsWarnOncePerValue(t *testing.T) {
 	var logs syncBuffer
 	w := loggingWorker(&logs)
 	for range 3 {
@@ -89,6 +92,13 @@ func TestPSSCSettingsWarnOncePerProcess(t *testing.T) {
 	}
 	if n := strings.Count(got, psscTagsWarning); n != 1 || !strings.Contains(got, "job or job_tag") {
 		t.Fatalf("tags warned %d times, want 1 naming job or job_tag: %s", n, got)
+	}
+
+	w.checkPSSCSettings(pssc.Settings{Extractors: "marginalia(position=any)", Tags: "*"})
+	w.checkPSSCSettings(pssc.Settings{Extractors: "sqlcommenter, marginalia", Tags: "action, controller"})
+	got = logs.String()
+	if a, b := strings.Count(got, psscExtractorsWarning), strings.Count(got, psscTagsWarning); a != 2 || b != 2 {
+		t.Fatalf("after fix and relapse warned extractors %d, tags %d times, want 2 each: %s", a, b, got)
 	}
 
 	var quiet syncBuffer
@@ -134,5 +144,81 @@ func TestPSSCUtilityMissingQueryIDRule(t *testing.T) {
 	feed(w, 15, 16, 17, 18)
 	if warned(&logs) != 1 {
 		t.Fatalf("warned %d times, want once per process", warned(&logs))
+	}
+}
+
+// A pssc created after the worker connects is noticed at the next harvest,
+// which logs that it's in use.
+func TestPSSCCreatedAfterConnectLogsInUse(t *testing.T) {
+	db := startObservedForWorker(t)
+	su := db.Connect(t)
+	ctx := context.Background()
+	if _, err := su.Exec(ctx, "drop extension pg_stat_statement_context"); err != nil {
+		t.Fatal(err)
+	}
+	var logs syncBuffer
+	rn := startLoggingWorker(t, db, &logs)
+	if got := logs.String(); !strings.Contains(got, psscNotInUseMessage) || strings.Contains(got, psscInUseMessage) {
+		t.Fatalf("logs = %s, want %q only", got, psscNotInUseMessage)
+	}
+	if _, err := su.Exec(ctx, "create extension pg_stat_statement_context"); err != nil {
+		t.Fatal(err)
+	}
+	rn.window(t)
+	rn.window(t)
+	got := logs.String()
+	if n := strings.Count(got, psscInUseMessage); n != 1 {
+		t.Fatalf("in-use logged %d times, want 1: %s", n, got)
+	}
+}
+
+// A reload that drops a mapped key from tags warns at the next harvest, once
+// per change: repeating the bad value stays quiet, and a later, different
+// bad value warns again.
+func TestPSSCTagsChangedByReloadWarns(t *testing.T) {
+	db := startObservedVersionForWorker(t, 16, testdb.PSSCTagsFromConfig())
+	su := db.Connect(t)
+	ctx := context.Background()
+	setTags := func(v string) {
+		t.Helper()
+		for _, q := range []string{
+			"alter system set pg_stat_statement_context.tags = '" + v + "'",
+			"select pg_reload_conf()",
+		} {
+			if _, err := su.Exec(ctx, q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// pg_reload_conf only signals; wait for this backend to see it.
+		var last string
+		for range 50 {
+			var s string
+			if err := su.QueryRow(ctx, "show pg_stat_statement_context.tags").Scan(&s); err != nil {
+				t.Fatal(err)
+			}
+			last = s
+			if s == v {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("tags never became %q (last %q)", v, last)
+	}
+	setTags(testdb.PSSCTags)
+	var logs syncBuffer
+	rn := startLoggingWorker(t, db, &logs)
+	if strings.Contains(logs.String(), psscTagsWarning) {
+		t.Fatalf("warned before the change: %s", logs.String())
+	}
+	setTags("action, job")
+	rn.window(t)
+	rn.window(t)
+	if n := strings.Count(logs.String(), psscTagsWarning); n != 1 || !strings.Contains(logs.String(), "missing=controller") {
+		t.Fatalf("tags warned %d times, want 1 naming controller: %s", n, logs.String())
+	}
+	setTags("controller, job")
+	rn.window(t)
+	if n := strings.Count(logs.String(), psscTagsWarning); n != 2 {
+		t.Fatalf("tags warned %d times after a second bad change, want 2: %s", n, logs.String())
 	}
 }
