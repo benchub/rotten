@@ -1633,3 +1633,10 @@ Completed: 2026-10-12, 0b32ed2. Not reproduced in 81 runs (40 under CPU load); f
 - **Needs:** nothing.
 - **Red test:** Reproduce by running the spec repeatedly or under CPU load until it fails, then show it passes the same number of runs after the fix.
 Completed: 2026-10-12, 1ea4541. Not reproduced in 10 runs; fixed from the code path.
+
+### 20261012-131636-1: `reports_spec.rb:278` flakes with a Selenium error in a visibility check.
+- **Why (found in 20261007-220000-1):** One `make test-all` run failed "untagged calls shows them as their own context in the top reports" with a `Selenium::WebDriver::Error::WebDriverError` inside an element visibility check. It passed 3 of 3 alone and in the next full run.
+- **Do:** Check whether it reads the old page after the non-Turbo report form submit, as `layout_spec.rb` and `report_busy_spec.rb` did, and wait on `have_current_path` first if so. Otherwise find the real cause.
+- **Needs:** nothing.
+- **Red test:** Reproduce by repeated runs if possible; otherwise explain from the code path why the new wait can't read the old document.
+Completed: 2026-10-12, 63ab4ff. Not reproduced in 3 runs; fixed from the code path.
