@@ -244,8 +244,8 @@ where e.observed_window_start >= $1::timestamptz
 
 // seedPerf seeds the perf data, with the fleet's hundreds of logical sources
 // if fleet is set. Only TestPerfManySources seeds them: they skew the
-// planner's per-source estimates for the source-wide reports, which
-// task 20261005-150200-1 covers.
+// planner's per-source estimates for the source-wide reports, so it runs
+// the match reports, which were sensitive to that (task 20261005-150200-1).
 func seedPerf(t *testing.T, db *testdb.DB, fleet bool) perfFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -502,6 +502,11 @@ type perfCase struct {
 	// clamped to between 1 and 7 days, and for a fingerprint short of
 	// samples there, up to 7 days.
 	historyFrom time.Time
+	// matchedOnce requires the plan to read the matched_events CTE a
+	// bounded number of times (perfMatchedMaxLoops), as a hash it builds
+	// and probes, not once per event: by a nested loop over its scan, or a
+	// subplan that isn't hashed (task 20261005-150200-1).
+	matchedOnce bool
 }
 
 type planNode struct {
@@ -512,6 +517,8 @@ type planNode struct {
 	SubplansRemoved int        `json:"Subplans Removed"`
 	SharedHit       float64    `json:"Shared Hit Blocks"`
 	SharedRead      float64    `json:"Shared Read Blocks"`
+	CTEName         string     `json:"CTE Name"`
+	SubplanName     string     `json:"Subplan Name"`
 	Plans           []planNode `json:"Plans"`
 }
 
@@ -523,7 +530,15 @@ type planSummary struct {
 	executionMS     float64
 	sharedHit       float64
 	sharedRead      float64
+	// matchedLoops is the most loops of any scan of the matched_events CTE.
+	matchedLoops float64
 }
+
+// perfMatchedMaxLoops bounds matchedLoops. A hashed subplan's CTE scan runs
+// once per hash table build, which can be a few times (seen: 3, when the
+// aggregate around it spills); a nested loop or a plain subplan runs it once
+// per event, tens of thousands of times at 3h.
+const perfMatchedMaxLoops = 16
 
 func summarizePlan(t *testing.T, raw []byte, partitionsOf map[string]string) planSummary {
 	t.Helper()
@@ -543,6 +558,9 @@ func summarizePlan(t *testing.T, raw []byte, partitionsOf map[string]string) pla
 	s.sharedHit, s.sharedRead = doc[0].Plan.SharedHit, doc[0].Plan.SharedRead
 	var walk func(n planNode)
 	walk = func(n planNode) {
+		if n.NodeType == "CTE Scan" && n.CTEName == "matched_events" {
+			s.matchedLoops = max(s.matchedLoops, n.ActualLoops)
+		}
 		s.subplansRemoved += n.SubplansRemoved
 		if parent, ok := partitionsOf[n.RelationName]; ok {
 			if s.inPlan[parent] == nil {
@@ -855,9 +873,9 @@ func TestPerfReports(t *testing.T) {
 // sources, with a fingerprint on all of them. fingerprint_all_sources has no
 // source filter, and events_source_fingerprint_window leads with the source,
 // so it relies on btree skip scan over hundreds of sources in each partition.
-// It runs that report and the index decision for it. The fleet stays out of
-// TestPerfReports because it skews the source-wide reports' generic plans
-// (task 20261005-150200-1).
+// It runs that report and the index decision for it, and the source-wide
+// match reports, whose generic plans the fleet skews (task
+// 20261005-150200-1).
 func TestPerfManySources(t *testing.T) {
 	db := testdb.StartRotten(t)
 	f := seedPerf(t, db, true)
@@ -866,8 +884,21 @@ func TestPerfManySources(t *testing.T) {
 	partitionsOf := perfPartitionsOf(t, conn)
 	var cases []perfCase
 	for _, c := range perfCases(f) {
-		if strings.HasPrefix(c.name, "fingerprint_all_sources ") {
+		switch {
+		case strings.HasPrefix(c.name, "fingerprint_all_sources "):
 			cases = append(cases, c)
+		case perfFleetMatchCase(c.name):
+			c.matchedOnce = true
+			cases = append(cases, c)
+			// A match on every tagged context, so matched_events holds most
+			// of the range's events: the hash must still be built once.
+			if strings.HasSuffix(c.name, " 7d match") {
+				all := c
+				all.name += " all"
+				all.args = slices.Clone(c.args)
+				all.args[len(all.args)-1] = "."
+				cases = append(cases, all)
+			}
 		}
 	}
 	runPerfBudgets(t, conn, ui, f, cases, partitionsOf)
@@ -875,6 +906,21 @@ func TestPerfManySources(t *testing.T) {
 	requirePerfIndex(t, conn)
 	logPerfIndexSizes(t, conn)
 	perfIndexDecision(t, conn, f, cases, partitionsOf, 0, 0)
+}
+
+// perfFleetMatchCase is whether a case is one of the source-wide match
+// reports that TestPerfManySources also runs. With the fleet, the generic
+// plan estimates a few dozen events per source, which once made it
+// nested-loop the aggregate against the matched events: about 2s at 3h, and
+// canceled at 24h and 7d (task 20261005-150200-1).
+func perfFleetMatchCase(name string) bool {
+	for _, r := range []string{"3h", "24h", "7d"} {
+		switch name {
+		case "top_by_calls " + r + " match", "top_by_total_time " + r + " match", "outliers " + r + " match":
+			return true
+		}
+	}
+	return false
 }
 
 // runPerfBudgets runs each case under both plan cache modes, as the UI does,
@@ -887,6 +933,12 @@ func runPerfBudgets(t *testing.T, conn, ui *pgx.Conn, f perfFixture, cases []per
 			r := runPerfCase(t, ui, c, mode, partitionsOf)
 			if !r.timedOut {
 				assertPerfPruning(t, conn, c, r)
+				if c.matchedOnce && r.summary.matchedLoops == 0 {
+					t.Errorf("%s (%s): matched_events scan not found in plan", c.name, mode)
+				}
+				if c.matchedOnce && r.summary.matchedLoops > perfMatchedMaxLoops {
+					t.Errorf("%s (%s): scans matched_events %.0f times; want at most %d, a hash built once", c.name, mode, r.summary.matchedLoops, perfMatchedMaxLoops)
+				}
 			}
 			if r.median > c.budget {
 				t.Errorf("%s (%s): median %s over budget %s (runs %v)", c.name, mode, r.median, c.budget, r.runs)

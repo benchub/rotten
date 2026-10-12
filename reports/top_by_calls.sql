@@ -43,8 +43,10 @@ with sources as (
   group by ec.controller_id, ec.action_id, ec.job_tag_id
 ), matched_events as materialized (
   -- Events in the range with a context matching $8: controller#action, or
-  -- job tag. Empty when $8 is NULL. Materialized so the left join below
-  -- probes one hash of it, built once.
+  -- job tag. Empty when $8 is NULL. Materialized so aggregated_all's IN
+  -- probes one hash of it, built once. A left join to it instead lets a
+  -- generic plan nest-loop over it when many sources make the per-source
+  -- event estimate small (task 20261005-150200-1).
   select distinct u.event_id
   from context_events k
   left join rotten.controllers c on c.id = k.controller_id
@@ -60,11 +62,10 @@ with sources as (
     sum(e.calls)::double precision as calls,
     sum(e.time)::double precision as total_ms,
     (sum(e.time) / nullif(sum(e.calls), 0))::double precision as avg_ms_per_call,
-    bool_or(m.event_id is not null) as context_matched,
+    bool_or(e.id in (select event_id from matched_events)) as context_matched,
     array_agg(e.id) as event_ids
   from rotten.events e
   join sources s on s.id = e.logical_source_id
-  left join matched_events m on m.event_id = e.id
   -- Only windows fully inside [start, end) are counted; straddling windows are excluded on purpose.
   where e.observed_window_start >= $4::timestamptz
     and e.observed_window_start < $5::timestamptz
