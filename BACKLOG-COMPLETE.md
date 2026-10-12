@@ -1626,3 +1626,10 @@ Completed: 2026-10-12, 685e448
 - **Needs:** nothing.
 - **Red test:** Reproduce by running the spec repeatedly (or under CPU load) until it fails, then show it passes the same number of runs after the fix.
 Completed: 2026-10-12, 0b32ed2. Not reproduced in 81 runs (40 under CPU load); fixed from the code path.
+
+### 20261007-220000-1: `report_busy_spec.rb:119` flakes under load.
+- **Why (found landing the go-archive bump, 301d5a4):** One `make test-all` run at load average about 32 failed "Report busy indicator clears it when the report times out" with `Capybara::ElementNotFound: Unable to find xpath "/html"` inside `run_and_expect_busy`. The next `make test-ui` passed all 1,240 examples.
+- **Do:** Find why the page has no document at that point (likely a navigation still in flight when the spec looks) and make the spec wait for the timed-out page before asserting. A likely cause (found in 20261007-160000-1): `reports/index` and `fingerprints/show` submit with `data-turbo=false`, so `click_button` returns before the browser loads the next page; waiting on `have_current_path` first, as `layout_spec.rb` now does, avoids reading the old document.
+- **Needs:** nothing.
+- **Red test:** Reproduce by running the spec repeatedly or under CPU load until it fails, then show it passes the same number of runs after the fix.
+Completed: 2026-10-12, 1ea4541. Not reproduced in 10 runs; fixed from the code path.
