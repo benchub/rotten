@@ -75,10 +75,19 @@ RSpec.describe "Report busy indicator", type: :system do
   end
 
   # Runs the picked report, then checks what the page showed while it ran.
+  #
+  # The form submits without Turbo, so click_button returns before the
+  # next page loads, and the driver blocks the first query until it does.
+  # That blocked query spends the whole Capybara wait, so if it lands
+  # while the old document is gone and the new one isn't ready ("Unable to
+  # find xpath /html"), there's no time left to retry. Wait for the URL to
+  # change first, with a budget that covers the hold, so the assertions
+  # in the block start on the loaded page with a fresh wait.
   def run_and_expect_busy
     watch_for_busy
     started = Time.now
     click_button "Run report"
+    expect(page).to have_current_path(%r{\A/reports\?}, wait: hold_seconds + Capybara.default_max_wait_time)
     yield
     expect(Time.now - started).to be >= hold_seconds
     record = busy_record
