@@ -1605,3 +1605,10 @@ Completed: 2026-10-12, 3f932b3
 - **Needs:** nothing.
 - **Red test:** Create pssc after the worker connects and see the "in use" log; change `tags` with a reload and see the warning.
 Completed: 2026-10-12, af3a160
+
+### 20261005-150200-2: The fingerprint page's one-timeout spec flakes under load.
+- **Why (found in 20261005-123457-1):** In one `make test-all` run on a loaded machine, `spec/requests/fingerprints_spec.rb:226` ("stops the page within one timeout when every query is slow") took 0.84s against its 0.65s wall-clock bound. It passed three times when run alone afterwards.
+- **Do:** Keep what the spec proves (the page stops after one 300ms timeout, not one per query) without a tight wall-clock bound, e.g. by counting the queries that started, or by widening the bound to well under the slowest serial case (four queries × 0.3s).
+- **Needs:** nothing.
+- **Red test:** The spec, run with the CPU loaded (e.g. a busy container alongside), fails today and passes after the change.
+Completed: 2026-10-12, 97a2db2
