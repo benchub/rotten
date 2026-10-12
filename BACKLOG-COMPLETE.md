@@ -1598,3 +1598,10 @@ Finished tasks get pasted here from `BACKLOG.md`, with a `Completed: <date>, <co
 - **Needs:** nothing.
 - **Red test:** A system spec: click a context on the fingerprint page and the chart's points match that context's calls only, and the filter survives a zoom. Add a security spec for a malformed or foreign context parameter.
 Completed: 2026-10-12, 3f932b3
+
+### 20261007-200000-1: pssc health checks only run at connect time.
+- **Why (found in 20261007-120000-4):** The "pssc in use" log and the `extractors`/`tags` warnings run when the worker connects, once per process. If pssc is created after the worker connects, or a reload breaks those settings later, nothing is logged until a reconnect or restart. The `tags` check also ignores pssc's `rename` setting, so a renamed key can warn falsely or be missed.
+- **Do:** Re-run the settings check when it's cheap to (for example, when the per-harvest detection result or the settings change), warning once per change rather than once per process. Account for `rename` in the `tags` check, or document that it doesn't.
+- **Needs:** nothing.
+- **Red test:** Create pssc after the worker connects and see the "in use" log; change `tags` with a reload and see the warning.
+Completed: 2026-10-12, af3a160

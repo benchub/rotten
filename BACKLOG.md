@@ -109,11 +109,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 Background: contexts come from the first query text pgss kept for each entry, so their counts were always skewed, and Postgres 18 drops leading comments. pssc counts calls and execution time per (userid, dbid, queryid, toplevel, tag set). Read it as counters (`calls_total`, `exec_time_total`, `stats_since` from `pg_stat_statement_context_totals`) and diff them like pgss, so the worker's interval doesn't need to match pssc's `bucket_interval`.
 
-### 20261007-200000-1: pssc health checks only run at connect time.
-- **Why (found in 20261007-120000-4):** The "pssc in use" log and the `extractors`/`tags` warnings run when the worker connects, once per process. If pssc is created after the worker connects, or a reload breaks those settings later, nothing is logged until a reconnect or restart. The `tags` check also ignores pssc's `rename` setting, so a renamed key can warn falsely or be missed.
-- **Do:** Re-run the settings check when it's cheap to (for example, when the per-harvest detection result or the settings change), warning once per change rather than once per process. Account for `rename` in the `tags` check, or document that it doesn't.
-- **Needs:** nothing.
-- **Red test:** Create pssc after the worker connects and see the "in use" log; change `tags` with a reload and see the warning.
+### 20261012-111513-1: Decide whether the pssc tags check should model rename.
+- **Why (found in 20261007-200000-1):** pssc's `tags` description says keys are "matched after rename", but the pinned pssc (`64d1c768`) has no `rename` setting in `pg_settings`. The worker's tags check compares keys as written, so a rename that produces a mapped key could make it warn falsely. The builder couldn't read pssc's source: its sandbox blocked cloning the repo and running `docker run` against the image.
+- **Do:** Read pssc's source at the pinned commit to find where rename lives (a setting, an extractor parameter, or not yet built). If it exists, make the tags check account for it; otherwise keep the documented gap.
+- **Needs:** someone able to read the pssc source.
+- **Red test:** If rename exists, a renamed key that maps to `controller` doesn't warn.
 
 ### 20261007-120000-7: Generic tag sets (v2).
 - **Why:** pssc can keep any tag keys, not just controller, action, and job.
