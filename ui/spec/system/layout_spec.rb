@@ -87,6 +87,11 @@ RSpec.describe "Layout", :api_keys, type: :system do
     fill_in "Name", with: "layout-db1"
     fill_in "FQDN", with: "db1.example.test"
     click_button "Create pass key"
+    # The form posts without Turbo, so the click returns before the new page
+    # loads, and the old page has an h1 too. Checking it while Chrome unloads
+    # it raises an inspector error Capybara doesn't retry. The URL changes
+    # when the new document commits, so wait on that first; it reads no nodes.
+    expect(page).to have_current_path("/admin/keys")
     expect_top_bar(admin, heading: ["h1", "Pass key created"], current: "Admin", admin: true)
   end
 
