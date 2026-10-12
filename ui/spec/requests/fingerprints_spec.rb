@@ -233,13 +233,30 @@ RSpec.describe "Fingerprint detail", type: :request do
       "with slow as materialized (select pg_sleep(0.25)) select q.* from (\n#{sql}\n) q, slow"
     end
 
-    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    get "/fingerprints/#{users_id}", params: source_params
-    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    # Watch what reaches Postgres instead of timing the page: the timeout
+    # each query is given and how many report queries start. Load can only
+    # make queries slower, which spends the shared budget sooner, so neither
+    # check can fail because the machine is busy.
+    timeouts = []
+    reports = 0
+    watch = lambda do |*, payload|
+      case payload[:name]
+      when "Report timeout" then timeouts << Integer(Array(payload[:type_casted_binds]).first.to_s.delete_suffix("ms"))
+      when "Report" then reports += 1
+      end
+    end
+    ActiveSupport::Notifications.subscribed(watch, "sql.active_record") do
+      get "/fingerprints/#{users_id}", params: source_params
+    end
 
     expect(response).to have_http_status(:service_unavailable)
     expect(response.body).to include("took longer than 0.3\n")
-    expect(elapsed).to be < 0.65
+    # One timeout per query would give every query 300ms and let all four run.
+    # A shared one gives the first 300ms and the next only what the first's
+    # 250ms sleep left, so the page stops by the second query.
+    expect(timeouts.first).to be <= 300
+    expect(timeouts.drop(1)).to all(be <= 50)
+    expect(reports).to be_between(1, 2)
   ensure
     Rails.configuration.x.report_timeout_ms = original_timeout if original_timeout
   end
