@@ -1619,3 +1619,10 @@ Completed: 2026-10-12, 97a2db2
 - **Needs:** nothing.
 - **Red test:** Delay the replica's start past 8s (or shorten the hold) and watch the current test fail; it must pass after the fix.
 Completed: 2026-10-12, 685e448
+
+### 20261007-160000-1: `layout_spec.rb:78` flakes with a Selenium stale-node error.
+- **Why (found landing 20261007-120000-1):** One `make test-all` run failed "Layout shows an admin the top bar on every page, with Admin, including the one-time pass key page" with `unhandled inspector error: Node with given id does not belong to the document` inside `visible?`. The next `make test-ui` run passed. The spec likely checks visibility of an element the page has just replaced.
+- **Do:** Find the navigation or Turbo update that replaces the node and make the spec wait for the new page (e.g. assert on content of the destination page first) before checking the top bar.
+- **Needs:** nothing.
+- **Red test:** Reproduce by running the spec repeatedly (or under CPU load) until it fails, then show it passes the same number of runs after the fix.
+Completed: 2026-10-12, 0b32ed2. Not reproduced in 81 runs (40 under CPU load); fixed from the code path.

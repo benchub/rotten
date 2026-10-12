@@ -73,21 +73,15 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** nothing.
 - **Red test:** A perf case that runs the 7d match reports with a concurrent load generator and requires them to finish under the UI's timeout.
 
-### 20261007-160000-1: `layout_spec.rb:78` flakes with a Selenium stale-node error.
-- **Why (found landing 20261007-120000-1):** One `make test-all` run failed "Layout shows an admin the top bar on every page, with Admin, including the one-time pass key page" with `unhandled inspector error: Node with given id does not belong to the document` inside `visible?`. The next `make test-ui` run passed. The spec likely checks visibility of an element the page has just replaced.
-- **Do:** Find the navigation or Turbo update that replaces the node and make the spec wait for the new page (e.g. assert on content of the destination page first) before checking the top bar.
-- **Needs:** nothing.
-- **Red test:** Reproduce by running the spec repeatedly (or under CPU load) until it fails, then show it passes the same number of runs after the fix.
-
 ### 20261007-220000-1: `report_busy_spec.rb:119` flakes under load.
 - **Why (found landing the go-archive bump, 301d5a4):** One `make test-all` run at load average about 32 failed "Report busy indicator clears it when the report times out" with `Capybara::ElementNotFound: Unable to find xpath "/html"` inside `run_and_expect_busy`. The next `make test-ui` passed all 1,240 examples.
-- **Do:** Find why the page has no document at that point (likely a navigation still in flight when the spec looks) and make the spec wait for the timed-out page before asserting.
+- **Do:** Find why the page has no document at that point (likely a navigation still in flight when the spec looks) and make the spec wait for the timed-out page before asserting. A likely cause (found in 20261007-160000-1): `reports/index` and `fingerprints/show` submit with `data-turbo=false`, so `click_button` returns before the browser loads the next page; waiting on `have_current_path` first, as `layout_spec.rb` now does, avoids reading the old document.
 - **Needs:** nothing.
 - **Red test:** Reproduce by running the spec repeatedly or under CPU load until it fails, then show it passes the same number of runs after the fix.
 
 ### 20261012-103653-1: Audit system specs for Turbo snapshot-preview reads.
 - **Why (found in 20261012-091702-1):** When a link goes back to a URL already visited in the same test, Turbo shows its cached snapshot as a preview, then swaps in the fresh page. Turbo drops `data-turbo-preview` before that swap. A spec that waits on a count the preview also satisfies, then reads attributes, can read detached nodes. `fingerprints_spec.rb:299` flaked this way and now uses `mark_leaving` and `fresh_calls_sum`.
-- **Do:** Check the other `click_link` and `visit` navigations in `ui/spec/system/` that return to a URL visited earlier in the same example and then read attributes or text. Fix any that can read the preview, sharing the helpers if more than one spec needs them.
+- **Do:** Check the other `click_link` and `visit` navigations in `ui/spec/system/` that return to a URL visited earlier in the same example and then read attributes or text. Also check specs that submit non-Turbo forms (`api_keys/new`, `sessions/new`, `reports/index`, `fingerprints/show`) and then read an element the old page also has; `api_keys_spec.rb`'s "Create pass key" is the likeliest (see 20261007-160000-1). Fix any that can read the preview, sharing the helpers if more than one spec needs them.
 - **Needs:** nothing.
 - **Red test:** Hard to make red on demand. Show for each changed spec that its wait can't pass on the cached snapshot.
 
