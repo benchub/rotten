@@ -1640,3 +1640,10 @@ Completed: 2026-10-12, 1ea4541. Not reproduced in 10 runs; fixed from the code p
 - **Needs:** nothing.
 - **Red test:** Reproduce by repeated runs if possible; otherwise explain from the code path why the new wait can't read the old document.
 Completed: 2026-10-12, 63ab4ff. Not reproduced in 3 runs; fixed from the code path.
+
+### 20261005-150200-1: Match reports' generic plans nested-loop on a store with hundreds of sources.
+- **Why (found in 20261005-123457-1):** That task's `TestPerfManySources` seeds 400 fleet logical sources besides the 12 main ones. With that many, `n_distinct(logical_source_id)` is high, so the generic plan estimates about 46 events per source where busy cluster 13 has about 35,000 in 3h. top_by_calls, top_by_total_time and outliers with a match then nested-loop the aggregate against the `matched_events` CTE (63M join-filter rows): about 2.3–2.9s at 3h, and canceled by the 15s timeout at 24h and 7d. Custom plans are fine. This predates migration 0014 (it's the same with `events_fingerprint_window`); the fleet only exposed it. The fleet was kept out of `TestPerfReports`'s seed so `make test-perf` stays green, so the suite doesn't catch it yet.
+- **Do:** Make the plan independent of the per-source estimate, for example by matching through a hashed `= any(array(...))` or a semi-join the planner hashes, or by materializing the matched keys so the join can't be a nested loop over a CTE scan. Recheck 20261005-123457-2 afterwards, since it covers the same reports.
+- **Needs:** nothing.
+- **Red test:** Add the 400-source fleet seed to the match cases (or run them against `TestPerfManySources`'s setup) and require the 3h budget (2s) for top_by_calls, top_by_total_time and outliers with a match, in both plan cache modes.
+Completed: 2026-10-12, b5e1f43
