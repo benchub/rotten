@@ -1647,3 +1647,10 @@ Completed: 2026-10-12, 63ab4ff. Not reproduced in 3 runs; fixed from the code pa
 - **Needs:** nothing.
 - **Red test:** Add the 400-source fleet seed to the match cases (or run them against `TestPerfManySources`'s setup) and require the 3h budget (2s) for top_by_calls, top_by_total_time and outliers with a match, in both plan cache modes.
 Completed: 2026-10-12, b5e1f43
+
+### 20261012-103653-1: Audit system specs for Turbo snapshot-preview reads.
+- **Why (found in 20261012-091702-1):** When a link goes back to a URL already visited in the same test, Turbo shows its cached snapshot as a preview, then swaps in the fresh page. Turbo drops `data-turbo-preview` before that swap. A spec that waits on a count the preview also satisfies, then reads attributes, can read detached nodes. `fingerprints_spec.rb:299` flaked this way and now uses `mark_leaving` and `fresh_calls_sum`.
+- **Do:** Check the other `click_link` and `visit` navigations in `ui/spec/system/` that return to a URL visited earlier in the same example and then read attributes or text. Also check specs that submit non-Turbo forms (`api_keys/new`, `sessions/new`, `reports/index`, `fingerprints/show`) and then read an element the old page also has; `api_keys_spec.rb`'s "Create pass key" is the likeliest (see 20261007-160000-1). Fix any that can read the preview, sharing the helpers if more than one spec needs them.
+- **Needs:** nothing.
+- **Red test:** Hard to make red on demand. Show for each changed spec that its wait can't pass on the cached snapshot.
+Completed: 2026-10-12, 1bf6485
