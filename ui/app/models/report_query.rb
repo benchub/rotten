@@ -43,6 +43,10 @@ class ReportQuery
   DATETIME = /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?\z/
   MAX_VALUE_LENGTH = 1000
   MAX_MATCH_LENGTH = 200
+  # A context filter is "controller#action#job_tag", each part empty when the
+  # context has none, so "##" is the untagged context. Controller and action
+  # can't hold a #; the job tag, last, may.
+  CONTEXT_FORMAT = /\A([^#]*)#([^#]*)#(.*)\z/m
   # Compiles a match pattern without reading any rows.
   MATCH_CHECK_SQL = "SELECT ''::text ~* $1::text".freeze
   MATCH_ERROR_PREFIX = "invalid regular expression: ".freeze
@@ -59,7 +63,7 @@ class ReportQuery
     project: "Project", environment: "Environment", cluster: "Cluster", role: "Role", range: "Time range",
     from: "From", to: "To", sort: "Sort", dir: "Direction", primary_role: "Primary role",
     replica_role: "Replica role", fingerprint_id: "Fingerprint ID", bucket: "Bucket", sort_report: "Sort report",
-    match: "Match"
+    match: "Match", context: "Context"
   }.freeze
 
   attr_reader :report, :catalog, :now, *FIELDS.keys
@@ -71,6 +75,7 @@ class ReportQuery
   validate :match_is_short
   validate :utilization_roles_are_valid, if: -> { report.utilization? }
   validate :timeseries_is_valid, if: -> { report.timeseries? }
+  validate :context_is_valid, if: -> { report.timeseries? }
 
   def initialize(report, params, catalog:, now: Time.current)
     @report = report
@@ -81,6 +86,8 @@ class ReportQuery
     @raw.each { |field, value| instance_variable_set(:"@#{field}", value.is_a?(String) ? value.strip : nil) }
     # Spaces can matter in a regex, so match is kept as typed.
     @match = @raw[:match] if @raw[:match].is_a?(String)
+    # A job tag can end in a space, so context is kept as typed too.
+    @context = @raw[:context] if @raw[:context].is_a?(String)
     @range = DEFAULT_RANGE if @range.blank? && @raw[:range].nil?
     @primary_role = DEFAULT_PRIMARY_ROLE if @primary_role.blank?
     @replica_role = DEFAULT_REPLICA_ROLE if @replica_role.blank?
@@ -154,9 +161,22 @@ class ReportQuery
   # Runs this query's report, or with the same validated parameters one of
   # the internal reports (Report.internal). Only this query's report sorts.
   def run(runner = ReportRunner.new, report: self.report)
+    own = report == self.report
+    # The time series restricted to a context is another query with the same columns.
+    report = Report.internal("fingerprint_context_timeseries") if own && context_filter
     result = runner.run(report.sql, binds(report))
     rows = result.rows.map { |values| result.columns.zip(values).to_h }
-    report == self.report ? sort_rows(rows) : rows
+    own ? sort_rows(rows) : rows
+  end
+
+  # The context the time series is restricted to, as the "controller",
+  # "action" and "job_tag" of a contexts row (nil for a part it doesn't have),
+  # or nil for all contexts. Only valid once the query is.
+  def context_filter
+    return nil unless report.timeseries? && context.present?
+
+    match = CONTEXT_FORMAT.match(context)
+    match && %w[controller action job_tag].zip(match.captures.map(&:presence)).to_h
   end
 
   # The validated parameters, for links that keep the current choices.
@@ -165,7 +185,7 @@ class ReportQuery
     params[:role] = role if role.present?
     params.merge!(from: from, to: to) if custom?
     params.merge!(primary_role: primary_role, replica_role: replica_role) if report.utilization?
-    params.merge!(fingerprint_id: fingerprint_id, bucket: bucket.presence) if report.timeseries?
+    params.merge!(fingerprint_id: fingerprint_id, bucket: bucket.presence, context: context.presence) if report.timeseries?
     params.merge!(sort: sort, dir: dir) if sort.present?
     with_match(params.merge(overrides).compact_blank)
   end
@@ -194,6 +214,10 @@ class ReportQuery
     when :utilization then [*source, start_at, end_at, primary_role, replica_role, match_pattern]
     when :timeseries
       [*source, fingerprint_id_value, start_at, end_at, "#{bucket_seconds} seconds", role_or_nil]
+    when :fingerprint_context_timeseries
+      filter = context_filter
+      [*source, fingerprint_id_value, start_at, end_at, "#{bucket_seconds} seconds", role_or_nil,
+       filter["controller"], filter["action"], filter["job_tag"]]
     when :fingerprint_contexts
       [*source, fingerprint_id_value, start_at, end_at, CONTEXT_LIMIT, role_or_nil]
     when :fingerprint_sources then [*source, fingerprint_id_value, start_at, end_at, role_or_nil]
@@ -297,6 +321,12 @@ class ReportQuery
     errors.add(:primary_role, "is not a known role") unless known.include?(primary_role)
     errors.add(:replica_role, "is not a known role") unless known.include?(replica_role)
     errors.add(:replica_role, "must differ from Primary role") if primary_role == replica_role
+  end
+
+  def context_is_valid
+    return if context.blank? || context.match?(CONTEXT_FORMAT)
+
+    errors.add(:context, "must look like controller#action#job_tag")
   end
 
   def timeseries_is_valid

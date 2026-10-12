@@ -60,7 +60,7 @@ class Report
   # report reads.
   def own_fields
     if utilization? then %i[primary_role replica_role]
-    elsif timeseries? then %i[role fingerprint_id bucket]
+    elsif timeseries? then %i[role fingerprint_id bucket context]
     else %i[role]
     end
   end
@@ -135,6 +135,15 @@ class Report
   ].freeze
 
   INTERNAL = [
+    new(key: "fingerprint_context_timeseries", title: "Fingerprint time series for one context",
+        file: "fingerprint_context_timeseries.sql", kind: :fingerprint_context_timeseries,
+        description: "Calls and time for one query in one context over time.",
+        columns: [
+          ["bucket_start", "Bucket start (UTC)", :time],
+          ["bucket_end", "Bucket end (UTC)", :time],
+          ["calls", "Calls", :count],
+          ["total_ms", "Total ms", :ms]
+        ]),
     new(key: "fingerprint_contexts", title: "Top contexts", file: "fingerprint_contexts.sql",
         kind: :fingerprint_contexts, description: "The contexts that ran one query the most.",
         columns: [

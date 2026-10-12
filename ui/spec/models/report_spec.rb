@@ -8,7 +8,7 @@ RSpec.describe Report do
   end
 
   it "keeps the fingerprint detail queries out of the report list" do
-    internal = %w[fingerprint_contexts fingerprint_sources fingerprint_all_sources]
+    internal = %w[fingerprint_contexts fingerprint_sources fingerprint_all_sources fingerprint_context_timeseries]
 
     expect(described_class.all.map(&:key)).not_to include(*internal)
     internal.each do |key|

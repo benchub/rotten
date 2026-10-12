@@ -216,6 +216,39 @@ module ReportFixture
     conn&.close
   end
 
+  # Adds a context with c calls to the newest recent event of the fingerprint
+  # on canvas 13 primary, for contexts the fixture doesn't have (a # in a
+  # controller, say). Its attributed_time is 1.
+  def self.add_context!(fingerprint_id, c, controller: nil, action: nil, job_tag: nil)
+    conn = connect
+    conn.transaction do
+      ids = { "controllers" => controller, "actions" => action, "job_tags" => job_tag }.to_h do |table, name|
+        column = table.delete_suffix("s")
+        id = name && conn.exec_params(<<~SQL, [name]).getvalue(0, 0).to_i
+          with found as (select id from rotten.#{table} where #{column} = $1::text),
+               made as (insert into rotten.#{table} (#{column}) select $1::text where not exists (select 1 from found) returning id)
+          select id from found union all select id from made
+        SQL
+        [table, id]
+      end
+      result = conn.exec_params(<<~SQL, [fingerprint_id, c, ids["controllers"], ids["actions"], ids["job_tags"]])
+        insert into rotten.event_context
+          (event_id, observed_window_start, observed_window_end, controller_id, action_id, job_tag_id, c,
+           logical_source_id, attributed_time)
+        select e.id, e.observed_window_start, e.observed_window_end, $3::integer, $4::integer, $5::integer, $2::integer, e.logical_source_id, 1
+        from rotten.events e
+        join rotten.logical_sources s on s.id = e.logical_source_id
+        where e.fingerprint_id = $1 and s.project = 'canvas' and s.cluster = '13' and s.role = 'primary'
+          and e.observed_window_start > now() - interval '3 hours'
+        order by e.observed_window_start desc
+        limit 1
+      SQL
+      raise "no recent event to add a context to" unless result.cmd_tuples == 1
+    end
+  ensure
+    conn&.close
+  end
+
   CROWD_SIZE = 60
   # The crowd's needles: each matches /needle/i one way, its query text, a
   # controller#action or a job tag, and each is small enough to rank below

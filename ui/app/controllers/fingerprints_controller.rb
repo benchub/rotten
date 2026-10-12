@@ -61,6 +61,10 @@ class FingerprintsController < ApplicationController
     others = @query.link_params.except(:fingerprint_id, *RANGE_FIELDS)
     reset = reset_range(others)
     @reset_zoom_params = reset && others.merge(reset)
+    # Links that change the context keep the choices as they are now, the
+    # zoomed range and where to reset to included.
+    @context_link_params = @query.link_params.except(:fingerprint_id, :context)
+                                 .merge((reset || {}).transform_keys { |key| :"reset_#{key}" })
     before_zoom = reset || @query.link_params.slice(*RANGE_FIELDS)
     @zoom_url = fingerprint_path(@fingerprint.id, others.merge(before_zoom.transform_keys { |key| :"reset_#{key}" }))
   end

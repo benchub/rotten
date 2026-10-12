@@ -164,6 +164,29 @@ RSpec.describe "Fingerprint detail", type: :system do
           .move_to_location(to_xy[0].round, to_xy[1].round).pointer_up(:left).perform
     end
 
+    # Turbo caches a snapshot of each page it leaves and shows it as a
+    # preview when a link goes back to that URL, then swaps in the page from
+    # the server. It drops data-turbo-preview before that swap, so the
+    # attribute can't tell the two apart. Instead, mark the body before
+    # leaving a page: the snapshot keeps the mark and a fresh body has none.
+    def mark_leaving = page.execute_script("document.body.dataset.specLeft = ''")
+
+    # The calls chart's values summed on a page rendered from the server,
+    # once it has count points. Reading happens inside synchronize, so a
+    # swap mid-read (stale or nil attributes) retries instead of failing.
+    def fresh_calls_sum(count)
+      page.document.synchronize do
+        points = all("body:not([data-spec-left]) svg.timeseries-chart[data-series='calls'] circle.chart-point",
+                     visible: :all, wait: false)
+        raise Capybara::ExpectationNotMet, "expected #{count} fresh points, found #{points.size}" unless points.size == count
+
+        values = points.map { |point| point["data-value"] }
+        raise Capybara::ExpectationNotMet, "points went stale mid-read" if values.any?(&:nil?)
+
+        values.sum(&:to_f)
+      end
+    end
+
     def csp_violations = page.driver.browser.logs.get(:browser).map(&:message).grep(/Content Security Policy/i)
 
     it "shows a guide and a tooltip for the nearest point on hover" do
@@ -294,6 +317,67 @@ RSpec.describe "Fingerprint detail", type: :system do
       expect(chart_points("calls").size).to eq(18)
       expect(page).to have_no_link("Reset zoom")
       expect(csp_violations).to be_empty
+    end
+
+    it "restricts the chart to a clicked context, keeps it through zoom and reset, and drops it on request" do
+      visit base_url
+      expect(chart_points("calls").sum { |point| point["data-value"].to_f }).to eq(1100)
+
+      mark_leaving
+      within("table.fingerprint-contexts") { click_link "users#show" }
+
+      expect(page).to have_current_path(/context=users%23show%23/)
+      within(".context-filter") do
+        expect(page).to have_text("users#show")
+        expect(page).to have_link("Show all contexts")
+      end
+      points = chart_points("calls").to_a
+      expect(points.size).to eq(18)
+      expect(points.sum { |point| point["data-value"].to_f }).to eq(600)
+      # Only the three windows users#show ran in have calls, and the newest
+      # window's 500 calls are down to its 200.
+      expect(points.map { |point| point["data-value"].to_f }.select(&:positive?).sort).to eq([100, 200, 300])
+      expect(page).to have_css("table.fingerprint-contexts tbody tr", count: 7)
+
+      busy = points.each_index.select { |i| points[i]["data-value"].to_f.positive? }
+      mark_leaving
+      drag(center(points[busy.last + 1]), center(points[busy.first]))
+
+      expect(page).to have_current_path(/range=custom/)
+      expect(url_query).to include("context" => "users#show#", "reset_range" => "3h")
+      expect(page).to have_css(".context-filter", text: "users#show")
+      # The page before the zoom has 18 points, so this waits for the new one.
+      expect(page).to have_css("svg.timeseries-chart[data-series='calls'] circle.chart-point", minimum: 1, maximum: 17, visible: :all)
+      zoomed = chart_points("calls")
+      expect(zoomed.size).to be < 18
+      expect(zoomed.sum { |point| point["data-value"].to_f }).to eq(600)
+
+      # This URL is the one the context link opened, so Turbo first shows
+      # that page's cached snapshot as a preview, with the same 18 points.
+      mark_leaving
+      click_link "Reset zoom"
+      expect(page).to have_current_path(/[?&]range=3h/)
+      expect(url_query).to include("context" => "users#show#")
+      expect(fresh_calls_sum(18)).to eq(600)
+
+      mark_leaving
+      click_link "Show all contexts"
+      expect(page).to have_no_css(".context-filter")
+      expect(url_query.keys).not_to include("context")
+      expect(fresh_calls_sum(18)).to eq(1100)
+      expect(csp_violations).to be_empty
+    end
+
+    it "keeps the context when the form changes the bucket" do
+      visit "#{base_url}&context=users%23show%23"
+      select "1 hour", from: "Bucket"
+      click_button "Show"
+
+      expect(page).to have_current_path(/bucket=1h/)
+      expect(url_query).to include("context" => "users#show#")
+      # Three hours in 1-hour buckets; the 10-minute page before has 18.
+      expect(page).to have_css("svg.timeseries-chart[data-series='calls'] circle.chart-point", count: 3, visible: :all)
+      expect(chart_points("calls").sum { |point| point["data-value"].to_f }).to eq(600)
     end
   end
 

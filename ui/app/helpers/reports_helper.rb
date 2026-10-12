@@ -111,6 +111,22 @@ module ReportsHelper
     untagged_context?(context) ? untagged_label : highlight_match(report_context_name(context), pattern)
   end
 
+  # The context filter parameter for a contexts row, "controller#action#job_tag"
+  # with empty parts for what it doesn't have, or nil for a row it can't name:
+  # a controller or action with a # in it.
+  def context_filter_value(context)
+    controller, action, job_tag = context.values_at("controller", "action", "job_tag")
+    return nil if controller.to_s.include?("#") || action.to_s.include?("#")
+
+    "#{controller}##{action}##{job_tag}"
+  end
+
+  # Whether a contexts row is the one the time series is restricted to.
+  def active_context?(query, context)
+    filter = query.context_filter
+    filter.present? && filter == context.slice("controller", "action", "job_tag").transform_values(&:presence)
+  end
+
   # A sort link for a column header: the first click sorts numbers
   # descending and text ascending, the next click flips it.
   def report_sort_link(query, column)

@@ -333,4 +333,161 @@ RSpec.describe "Fingerprint detail", type: :request do
     get "/reports/fingerprint_all_sources", params: source_params
     expect(response).to have_http_status(:not_found)
   end
+
+  describe "context filter" do
+    let(:params) { source_params.merge(bucket: "10m") }
+
+    def doc_for(extra = {})
+      get "/fingerprints/#{users_id}", params: params.merge(extra)
+      Nokogiri::HTML5(response.body)
+    end
+
+    def series_total(doc, name) = doc.css("svg[data-series=#{name}] circle.chart-point").sum { |p| p["data-value"].to_f }
+    def query_of(url) = Rack::Utils.parse_query(URI(url).query)
+
+    before { sign_in }
+
+    it "links each context to the page with a context filter, keeping the rest of the choices" do
+      doc = doc_for(role: "primary")
+
+      links = doc.css("table.fingerprint-contexts tbody td a")
+      expect(links.map(&:text)).to eq(["users#show", "users#index", "courses#show", "grades#index", "api#list",
+                                       "login#new"])
+      show = query_of(links.first["href"])
+      expect(links.first["href"]).to start_with("/fingerprints/#{users_id}?")
+      expect(show).to include("context" => "users#show#", "project" => "canvas", "environment" => "production",
+                              "cluster" => "13", "range" => "3h", "bucket" => "10m", "role" => "primary")
+      expect(show.keys).not_to include("fingerprint_id")
+    end
+
+    it "links the untagged context and a job context" do
+      ReportFixture.add_untagged!(users_id, 150)
+      doc = doc_for
+
+      untagged = doc.at_css("table.fingerprint-contexts td a .context-untagged").ancestors("a").first
+      expect(query_of(untagged["href"])["context"]).to eq("##")
+    end
+
+    it "draws only that context's calls, and says which context is showing" do
+      unfiltered = doc_for
+      expect(series_total(unfiltered, "calls")).to eq(1100)
+      expect(unfiltered.at_css(".context-filter")).to be_nil
+
+      doc = doc_for(context: "users#show#")
+
+      expect(response).to have_http_status(:ok)
+      expect(series_total(doc, "calls")).to eq(600)
+      expect(doc.css("svg[data-series=calls] circle.chart-point").size).to eq(18)
+      # Its share of each window's time by calls, so under the all-contexts total of 530.
+      expect(series_total(doc, "total_ms")).to be_within(0.01).of(150 + 50 + (250.0 * 200 / 491))
+      active = doc.at_css(".context-filter")
+      expect(active.text).to include("users#show")
+      expect(query_of(active.at_css("a")["href"]).keys).not_to include("context")
+      expect(active.at_css("a").text).to eq("Show all contexts")
+      expect(active.at_css("a")["href"]).to include("bucket=10m", "range=3h")
+      # The contexts list stays whole so another one can be picked.
+      expect(doc.css("table.fingerprint-contexts tbody tr").size).to eq(7)
+      expect(doc.css("table.fingerprint-contexts tbody tr[aria-current]").map(&:text).join).to include("users#show")
+    end
+
+    it "keeps the filter in the zoom URL, the reset link, the form and the table link" do
+      doc = doc_for(context: "users#show#", range: "custom", from: (Time.now.utc - 2.hours).strftime("%Y-%m-%dT%H:%M"),
+                    to: (Time.now.utc - 1.hour).strftime("%Y-%m-%dT%H:%M"), reset_range: "3h")
+
+      expect(query_of(doc.at_css("[data-controller=chart]")["data-chart-zoom-url-value"])).to include("context" => "users#show#")
+      expect(query_of(doc.at_css("a.chart-reset")["href"])).to include("context" => "users#show#", "range" => "3h")
+      expect(doc.at_css("form.report-form input[type=hidden][name=context]")["value"]).to eq("users#show#")
+      expect(query_of(doc.at_css("a[href*='fingerprint_timeseries']")["href"])).to include("context" => "users#show#")
+      # A context link keeps the zoomed range and where to reset to.
+      link = query_of(doc.at_css("table.fingerprint-contexts tbody td a")["href"])
+      expect(link).to include("range" => "custom", "reset_range" => "3h")
+    end
+
+    it "does not set a context field on the form when none is picked" do
+      expect(doc_for.at_css("form.report-form input[name=context]")).to be_nil
+    end
+
+    it "draws zeros, not an error, for a context this fingerprint never ran in" do
+      doc = doc_for(context: "programs#show#")
+
+      expect(response).to have_http_status(:ok)
+      expect(series_total(doc, "calls")).to eq(0)
+      expect(doc.at_css(".context-filter").text).to include("programs#show")
+    end
+
+    it "runs the per-context series instead of the all-contexts one" do
+      files = []
+      allow(ReportSql).to receive(:read).and_wrap_original do |original, file|
+        files << file
+        original.call(file)
+      end
+
+      get "/fingerprints/#{users_id}", params: params.merge(context: "users#show#")
+
+      expect(files).to eq(%w[fingerprint_context_timeseries.sql fingerprint_contexts.sql fingerprint_sources.sql
+                             fingerprint_all_sources.sql])
+    end
+
+    it "filters the time series report as a table too" do
+      get "/reports", params: params.merge(report: "fingerprint_timeseries", fingerprint_id: users_id, context: "users#show#")
+
+      expect(response).to have_http_status(:ok)
+      calls = Nokogiri::HTML5(response.body).css("table.report tbody tr").map { |row| row.css("td")[2].text.delete(",").to_i }
+      expect(calls.sum).to eq(600)
+    end
+
+    it "answers 422 for a malformed context, running nothing" do
+      expect(ReportRunner).not_to receive(:new)
+      { "users" => "Context must look like controller#action#job_tag", "users#show" => "Context must look like controller#action#job_tag", "x#y" => "Context must look like controller#action#job_tag",
+        "a#b#c" * 400 => "Context is invalid", "users#show#\u0001" => "Context is invalid",
+        "users#show#\n" => "Context is invalid" }.each do |context, message|
+        get "/fingerprints/#{users_id}", params: params.merge(context: context)
+
+        expect(response).to have_http_status(:unprocessable_content), context.inspect
+        expect(response.body).to include(message), context.inspect
+        expect(response.body).not_to include("timeseries-chart"), context.inspect
+      end
+    end
+
+    it "answers 422 for a context that isn't a plain string" do
+      expect(ReportRunner).not_to receive(:new)
+
+      get "/fingerprints/#{users_id}?#{params.to_query}&context[]=users%23show%23"
+      expect(response).to have_http_status(:unprocessable_content)
+
+      get "/fingerprints/#{users_id}?#{params.to_query}&context[a]=users%23show%23"
+      expect(response).to have_http_status(:unprocessable_content)
+    end
+
+    it "round-trips a job tag that contains a #" do
+      ReportFixture.add_context!(users_id, 7, job_tag: "Sync#All")
+      doc = doc_for
+
+      link = doc.css("table.fingerprint-contexts tbody td a").find { |a| a.text == "Sync#All" }
+      expect(query_of(link["href"])["context"]).to eq("##Sync#All")
+      follow = doc_for(context: "##Sync#All")
+      expect(series_total(follow, "calls")).to eq(7)
+      expect(follow.at_css(".context-filter").text).to include("Sync#All")
+      expect(follow.css("table.fingerprint-contexts tbody tr[aria-current]").size).to eq(1)
+      expect(series_total(doc_for(context: "a#b#c#d"), "calls")).to eq(0)
+    end
+
+    it "shows a context it can't name in a link as plain text" do
+      ReportFixture.add_context!(users_id, 3, controller: "we#ird", action: "show")
+      doc = doc_for
+
+      row = doc.css("table.fingerprint-contexts tbody tr").find { |tr| tr.text.include?("we#ird#show") }
+      expect(row).to be_present
+      expect(row.at_css("a")).to be_nil
+      expect(doc.css("table.fingerprint-contexts tbody td a").size).to eq(7)
+    end
+
+    it "treats a blank context as no filter" do
+      doc = doc_for(context: "")
+
+      expect(response).to have_http_status(:ok)
+      expect(series_total(doc, "calls")).to eq(1100)
+      expect(doc.at_css(".context-filter")).to be_nil
+    end
+  end
 end

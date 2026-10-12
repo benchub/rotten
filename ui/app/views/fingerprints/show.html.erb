@@ -39,6 +39,13 @@
         Hover over or tab to a point for its value. Drag across a chart to zoom in.
         <% if @reset_zoom_params %><%= link_to "Reset zoom", fingerprint_path(@fingerprint.id, @reset_zoom_params), class: "chart-reset btn btn-sm ml-2" %><% end %>
       </p>
+      <% if (filter = @query.context_filter) %>
+        <p class="context-filter">
+          Showing only <strong><%= report_context_label(filter) %></strong>.
+          Total ms is an estimate of this context's share of each window's time.
+          <%= link_to "Show all contexts", fingerprint_path(@fingerprint.id, @context_link_params), class: "btn btn-sm ml-2" %>
+        </p>
+      <% end %>
       <div class="chart-grid">
         <div class="chart-panel">
           <h3>Calls</h3>
@@ -69,8 +76,15 @@
             </thead>
             <tbody>
               <% @contexts.each do |context| %>
-                <tr>
-                  <td><%= report_context_label(context) %></td>
+                <tr <%= tag.attributes("aria-current": "true") if active_context?(@query, context) %>>
+                  <td>
+                    <% value = context_filter_value(context) %>
+                    <% if value %>
+                      <%= link_to report_context_label(context), fingerprint_path(@fingerprint.id, @context_link_params.merge(context: value)), title: "Show only this context over time" %>
+                    <% else %>
+                      <%= report_context_label(context) %>
+                    <% end %>
+                  </td>
                   <td class="numeric"><%= number_with_delimiter(context["times"].to_i) %></td>
                 </tr>
               <% end %>

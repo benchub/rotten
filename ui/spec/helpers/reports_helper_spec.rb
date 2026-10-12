@@ -7,6 +7,19 @@ RSpec.describe ReportsHelper, type: :helper do
     Nokogiri::HTML5.fragment(ERB::Util.html_escape(helper.report_cell(nil, column, value)))
   end
 
+  describe "#context_filter_value" do
+    it "joins controller, action and job tag with #, leaving empty what's missing" do
+      expect(helper.context_filter_value("controller" => "users", "action" => "show", "job_tag" => nil)).to eq("users#show#")
+      expect(helper.context_filter_value("controller" => nil, "action" => nil, "job_tag" => "Sync#All")).to eq("##Sync#All")
+      expect(helper.context_filter_value("controller" => nil, "action" => nil, "job_tag" => nil)).to eq("##")
+    end
+
+    it "has no value for a controller or action containing a #" do
+      expect(helper.context_filter_value("controller" => "a#b", "action" => "c", "job_tag" => nil)).to be_nil
+      expect(helper.context_filter_value("controller" => "a", "action" => "b#c", "job_tag" => nil)).to be_nil
+    end
+  end
+
   describe "#report_cell for query text" do
     let(:sql) { "select * from users where id = $1 and name = $2 <script>alert(1)</script> " + ("x" * 300) }
 

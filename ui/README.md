@@ -450,13 +450,31 @@ no chart library, adds to them:
   bucket as they are now. Those parameters get the same validation as the
   page's own; if they fail it, the page acts as if it weren't zoomed.
   Picking a range with the form starts over.
+- **Context filter:** each row in Top contexts links to the page with
+  `context=controller#action#job_tag`, with an empty part for what the
+  context doesn't have (`##` is the untagged context). The two charts then
+  show only that context, a "Showing only" line names it with a **Show all
+  contexts** link, and the filter stays through zoom, **Reset zoom**, the
+  form's Show button and the time-series-as-a-table link. The list itself,
+  the stats for each source and the all-sources row stay unfiltered. The
+  chart runs `fingerprint_context_timeseries.sql`: calls are the exact
+  `event_context.c`, but Total ms (`attributed_time`) is an estimate of the
+  context's share of each window's time. A context
+  must match all three parts exactly. One the fingerprint never ran in draws
+  zeros. A value that isn't `controller#action#job_tag` (the job tag may
+  contain `#`), or is over 1,000 characters or has control characters, gets a
+  422. A context whose controller or action contains a `#` can't be written
+  in that form, so its row in Top contexts is plain text with no link. The query reads the same events and
+  `event_context` rows as Top contexts, so it shares that cost and the page's
+  one report timeout.
 
 The controller only toggles classes and sets attributes and CSSOM
 properties, so it works under the strict CSP with no inline script or style.
 An unknown or malformed ID gets a 404. The page runs
 `fingerprint_timeseries.sql`, `fingerprint_contexts.sql`,
-`fingerprint_sources.sql` and `fingerprint_all_sources.sql`; the last three
-aren't listed under `/reports`. They share one report timeout. The
+`fingerprint_sources.sql` and `fingerprint_all_sources.sql` (and
+`fingerprint_context_timeseries.sql` in place of the first when a context is
+picked); all but the time series aren't listed under `/reports`. They share one report timeout. The
 all-sources query runs last; if it runs out of time, or less than 100ms is
 left for it, the page still answers 200 with everything else and shows the
 All sources row as timed out.
