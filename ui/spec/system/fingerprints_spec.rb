@@ -164,19 +164,12 @@ RSpec.describe "Fingerprint detail", type: :system do
           .move_to_location(to_xy[0].round, to_xy[1].round).pointer_up(:left).perform
     end
 
-    # Turbo caches a snapshot of each page it leaves and shows it as a
-    # preview when a link goes back to that URL, then swaps in the page from
-    # the server. It drops data-turbo-preview before that swap, so the
-    # attribute can't tell the two apart. Instead, mark the body before
-    # leaving a page: the snapshot keeps the mark and a fresh body has none.
-    def mark_leaving = page.execute_script("document.body.dataset.specLeft = ''")
-
     # The calls chart's values summed on a page rendered from the server,
     # once it has count points. Reading happens inside synchronize, so a
     # swap mid-read (stale or nil attributes) retries instead of failing.
     def fresh_calls_sum(count)
       page.document.synchronize do
-        points = all("body:not([data-spec-left]) svg.timeseries-chart[data-series='calls'] circle.chart-point",
+        points = all("#{fresh_body} svg.timeseries-chart[data-series='calls'] circle.chart-point",
                      visible: :all, wait: false)
         raise Capybara::ExpectationNotMet, "expected #{count} fresh points, found #{points.size}" unless points.size == count
 
@@ -311,10 +304,14 @@ RSpec.describe "Fingerprint detail", type: :system do
       expect(page).to have_current_path(/to=#{Regexp.escape(CGI.escape(expected_to))}/)
       expect(chart_points("calls").size).to eq(6)
 
+      # Turbo changes the URL before it renders, and the link may go back to
+      # base_url's cached snapshot, which also has 18 points and no Reset zoom.
+      mark_leaving
       click_link "Reset zoom"
       expect(page).to have_current_path(/[?&]range=3h/)
       expect(url_query.keys).not_to include("from", "to", "reset_range")
-      expect(chart_points("calls").size).to eq(18)
+      expect(page).to have_css("#{fresh_body} svg.timeseries-chart[data-series='calls'] circle.chart-point",
+                               count: 18, visible: :all)
       expect(page).to have_no_link("Reset zoom")
       expect(csp_violations).to be_empty
     end
@@ -437,6 +434,9 @@ RSpec.describe "Fingerprint detail", type: :system do
     expect(to - from).to be_between(6.hours, 6.hours + 60)
 
     click_button "Show"
+    # The form submits without Turbo and the old page has a .report-window
+    # too, so wait on the URL, which reads no nodes, first.
+    expect(page).to have_current_path(/[?&]range=custom(&|\z)/)
     expect(page).to have_css(".report-window", text: "(custom range)")
     expect(page).to have_field("From (UTC)", with: from.strftime("%Y-%m-%dT%H:%M"))
   end

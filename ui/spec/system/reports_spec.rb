@@ -158,6 +158,8 @@ RSpec.describe "Reports", type: :system do
     expect(to_time - from_time).to be_between(3.hours, 3.hours + 60)
 
     click_button "Run report"
+    # The old page has a .report-window too; see run_report.
+    expect(page).to have_current_path(/[?&]range=custom(&|\z)/)
     expect(page).to have_css(".report-window", text: "(custom range)")
     expect(page).to have_no_css(".report-ignored")
     expect(report_rows("calls")).to eq([["1,100"], ["100"], ["85"]])
@@ -165,6 +167,7 @@ RSpec.describe "Reports", type: :system do
     select "Last hour", from: "Time range"
     expect(page).to have_no_field("From (UTC)")
     click_button "Run report"
+    expect(page).to have_current_path(/[?&]range=1h(&|\z)/)
     expect(page).to have_css(".report-window", text: "(last hour)")
     expect(page).to have_no_css(".report-ignored")
   end

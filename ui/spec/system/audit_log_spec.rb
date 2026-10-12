@@ -29,8 +29,13 @@ RSpec.describe "Audit log", :api_keys, type: :system do
     expect(page).to have_no_text("user.disable")
     expect(page).to have_no_link("Older")
 
+    # The newest page was visited above, so Turbo previews its snapshot,
+    # which already shows user.disable, before the server's page arrives.
+    mark_leaving
     click_link "Newest"
+    expect(page).to have_css("#{fresh_body} h1", text: "Audit log")
     expect(page).to have_text("user.disable")
+    expect(page).to have_no_text("api_key.create")
   end
 
   it "doesn't show viewers the page" do
