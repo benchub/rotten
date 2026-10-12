@@ -1612,3 +1612,10 @@ Completed: 2026-10-12, af3a160
 - **Needs:** nothing.
 - **Red test:** The spec, run with the CPU loaded (e.g. a busy container alongside), fails today and passes after the change.
 Completed: 2026-10-12, 97a2db2
+
+### 20261005-123457-3: `TestDevObservedReplicaWaitsForAnActiveSlot` flakes under load.
+- **Why (found in 20261004-231500-1):** It failed once in `make test-all` at high load average with "replica didn't log waiting for the slot", then passed alone. The slot holder is `timeout 8 pg_receivewal`, so if the replica container takes more than 8s to reach its clone, the slot is free and it never waits.
+- **Do:** Hold the slot until the replica has logged that it's waiting (for example, keep `pg_receivewal` running and stop it once the log line appears), instead of for a fixed 8s.
+- **Needs:** nothing.
+- **Red test:** Delay the replica's start past 8s (or shorten the hold) and watch the current test fail; it must pass after the fix.
+Completed: 2026-10-12, 685e448

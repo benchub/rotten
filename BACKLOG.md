@@ -73,12 +73,6 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** nothing.
 - **Red test:** A perf case that runs the 7d match reports with a concurrent load generator and requires them to finish under the UI's timeout.
 
-### 20261005-123457-3: `TestDevObservedReplicaWaitsForAnActiveSlot` flakes under load.
-- **Why (found in 20261004-231500-1):** It failed once in `make test-all` at high load average with "replica didn't log waiting for the slot", then passed alone. The slot holder is `timeout 8 pg_receivewal`, so if the replica container takes more than 8s to reach its clone, the slot is free and it never waits.
-- **Do:** Hold the slot until the replica has logged that it's waiting (for example, keep `pg_receivewal` running and stop it once the log line appears), instead of for a fixed 8s.
-- **Needs:** nothing.
-- **Red test:** Delay the replica's start past 8s (or shorten the hold) and watch the current test fail; it must pass after the fix.
-
 ### 20261007-160000-1: `layout_spec.rb:78` flakes with a Selenium stale-node error.
 - **Why (found landing 20261007-120000-1):** One `make test-all` run failed "Layout shows an admin the top bar on every page, with Admin, including the one-time pass key page" with `unhandled inspector error: Node with given id does not belong to the document` inside `visible?`. The next `make test-ui` run passed. The spec likely checks visibility of an element the page has just replaced.
 - **Do:** Find the navigation or Turbo update that replaces the node and make the spec wait for the new page (e.g. assert on content of the destination page first) before checking the top bar.
