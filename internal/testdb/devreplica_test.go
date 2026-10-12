@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -188,16 +189,42 @@ func TestDevObservedReplicaReusesAnUnusedSlot(t *testing.T) {
 // TestDevObservedReplicaWaitsForAnActiveSlot covers a re-clone while the
 // primary still has the slot in use, as after an interrupted backup until
 // the primary notices the dead WAL sender. Another connection holds the slot
-// for a few seconds; the replica must wait for it, then clone and replay.
+// until the replica logs that it's waiting, however long the replica takes to
+// get there; the replica must wait for it, then clone and replay.
 func TestDevObservedReplicaWaitsForAnActiveSlot(t *testing.T) {
 	ctx := context.Background()
+	const waitingLine = "observed-replica: slot observed_replica is in use"
+	var (
+		mu       sync.Mutex
+		seen     strings.Builder
+		waitOnce sync.Once
+	)
+	waiting := make(chan struct{})
+	onLog := func(chunk string) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen.WriteString(chunk)
+		if strings.Contains(seen.String(), waitingLine) {
+			waitOnce.Do(func() { close(waiting) })
+		}
+	}
 	held := make(chan error, 1)
-	pair := StartDevObservedPair(t, func(primary *DB) {
+	pair := StartDevObservedPairWatchingReplica(t, func(primary *DB) {
 		primary.QueryInContainer(t, "postgres", `select pg_create_physical_replication_slot('observed_replica')`)
 		go func() {
 			_, _, err := primary.c.Exec(ctx, []string{"sh", "-c",
-				"mkdir -p /tmp/held-wal && chown postgres /tmp/held-wal && exec gosu postgres timeout 8 pg_receivewal -h /var/run/postgresql -U postgres -S observed_replica -D /tmp/held-wal --no-loop"})
+				"mkdir -p /tmp/held-wal && chown postgres /tmp/held-wal && echo $$ > /tmp/held.pid && exec gosu postgres pg_receivewal -h /var/run/postgresql -U postgres -S observed_replica -D /tmp/held-wal --no-loop"})
 			held <- err
+		}()
+		// Release the slot once the replica says it's waiting. The fallback
+		// only keeps a broken run from holding it forever; the replica gives
+		// up on the slot after 60s, which fails the test anyway.
+		go func() {
+			select {
+			case <-waiting:
+			case <-time.After(90 * time.Second):
+			}
+			primary.c.Exec(ctx, []string{"sh", "-c", "kill $(cat /tmp/held.pid)"})
 		}()
 		deadline := time.Now().Add(15 * time.Second)
 		for {
@@ -210,7 +237,7 @@ func TestDevObservedReplicaWaitsForAnActiveSlot(t *testing.T) {
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-	})
+	}, onLog)
 	if err := <-held; err != nil {
 		t.Fatalf("slot holder: %v", err)
 	}
@@ -229,7 +256,7 @@ func TestDevObservedReplicaWaitsForAnActiveSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForReplay(t, replica, 1)
-	if logs := pair.ReplicaLogs(t); !strings.Contains(logs, "observed-replica: slot observed_replica is in use") {
+	if logs := pair.ReplicaLogs(t); !strings.Contains(logs, waitingLine) {
 		t.Fatalf("replica didn't log waiting for the slot:\n%s", logs)
 	}
 }

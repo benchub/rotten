@@ -128,6 +128,14 @@ func (svc devService) customizers(t testing.TB, network *testcontainers.DockerNe
 // (the replica's roles come from the primary).
 func StartDevObservedPair(t testing.TB, beforeReplica func(primary *DB)) *ObservedPair {
 	t.Helper()
+	return StartDevObservedPairWatchingReplica(t, beforeReplica, nil)
+}
+
+// StartDevObservedPairWatchingReplica is StartDevObservedPair, but also
+// passes each chunk of the replica's output to onReplicaLog, if not nil, as
+// it arrives, including while the replica is still starting.
+func StartDevObservedPairWatchingReplica(t testing.TB, beforeReplica func(primary *DB), onReplicaLog func(string)) *ObservedPair {
+	t.Helper()
 	skipShort(t)
 	ctx := context.Background()
 	network := newTestNetwork(t, ctx, false)
@@ -150,6 +158,9 @@ func StartDevObservedPair(t testing.TB, beforeReplica func(primary *DB)) *Observ
 		"POSTGRES_PASSWORD":        primary.password,
 		"REPLICA_PRIMARY_PASSWORD": primary.password,
 	})...)
+	if onReplicaLog != nil {
+		opts = append(opts, testcontainers.WithLogConsumers(logFunc(onReplicaLog)))
+	}
 	opts = append(opts, testcontainers.WithWaitStrategyAndDeadline(3*time.Minute,
 		wait.ForListeningPort(postgresPort).WithStartupTimeout(3*time.Minute),
 		wait.ForLog("database system is ready to accept read-only connections").WithStartupTimeout(3*time.Minute)))
@@ -164,6 +175,11 @@ func StartDevObservedPair(t testing.TB, beforeReplica func(primary *DB)) *Observ
 	replica := &DB{DSN: dsn, c: c, dbName: "observed", password: primary.password, secret: primary.secret}
 	return &ObservedPair{Primary: primary, Replica: replica}
 }
+
+// logFunc adapts a function to testcontainers.LogConsumer.
+type logFunc func(string)
+
+func (f logFunc) Accept(l testcontainers.Log) { f(string(l.Content)) }
 
 // ReplicaLogs returns the replica container's logs so far, across restarts.
 func (p *ObservedPair) ReplicaLogs(t testing.TB) string {
