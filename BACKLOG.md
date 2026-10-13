@@ -67,11 +67,18 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 Background: contexts come from the first query text pgss kept for each entry, so their counts were always skewed, and Postgres 18 drops leading comments. pssc counts calls and execution time per (userid, dbid, queryid, toplevel, tag set). Read it as counters (`calls_total`, `exec_time_total`, `stats_since` from `pg_stat_statement_context_totals`) and diff them like pgss, so the worker's interval doesn't need to match pssc's `bucket_interval`.
 
+### 20261013-090000-1: Tests write state to a fixed folder in the checkout.
+- **Why (found in 20261012-180500-1):** `openSenderStore` and the crash test (`internal/worker/outbox_sender_test.go:354`, `:402`) keep state in `.test-artifacts/<test name>`, not `t.TempDir()`. Two `go test` runs of the package in one checkout break each other (SQLite disk I/O errors, "another worker is using this StateDir"). Same pattern: `cmd/rotten-worker/e2e_test.go:113`, `cmd/rotten-worker/config_test.go:170`, `:422`, `internal/serverclient/client_test.go:512`.
+- **Do:** Move them to `t.TempDir()`, unless one needs a folder in the checkout (then say why).
+- **Needs:** nothing.
+- **Red test:** Two concurrent runs of `./internal/worker/` in one checkout both pass.
+
 ### 20261012-180500-1: Unidentified internal/worker flake.
 - **Why (found in 20261012-111513-1):** One `make test-all` run failed in `internal/worker`; the rerun passed. The failing test's name wasn't captured.
-- **Do:** Run `go test -count=20 ./internal/worker/` (in the test container) until it fails, identify the test, and fix the race.
-- **Needs:** nothing.
-- **Red test:** The failing test, made to fail reliably (for example by widening the race window).
+- **Tried (2026-10-13):** 200 serial package runs with `-race -v` (about 9.5h) all passed. The fixed-folder collision above doesn't explain it, since the other concurrent run was in a different worktree. Unverified suspects: the watchdog tests in `internal/worker/parse_failures_test.go` (`TestNoIdleHandsWatchdogDoesNotFireOnHealthyRunLoop`, `...DuringReconnectBackoffCap`), which use fixed 4s sleeps with a 10ms margin and may fail under heavy load.
+- **Do:** Next time it fails, capture the test name from the log (the gate log keeps it). Then make it fail reliably and fix it.
+- **Needs:** a captured failure.
+- **Red test:** The failing test, made to fail reliably.
 
 ### 20261007-120000-7: Generic tag sets (v2).
 - **Why:** pssc can keep any tag keys, not just controller, action, and job.
