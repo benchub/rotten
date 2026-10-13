@@ -1670,3 +1670,11 @@ Completed: 2026-10-12, 1bf6485
 - **Red test:** If rename exists, a renamed key that maps to `controller` doesn't warn.
 - **Outcome:** rename is a per-extractor parameter in `extractors`, and pssc applies `tags` after it, so the existing check is already right. Comment fixed, test added; no behavior change.
 - Completed: 2026-10-12, 4b7c720
+
+### 20261005-123457-2: 7d match reports hit the statement timeout under heavy load.
+- **Why (found in 20261004-231500-1):** In one perf run on master at load average 30–69 (other projects' containers), outliers 7d match (both plans) and top_by_total_time 7d match (generic) were canceled by the 15s statement_timeout. At load average 15–25 they take about 3.5–4.5s. Seen again in task 20261005-123457-1 on the main seed: two of three `make test-perf` runs at load average about 20–27 each had one 7d match generic case canceled (outliers, then top_by_calls) that took 3.7–5.8s in other runs; the third run, at load average 13–17, passed. They read 7 days of a cluster's events plus contexts, so a busy database could show users an error page.
+- **Do:** Reproduce under controlled load (for example, run the suite with a CPU-bound container alongside), and find which part of those plans degrades most (hash spills at the default `work_mem`, the context match, parallel workers). Fix it or document the limit.
+- **Needs:** nothing.
+- **Red test:** A perf case that runs the 7d match reports with a concurrent load generator and requires them to finish under the UI's timeout.
+- **Outcome:** Mostly CPU starvation; generic plans misestimated and failed first. Report transactions now force custom plans (user, 2026-10-12). 64MB work_mem was faster but peaked at 350–430MB on match-all, so 4MB stays. At 60 busy loops on 10 CPUs, 7d matches take 6.5–9.6s. `TestPerfMatchUnderLoad` added.
+- Completed: 2026-10-12, 09e15ae

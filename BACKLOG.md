@@ -61,12 +61,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
 
-### 20261005-123457-2: 7d match reports hit the statement timeout under heavy load.
-- **Why (found in 20261004-231500-1):** In one perf run on master at load average 30–69 (other projects' containers), outliers 7d match (both plans) and top_by_total_time 7d match (generic) were canceled by the 15s statement_timeout. At load average 15–25 they take about 3.5–4.5s. Seen again in task 20261005-123457-1 on the main seed: two of three `make test-perf` runs at load average about 20–27 each had one 7d match generic case canceled (outliers, then top_by_calls) that took 3.7–5.8s in other runs; the third run, at load average 13–17, passed. They read 7 days of a cluster's events plus contexts, so a busy database could show users an error page.
-- **Do:** Reproduce under controlled load (for example, run the suite with a CPU-bound container alongside), and find which part of those plans degrades most (hash spills at the default `work_mem`, the context match, parallel workers). Fix it or document the limit.
-- **Needs:** nothing.
-- **Red test:** A perf case that runs the 7d match reports with a concurrent load generator and requires them to finish under the UI's timeout.
-
 ### 20261012-200000-1: Landing page shows rotten stats instead of a Run reports button.
 - **Why (user, 2026-10-12):** After login, the landing page (`home#show`) has one button to run reports, which duplicates the navbar.
 - **Do:** Remove the button. Show:
