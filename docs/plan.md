@@ -242,6 +242,8 @@ The report SQL lives in `reports/*.sql`, tested against a seeded rotten DB from 
 - **`password`** uses `has_secure_password` (bcrypt) on the same `users` table, with login rate limiting. There's no self sign-up. Admins manage users with `bin/rails users:create|disable|reset_password`.
 - Both modes give every user one of two roles: viewer or admin.
 
+**The landing page's stats are precomputed in the rotten DB (task 20261012-200000-1).** They read a week of events, about 3.3M rows on the perf seed, so no request computes them. `rotten-server serve` calls `rotten.refresh_home_stats(now())` at startup and every 5 minutes, and the UI reads the two small tables it fills, `home_stats` and `home_heatmap`, and shows how old they are. We picked this over a cache shared by the UI's processes (Solid Cache or Redis) because the server already runs periodic database jobs (prune, repair), the work happens next to the data with nothing to stampede when the cache is cold, and the UI stays a reader. It's a function writing tables rather than a materialized view because it takes the time it covers as a parameter, which lets tests and the perf suite refresh fixed data; replacing the rows in one transaction gives readers the same old-until-commit view as `REFRESH ... CONCURRENTLY`, without a unique index. An advisory lock keeps two servers from refreshing at once. docs/ui.md ("Landing page") defines each number; docs/perf.md has the timings.
+
 ### Schema migrations and database roles.
 
 We're not keeping existing data, so we start fresh.

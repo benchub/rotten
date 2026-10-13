@@ -9,6 +9,7 @@ make test-perf                                  # about 10M events, twice; aroun
 make test-perf ROTTEN_PERF_EVENTS=500000        # quick smoke run
 make test-perf PERF_TEST_ARGS='-run TestPerfReports'
 make test-perf PERF_TEST_ARGS='-run TestPerfManySources'
+make test-perf PERF_TEST_ARGS='-run TestPerfHomeStats'                              # the landing page's stats
 make test-perf PERF_TEST_ARGS='-run TestPerfMatchUnderLoad'                         # with CPU load
 make test-perf PERF_TEST_ARGS='-run TestPerfMatchUnderLoad' ROTTEN_PERF_LOAD_FACTOR=0 ROTTEN_PERF_EXPLAIN=1  # no load, text plans
 ```
@@ -464,6 +465,17 @@ Medians at the default 4MB `work_mem`, custom / generic. One canceled run of fou
 `TestPerfMatchUnderLoad` requires the three cases to finish under the 15s timeout with custom plans at 4MB, at 60 loops. In the final `make test-perf` run it took 9.04s, 9.39s and 6.64s, and `TestPerfManySources` passed under the 256MB ceiling.
 
 **The limit.** Past 60 loops on 10 CPUs (each weighted like Postgres's whole container), the reports slow down in proportion and will reach the timeout again. That's CPU starvation, not a plan problem.
+
+## Landing page stats (migration 0016)
+
+`TestPerfHomeStats` (task 20261012-200000-1) seeds the main data and calls `rotten.refresh_home_stats(anchor)` as `rotten_ingest`, the way `serve` does every 5 minutes, then reads `home_stats` and `home_heatmap` as `rotten_ui`, the way the landing page does. Medians of 3 refreshes after a warmup, and of 5 reads:
+
+| Step | Median | Budget |
+|---|---|---|
+| refresh_home_stats, over the 7 days before the anchor (about 3.3M of 10,039,225 events) | 4.33s | 1 minute |
+| UI read of both tables (1 row and 1,010 heat map cells) | 0.95ms | 50ms |
+
+The refresh runs in the server, off any request, so its budget only needs to stay well under the 5-minute interval. The page's cost doesn't grow with the events table.
 
 ## Red notes
 

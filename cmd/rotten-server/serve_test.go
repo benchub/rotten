@@ -723,6 +723,33 @@ func TestServeRepairsPreMigrationContextsAtStartup(t *testing.T) {
 	}
 }
 
+func TestServeRefreshesHomeStatsAtStartup(t *testing.T) {
+	db := testdb.StartRotten(t)
+	ctx := context.Background()
+	owner, err := pgxpool.New(ctx, db.DSNAs(t, testdb.OwnerRole))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(owner.Close)
+	if _, err := owner.Exec(ctx, `insert into rotten.fingerprints (fingerprint, normalized) values ('select 1', 'select $1')`); err != nil {
+		t.Fatal(err)
+	}
+	ca := newTestCA(t)
+	cert, priv := ca.pair(t, 1)
+	certFile, keyFile := writePair(t, cert, priv)
+	proc := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+
+	waitForLog(t, proc.logs, "refreshed home stats")
+	var fingerprints int64
+	var asOf time.Time
+	if err := owner.QueryRow(ctx, "select fingerprints, as_of from rotten.home_stats").Scan(&fingerprints, &asOf); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprints != 1 || time.Since(asOf) > time.Minute {
+		t.Errorf("home_stats has %d fingerprints as of %v, want 1 as of just now", fingerprints, asOf)
+	}
+}
+
 func TestServeTLS(t *testing.T) {
 	db := testdb.StartRotten(t)
 	owner, err := pgxpool.New(context.Background(), db.DSNAs(t, testdb.OwnerRole))

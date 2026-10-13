@@ -108,3 +108,16 @@ grant select on rotten.ui_audit_log to rotten_ui;
 grant insert (actor_user_id, actor_email, action, target_type, target_id, details)
     on rotten.ui_audit_log to rotten_ui;
 grant usage on rotten.ui_audit_log_id_seq to rotten_ui;
+
+-- home_stats and home_heatmap, the landing page's numbers. Only
+-- refresh_home_stats() writes them; rotten_ingest (the server) calls it.
+-- Checked like the grants above, so this file applies to a database migrated
+-- only part of the way.
+DO $$
+BEGIN
+    IF to_regclass('rotten.home_stats') IS NOT NULL THEN
+        GRANT SELECT ON rotten.home_stats, rotten.home_heatmap TO rotten_ui, rotten_readonly;
+        GRANT EXECUTE ON FUNCTION rotten.refresh_home_stats(timestamptz) TO rotten_ingest;
+    END IF;
+END
+$$;

@@ -68,6 +68,12 @@
   --color-chart-line: #1d4ed8;
   --color-chart-axis: #8b95a3;
   --color-chart-guide: #4b5563;
+  /* The landing page's heat map, lightest (1 fingerprint) to darkest (the busiest cell). */
+  --color-heat-1: #dbe6fe;
+  --color-heat-2: #a4c1fc;
+  --color-heat-3: #5f8ef6;
+  --color-heat-4: #2a5fdc;
+  --color-heat-5: #12318f;
 
   /* Type */
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

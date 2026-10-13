@@ -11,6 +11,13 @@ RSpec.describe "No inline styles on any page", :api_keys, type: :request do
   before do
     User.delete_all
     @fixture = ReportFixture.seed!
+    # So "/" draws the stats and the heat map SVG.
+    conn = ReportFixture.connect
+    begin
+      conn.exec("select rotten.refresh_home_stats(now())")
+    ensure
+      conn.close
+    end
   end
 
   def sign_in(user)
@@ -42,6 +49,7 @@ RSpec.describe "No inline styles on any page", :api_keys, type: :request do
     fingerprint = @fixture.fingerprint_ids.fetch("users")
 
     get_ok "/"
+    expect(Nokogiri::HTML5(response.body).css("svg.heatmap rect.heat-cell")).not_to be_empty
     get_ok "/password"
     get_ok "/reports"
     get_ok "/reports?report=top_by_calls&#{run}"

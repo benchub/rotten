@@ -92,9 +92,21 @@ module ReportFixture
     conn
   end
 
-  # Empties the event tables. Logical source 0, the all-sources row, stays.
+  # Empties the landing page's stats, as if rotten-server had never
+  # refreshed them.
+  def self.clear_home_stats!
+    conn = connect
+    conn.exec("delete from rotten.home_stats; delete from rotten.home_heatmap")
+  ensure
+    conn&.close
+  end
+
+  # Empties the event tables and the landing page's stats computed from them.
+  # Logical source 0, the all-sources row, stays.
   def self.clear(conn)
     conn.exec(<<~SQL)
+      delete from rotten.home_stats;
+      delete from rotten.home_heatmap;
       delete from rotten.event_context;
       delete from rotten.events;
       delete from rotten.fingerprint_stats;

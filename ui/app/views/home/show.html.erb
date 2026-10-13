@@ -5,12 +5,46 @@
 <% if notice.present? %>
   <p class="alert alert-success" role="status"><%= notice %></p>
 <% end %>
-<ul class="link-cards">
-  <li class="card link-card">
-    <h2><%= link_to "Run a report", reports_path %></h2>
-    <p>Top queries by time or calls, outliers, replica use, and one query's history.</p>
-  </li>
-  <% if current_user.admin? %>
+<% if @stats %>
+  <section aria-labelledby="home-stats-title">
+    <h2 id="home-stats-title">Rotten at a glance</h2>
+    <p class="home-age">
+      Updated <%= time_ago_in_words(@stats.computed_at) %> ago, covering the week to
+      <%= @stats.as_of.utc.strftime("%Y-%m-%d %H:%M") %> UTC. rotten-server refreshes these every 5 minutes.
+    </p>
+    <dl class="home-stats">
+      <div class="card stat">
+        <dt>Ingest rate</dt>
+        <dd class="stat-value"><%= number_with_precision(@stats.events_per_minute, precision: 1, delimiter: ",", strip_insignificant_zeros: true) %> events/min</dd>
+        <dd class="stat-note">Events from windows that started in the last hour, per minute</dd>
+      </div>
+      <div class="card stat">
+        <dt>Fingerprints</dt>
+        <dd class="stat-value"><%= number_with_delimiter(@stats.fingerprints) %></dd>
+        <dd class="stat-note">Distinct normalized queries stored</dd>
+      </div>
+      <div class="card stat">
+        <dt>Hosts, last hour</dt>
+        <dd class="stat-value"><%= number_with_delimiter(@stats.hosts_last_hour) %></dd>
+        <dd class="stat-note">Database hosts that sent stats</dd>
+      </div>
+      <div class="card stat">
+        <dt>Hosts, last week</dt>
+        <dd class="stat-value"><%= number_with_delimiter(@stats.hosts_last_week) %></dd>
+        <dd class="stat-note">Database hosts that sent stats</dd>
+      </div>
+    </dl>
+  </section>
+  <section class="card" aria-labelledby="home-heatmap-title">
+    <h2 id="home-heatmap-title">Fingerprints by mean duration, last week</h2>
+    <p class="home-age">Each cell counts the fingerprints whose mean time per call fell in that duration band during that hour (UTC). Darker means more.</p>
+    <%= home_heatmap(@heatmap, as_of: @stats.as_of) %>
+  </section>
+<% else %>
+  <p class="alert alert-warning" role="status">rotten-server hasn't computed these stats yet. It does at startup and every 5 minutes.</p>
+<% end %>
+<% if current_user.admin? %>
+  <ul class="link-cards">
     <li class="card link-card">
       <h2><%= link_to "Pass keys", api_keys_path %></h2>
       <p>Create and revoke the keys workers use to send stats.</p>
@@ -19,5 +53,5 @@
       <h2><%= link_to "Audit log", audit_logs_path %></h2>
       <p>Who did what in admin, newest first.</p>
     </li>
-  <% end %>
-</ul>
+  </ul>
+<% end %>

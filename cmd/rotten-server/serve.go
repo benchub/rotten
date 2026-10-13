@@ -164,6 +164,13 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		ingest.RunContextRepair(repairCtx, pool, time.Hour, logger)
 	}()
 	defer func() { cancelRepair(); <-repairDone }()
+	homeStatsCtx, cancelHomeStats := context.WithCancel(ctx)
+	homeStatsDone := make(chan struct{})
+	go func() {
+		defer close(homeStatsDone)
+		ingest.RunHomeStatsRefresher(homeStatsCtx, pool, ingest.HomeStatsInterval, logger)
+	}()
+	defer func() { cancelHomeStats(); <-homeStatsDone }()
 	served := make(chan error, 1)
 	go func() { served <- server.ServeTLS(listener, "", "") }()
 	fmt.Fprintf(stdout, "listening on https://%s\n", listener.Addr())

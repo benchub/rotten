@@ -181,6 +181,15 @@ don't send time, and their rows keep the proportional estimate,
 for rows a pre-0011 `serve` writes; a current `serve` always writes
 `attributed_time`.
 
+**The landing page's stats since migration 0016.** `serve` calls
+`rotten.refresh_home_stats(now())` when it starts and then every 5 minutes.
+It logs `refreshed home stats` with how long it took, about 4 seconds on 10M
+events (docs/perf.md), or `skipped home stats refresh` when another `serve`
+holds the refresh's advisory lock. It replaces the rows of `home_stats` and
+`home_heatmap` in one transaction, so the UI reads the previous numbers until
+it commits. If no `serve` is running, the UI shows the last numbers with
+their age, or says they haven't been computed yet.
+
 The untagged context, calls that pgss counted and pssc didn't attribute, is a
 row with `controller_id`, `action_id` and `job_tag_id` all NULL.
 `fingerprint_contexts.sql` returns it, but `top_by_calls.sql`,
@@ -295,9 +304,9 @@ get nothing outside the `rotten` schema, and `PUBLIC` gets nothing in it.
 | Role | Used by | May |
 | --- | --- | --- |
 | `rotten_owner` | `rotten-server migrate`, `rotten-server keys`, pg_partman maintenance | Owns the database, the `rotten` schema and every table and partition. Runs migrations and grants. Creates, lists and revokes pass keys. Needs pg_partman's privileges in `public`. Use it only for administration, never for a long-running service. |
-| `rotten_ingest` | `rotten-server serve` | Read every event and lookup table. Insert into `controllers`, `actions`, `job_tags`, `logical_sources`, `physical_sources`, `logical_physical_sources`, `fingerprints`, `events`, `event_context` and `fingerprint_stats`, and update `fingerprint_stats`, `logical_sources.project`, `physical_sources.fqdn` and `fingerprints.unparsed`. Never delete. On `api_keys`, read only `id`, `name`, `secret_hash`, `fqdn` and `revoked_at`, and update only `last_used_at`. Read and insert `ingested_batches`, and prune it only through `rotten.prune_ingested_batches()`. Fill in `event_context` rows that a pre-0011 server wrote only through `rotten.repair_context_utilization()`. |
-| `rotten_ui` | The Rails UI | Read every event and lookup table. On `api_keys`, read everything but `secret_hash`, insert only `name`, `secret_hash`, `fqdn` and `created_by`, and update only `revoked_at` and `revoked_by`; it can't delete a key. Select, insert, update and delete `users`, including bumping `session_generation`. Read `ui_audit_log`, and insert into it without setting `id` or `at`; it can't change or delete rows. |
-| `rotten_readonly` | People running `reports/*.sql` in psql, dashboards | Read the event and lookup tables only. No access to `api_keys`, `ingested_batches`, `users` or `ui_audit_log`. |
+| `rotten_ingest` | `rotten-server serve` | Read every event and lookup table. Insert into `controllers`, `actions`, `job_tags`, `logical_sources`, `physical_sources`, `logical_physical_sources`, `fingerprints`, `events`, `event_context` and `fingerprint_stats`, and update `fingerprint_stats`, `logical_sources.project`, `physical_sources.fqdn` and `fingerprints.unparsed`. Never delete. On `api_keys`, read only `id`, `name`, `secret_hash`, `fqdn` and `revoked_at`, and update only `last_used_at`. Read and insert `ingested_batches`, and prune it only through `rotten.prune_ingested_batches()`. Fill in `event_context` rows that a pre-0011 server wrote only through `rotten.repair_context_utilization()`. Refresh `home_stats` and `home_heatmap` only through `rotten.refresh_home_stats(timestamptz)`. |
+| `rotten_ui` | The Rails UI | Read every event and lookup table. On `api_keys`, read everything but `secret_hash`, insert only `name`, `secret_hash`, `fqdn` and `created_by`, and update only `revoked_at` and `revoked_by`; it can't delete a key. Select, insert, update and delete `users`, including bumping `session_generation`. Read `ui_audit_log`, and insert into it without setting `id` or `at`; it can't change or delete rows. Read `home_stats` and `home_heatmap`. |
+| `rotten_readonly` | People running `reports/*.sql` in psql, dashboards | Read the event and lookup tables, `home_stats` and `home_heatmap` only. No access to `api_keys`, `ingested_batches`, `users` or `ui_audit_log`. |
 
 The observed databases have their own role, `rotten_observer`. See
 [observed.md](observed.md).

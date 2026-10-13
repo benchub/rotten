@@ -240,6 +240,29 @@ Each limit must stay at least 1, since a limit of 0 refuses every attempt
 and locks everyone out, so the number of processes can't be more than the
 smallest limit.
 
+## Landing page
+
+After login, `/` shows four numbers and a heat map of the last week. They
+read a week of events, so rotten-server computes them every 5 minutes
+(docs/database.md) and the page reads the result and says how old it is.
+"The last hour" and "the last week" are the hour and the 7 days before the
+refresh, by each event's window start.
+
+- **Ingest rate:** events per minute over the last hour. An event is one
+  row in `rotten.events`, a fingerprint's calls and time on one host in one
+  harvest window.
+- **Fingerprints:** the rows in `rotten.fingerprints`, every distinct
+  normalized query rotten has stored. Retention drops events, not
+  fingerprints, so this only grows.
+- **Hosts, last hour** and **Hosts, last week:** physical sources, the
+  observed database hosts by fqdn, with an event in that time. A primary and
+  its replicas count separately.
+- **Heat map:** x is the hour (UTC); y is each event's mean time per call,
+  `time / calls`, in half-decade buckets from under 0.0316 ms to 100 s and
+  up; a cell's shade is the number of distinct fingerprints with an event in
+  that hour and bucket, on a log scale. A fingerprint whose speed varies
+  shows in several buckets in one hour. Events with no calls are left out.
+
 ## Running more than one process
 
 Each process has its own login rate-limit counters; see
