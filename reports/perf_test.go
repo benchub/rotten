@@ -677,6 +677,15 @@ func runPerfCase(t *testing.T, conn perfConn, c perfCase, mode string, partition
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The UI forces custom plans; set the mode again to measure both.
+		if _, err := tx.Exec(ctx, "select set_config('plan_cache_mode', $1, true)", mode); err != nil {
+			t.Fatal(err)
+		}
+		if perfWorkMemOverride != "" {
+			if _, err := tx.Exec(ctx, "select set_config('work_mem', $1, true)", perfWorkMemOverride); err != nil {
+				t.Fatal(err)
+			}
+		}
 		defer tx.Rollback(ctx)
 		began := time.Now()
 		canceled := func(err error) bool {

@@ -9,9 +9,11 @@ make test-perf                                  # about 10M events, twice; aroun
 make test-perf ROTTEN_PERF_EVENTS=500000        # quick smoke run
 make test-perf PERF_TEST_ARGS='-run TestPerfReports'
 make test-perf PERF_TEST_ARGS='-run TestPerfManySources'
+make test-perf PERF_TEST_ARGS='-run TestPerfMatchUnderLoad'                         # with CPU load
+make test-perf PERF_TEST_ARGS='-run TestPerfMatchUnderLoad' ROTTEN_PERF_LOAD_FACTOR=0 ROTTEN_PERF_EXPLAIN=1  # no load, text plans
 ```
 
-- **Two tests:** `TestPerfReports` runs every report on the main seed below. `TestPerfManySources` seeds the same data plus the fleet (400 more logical sources) in its own database, and runs only `fingerprint_all_sources` and the index decision for it (see "Dropping `events_fingerprint_window`").
+- **Three tests:** `TestPerfReports` runs every report on the main seed below. `TestPerfManySources` seeds the same data plus the fleet (400 more logical sources) in its own database, and runs only `fingerprint_all_sources` and the index decision for it (see "Dropping `events_fingerprint_window`"). `TestPerfMatchUnderLoad` runs the 7d match reports on the main seed with CPU load alongside (see "Under load").
 
 - **What runs:** `make test-perf` runs `go test -tags perf ./reports` in the test image.
 - **Not in the gate:** the `perf` build tag keeps the suite out of `make test`, `make test-unit` and `make test-all`. `make test` does run `go vet -tags perf ./reports`, so a compile break in the suite still fails the gate.
@@ -33,8 +35,8 @@ make test-perf PERF_TEST_ARGS='-run TestPerfManySources'
    Seeding takes 1m20s–4m20s, depending on the machine's load.
 2. **Runs every report the way the UI does.**
    - It connects as `rotten_ui` and uses `PREPARE` / `EXECUTE` with bound parameters.
-   - Each run is in a read-only transaction with `statement_timeout = 15s` and `jit = off`, both transaction-local, as in the UI's `ReportRunner`. `beginReportTx` in `reports/report_tx_test.go` sets them up, and `TestBeginReportTxSettings` (in `make test`) checks them.
-   - Each case runs under both `plan_cache_mode = force_custom_plan` and `force_generic_plan`. Rails reuses prepared statements, so after five executions Postgres may switch to a generic plan, where pruning happens at executor startup or per loop.
+   - Each run is in a read-only transaction with `statement_timeout = 15s`, `jit = off` and `plan_cache_mode = force_custom_plan`, all transaction-local, as in the UI's `ReportRunner`, at the server's `work_mem` (4MB). `beginReportTx` in `reports/report_tx_test.go` sets them up, and `TestBeginReportTxSettings` and `TestBeginReportTxPlanCacheMode` (in `make test`) check them. `ROTTEN_PERF_WORK_MEM` sets `work_mem` in the suite's report transactions, for comparisons.
+   - Each case runs under both `plan_cache_mode = force_custom_plan` and `force_generic_plan`, set again inside the transaction. The UI forces custom plans since task 20261005-123457-2 (see "Under load"), but the generic numbers still show how a caller that reuses prepared statements without that setting would fare: after five executions Postgres may switch to a generic plan, where pruning happens at executor startup or per loop.
    - Each case gets one warmup, then the median of 5 runs (3 for the source-wide 24h and 7d cases).
    - A run canceled by the timeout is reported as a failure, and the suite carries on.
 3. **Asserts pruning and latency.**
@@ -425,6 +427,44 @@ No report is more than 2× and 25ms slower without it. fingerprint_all_sources t
 
 The suite now requires 0013's index and checks 0008's in both directions: it fails if `events_fingerprint_window` exists while no report needs it, or if it's absent while one does (more than 2× and 25ms slower without it, or timing out only without it), and, when it exists, if a report is over budget without it. Both sides are measured in the same transaction, the schema's own state first and then the toggled one: comparing against the main run instead flagged `unparsed_summary 24h` once each way (2ms in one pass, 37–48ms in the other), since the timed inserts in between leave dead rows in the latest partition.
 
+## Under load (task 20261005-123457-2)
+
+The 7d match reports (top_by_calls, top_by_total_time and outliers with a controller#action match) were canceled by the 15s timeout in perf runs at load average 30–69 from other projects' containers, where they take 3.5–4.5s on a quiet machine.
+
+**Reproducing it.** `TestPerfMatchUnderLoad` starts a container of busy loops (`yes > /dev/null`), `ROTTEN_PERF_LOAD_FACTOR` (default 6) per CPU the test sees, for at most 20 minutes, and removes it on cleanup. Docker gives each container the same CPU weight by default, so loops in one container only took half the CPUs from Postgres however many there were: at 3 loops per CPU with default weight, the reports ran at their quiet-machine times. The container's CPU shares are now 1024 per loop, so each loop competes like a busy container of its own. On the 10-CPU Docker VM used here:
+
+| Load | top_by_calls 7d match | top_by_total_time 7d match | outliers 7d match |
+|---|---|---|---|
+| 10 loops (factor 1) | 3.27s / 3.74s | 3.29s / 3.66s | 3.19s / 4.46s |
+| 30 loops (factor 3) | 4.65s / 6.49s | 4.79s / 6.45s | 4.72s / 6.94s |
+| 60 loops (factor 6) | 8.25s / canceled | 8.93s / canceled | 8.19s / canceled |
+
+Medians at the default 4MB `work_mem`, custom / generic. One canceled run of four counts as canceled.
+
+**What degrades.** From `EXPLAIN (ANALYZE, BUFFERS)` (`ROTTEN_PERF_EXPLAIN=1`), every node slows down by about the same factor, so most of it is CPU starvation. But two choices make the work bigger than it needs to be:
+
+- **Spilled sorts at 4MB `work_mem`.** `context_events` groups the range's 2.5M event_context rows into 340 contexts with an `array_agg` of event ids. Both plans sort for it (the arrays don't fit a hash aggregate in 4MB), and the sort spills about 64MB to disk. That's about 2s of a 4.5s custom run unloaded and about 5s of 10s at 30 loops.
+- **Generic plans.** Without the range, the generic plan estimates about 2,100 events for the aggregate instead of about 2M, so it sorts them for a GroupAggregate (an 81MB external merge) where the custom plan hashes. Generic plans were 1.2–1.5× slower unloaded and fell over first under load.
+- **Not the cause:** parallel workers (none of these plans use any) and the context match itself (the regex runs 340 times).
+
+**Decision (user, 2026-10-12): force custom plans, keep `work_mem` at 4MB.** `ReportRunner` (and `beginReportTx` here) set `plan_cache_mode = force_custom_plan` transaction-locally, next to `jit = off`. Planning each execution costs milliseconds against seconds of execution. `work_mem` stays at the server's default.
+
+**What was measured.** On the hashed `matched_events` plans (task 20261012-140405-1), interleaved in one run at 60 loops, medians of two rounds, custom / generic:
+
+| Case | 4MB | 64MB |
+|---|---|---|
+| top_by_calls 7d match | 7.95s, 9.61s / canceled, canceled | 4.79s, 4.04s / 8.80s, canceled |
+| top_by_total_time 7d match | 8.39s, 8.78s / canceled, canceled | 4.19s, 4.51s / 8.42s, 8.19s |
+| outliers 7d match | 8.36s, 6.48s / canceled, canceled | 5.31s, 4.52s / canceled, canceled |
+
+- **Custom plans** are what keep the reports under the timeout: at 4MB every custom run finished, in 6.5–9.6s, and every generic one was canceled.
+- **64MB `work_mem`** cut custom plans by about 45% under load, to 4.0–5.3s, by keeping `context_events`' sort in memory. It didn't save generic plans on its own. It was rejected for memory: in `TestPerfManySources`, the match-all cases peaked at 350–404MB (top_by_calls and top_by_total_time) and 387–430MB (outliers) per backend, against 175–225MB at 4MB and `perfMatchMemLimit`'s 256MB ceiling. `work_mem` is per sort or hash node, and hashes get `hash_mem_multiplier` (2) times it, so every such node may grow to 64MB or 128MB.
+- **Also tried:** 256MB was no better than 64MB at 30 loops. Reading event_context twice (the distinct contexts by hash, then their events through a hash join on the matching contexts), so no arrays are built, was slower: 7.2–8.7s against 4.9–7.1s at 30 loops, on the older plans, because the planner overestimated the distinct contexts (200,000 against 340) and merge-joined with an external sort.
+
+`TestPerfMatchUnderLoad` requires the three cases to finish under the 15s timeout with custom plans at 4MB, at 60 loops. In the final `make test-perf` run it took 9.04s, 9.39s and 6.64s, and `TestPerfManySources` passed under the 256MB ceiling.
+
+**The limit.** Past 60 loops on 10 CPUs (each weighted like Postgres's whole container), the reports slow down in proportion and will reach the timeout again. That's CPU starvation, not a plan problem.
+
 ## Red notes
 
 - **Original budgets passed from the start.** The first full run had 3h and 24h cases only, and passed every pruning and latency budget.
@@ -460,6 +500,7 @@ The suite now requires 0013's index and checks 0008's in both directions: it fai
   - With a match on every context, the "Subplan HashTable Context" holds 80MB (the hashed entries) and ExecutorState grows from about 4–7MB to 70–80MB, which fits the hash's bucket array, allocated in the query's context. So about 150MB of a broad match is the hashed subplan, and concurrent broad matches multiply it. Everything else in the plans stays near `work_mem` (4MB tuplestores and sorts).
   - `TestPerfManySources` fails any 7d match case above `perfMatchMemLimit` (256MB). That's a regression ceiling over today's numbers, not a cap on the design. It failed as intended with a 1MB limit.
   - Not capped yet. `work_mem` doesn't bound a hashed subplan, and the forms that do spill (a hash join or semi join to `matched_events`) are the ones generic plans turned into nested loops (see "Fleet match red").
+- **CPU starvation.** With custom plans at 4MB `work_mem`, the 7d match reports take 6.5–9.6s at 60 busy loops on 10 CPUs, against about 2–4s quiet. Heavier load slows them in proportion until they reach the timeout (see "Under load"). The UI forces custom plans, so generic plans no longer reach it.
 - **fingerprint_all_sources relies on btree skip scan**, so on Postgres 18 only (see "Dropping `events_fingerprint_window`").
 - **JIT** is off for reports (see "JIT off" above), so plan costs crossing `jit_above_cost` or `jit_optimize_above_cost` as data grows no longer add compile time. Other queries on the rotten database keep the server's JIT settings.
 - **Not covered:**

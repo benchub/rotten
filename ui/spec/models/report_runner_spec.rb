@@ -46,6 +46,20 @@ RSpec.describe ReportRunner do
     expect(setting("jit")).to eq("on")
   end
 
+  it "plans the report query for its parameters, never with a generic plan" do
+    result = described_class.new(timeout_ms: 5_000).run("select current_setting('plan_cache_mode') as p", [])
+
+    expect(result.rows).to eq([["force_custom_plan"]])
+  end
+
+  it "doesn't leak plan_cache_mode to the connection afterwards" do
+    before = setting("plan_cache_mode")
+    expect(before).to eq("auto")
+    described_class.new(timeout_ms: 5_000).run("select 1", [])
+
+    expect(setting("plan_cache_mode")).to eq(before)
+  end
+
   it "runs in a read-only transaction" do
     expect { described_class.new(timeout_ms: 5_000).run("create temporary table report_runner_probe (x int)", []) }
       .to raise_error(ActiveRecord::StatementInvalid, /read-only/)

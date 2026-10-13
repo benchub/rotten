@@ -180,7 +180,7 @@ test: image
 ## Results are recorded in docs/perf.md.
 PERF_TEST_ARGS ?=
 test-perf: image
-	$(DOCKER_RUN) $(DOCKER_SOCK) -e ROTTEN_PERF_EVENTS $(IMAGE) go test -tags perf -run '^TestPerf' -count=1 -timeout 90m -v $(PERF_TEST_ARGS) ./reports
+	$(DOCKER_RUN) $(DOCKER_SOCK) -e ROTTEN_PERF_EVENTS -e ROTTEN_PERF_LOAD_FACTOR -e ROTTEN_PERF_EXPLAIN -e ROTTEN_PERF_WORK_MEM $(IMAGE) go test -tags perf -run '^TestPerf' -count=1 -timeout 90m -v $(PERF_TEST_ARGS) ./reports
 
 ## test-ui: build Tailwind, then Rails specs in Docker against a migrated rotten test database.
 test-ui: image ui-image
