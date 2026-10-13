@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"regexp"
 	"testing"
 	"time"
 
@@ -351,14 +348,7 @@ func TestOutboxSenderResendsStoredProtoIdentically(t *testing.T) {
 
 func TestOutboxSenderCrashAfterServerCommitBeforeAckDedupesOnRestart(t *testing.T) {
 	ctx := context.Background()
-	dir := filepath.Join(".test-artifacts", "outbox-crash-"+sanitizeName(t.Name()))
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	dir := t.TempDir()
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	store, err := state.Open(dir, state.Options{Now: func() time.Time { return now }})
 	if err != nil {
@@ -399,14 +389,7 @@ func TestOutboxSenderCrashAfterServerCommitBeforeAckDedupesOnRestart(t *testing.
 
 func openSenderStore(t *testing.T) *state.Store {
 	t.Helper()
-	dir := filepath.Join(".test-artifacts", "outbox-sender-"+sanitizeName(t.Name()))
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	dir := t.TempDir()
 	store, err := state.Open(dir, state.Options{Now: func() time.Time { return time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC) }})
 	if err != nil {
 		t.Fatal(err)
@@ -452,10 +435,6 @@ func senderRegistration(project string, logicalID, physicalID uint32) state.Sour
 
 func pgssSnapshotForSender() pgss.Snapshot {
 	return pgss.Snapshot{Entries: map[pgss.Key]pgss.Stat{}}
-}
-
-func sanitizeName(s string) string {
-	return regexp.MustCompile(`[^A-Za-z0-9_.-]+`).ReplaceAllString(s, "_")
 }
 
 type testDiscard struct{}

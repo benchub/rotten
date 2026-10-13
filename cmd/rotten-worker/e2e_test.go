@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -110,19 +109,7 @@ func TestWorkerServerEndToEndSurvivesServerRestart(t *testing.T) {
 
 func workerTestArtifacts(t *testing.T) string {
 	t.Helper()
-	dir := filepath.Join(".test-artifacts", strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()))
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(abs); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(abs, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(abs) })
-	return abs
+	return t.TempDir()
 }
 
 func buildWorkerBinary(t *testing.T, dir string) string {

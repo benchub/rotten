@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -509,12 +508,7 @@ func newTestClient(t *testing.T, srv testServer) *Client {
 
 func writeTestFile(t *testing.T, name string, contents any) string {
 	t.Helper()
-	dir := filepath.Join(".test-artifacts", sanitize(t.Name()))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("mkdir test workspace: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	path := filepath.Join(dir, name)
+	path := filepath.Join(t.TempDir(), name)
 	var data []byte
 	switch v := contents.(type) {
 	case string:
@@ -528,11 +522,6 @@ func writeTestFile(t *testing.T, name string, contents any) string {
 		t.Fatalf("write %s: %v", path, err)
 	}
 	return path
-}
-
-func sanitize(s string) string {
-	re := regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
-	return re.ReplaceAllString(s, "_")
 }
 
 func sampleBatch() *rottenv1.SubmitHarvestRequest {

@@ -167,12 +167,7 @@ func writeConfigWithout(t *testing.T, missing string) string {
 
 func writeConfig(t *testing.T, overrides map[string]string) string {
 	t.Helper()
-	dir := filepath.Join(".test-artifacts", "config-"+strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	path := filepath.Join(dir, "conf.json")
+	path := filepath.Join(t.TempDir(), "conf.json")
 	fields := map[string]string{
 		"ObservedDBConn":      `["postgres://observed"]`,
 		"ServerURL":           `"https://server"`,
@@ -419,12 +414,7 @@ func TestRegisterUntilSuccessLogsAuthFailuresAtError(t *testing.T) {
 
 func openConfigStore(t *testing.T) *state.Store {
 	t.Helper()
-	dir := filepath.Join(".test-artifacts", "registration-"+strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	store, err := state.Open(dir, state.Options{})
+	store, err := state.Open(t.TempDir(), state.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
