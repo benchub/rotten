@@ -73,11 +73,11 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 
 Background: contexts come from the first query text pgss kept for each entry, so their counts were always skewed, and Postgres 18 drops leading comments. pssc counts calls and execution time per (userid, dbid, queryid, toplevel, tag set). Read it as counters (`calls_total`, `exec_time_total`, `stats_since` from `pg_stat_statement_context_totals`) and diff them like pgss, so the worker's interval doesn't need to match pssc's `bucket_interval`.
 
-### 20261012-111513-1: Decide whether the pssc tags check should model rename.
-- **Why (found in 20261007-200000-1):** pssc's `tags` description says keys are "matched after rename", but the pinned pssc (`64d1c768`) has no `rename` setting in `pg_settings`. The worker's tags check compares keys as written, so a rename that produces a mapped key could make it warn falsely. The builder couldn't read pssc's source: its sandbox blocked cloning the repo and running `docker run` against the image.
-- **Do:** Read pssc's source at the pinned commit to find where rename lives (a setting, an extractor parameter, or not yet built). If it exists, make the tags check account for it; otherwise keep the documented gap.
-- **Needs:** someone able to read the pssc source.
-- **Red test:** If rename exists, a renamed key that maps to `controller` doesn't warn.
+### 20261012-180500-1: Unidentified internal/worker flake.
+- **Why (found in 20261012-111513-1):** One `make test-all` run failed in `internal/worker`; the rerun passed. The failing test's name wasn't captured.
+- **Do:** Run `go test -count=20 ./internal/worker/` (in the test container) until it fails, identify the test, and fix the race.
+- **Needs:** nothing.
+- **Red test:** The failing test, made to fail reliably (for example by widening the race window).
 
 ### 20261007-120000-7: Generic tag sets (v2).
 - **Why:** pssc can keep any tag keys, not just controller, action, and job.

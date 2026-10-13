@@ -1662,3 +1662,11 @@ Completed: 2026-10-12, 1bf6485
 - **Red test:** A perf case that records peak memory for the broad 7d match and fails above a set limit.
 - **Outcome:** Measured, not capped. 7d match peaks at 34–54MB per backend; match-all at 175–227MB. User accepted that as a documented limit (2026-10-12). `reports/perf_mem_test.go` fails above 256MB.
 - Completed: 2026-10-12, bcb57e2
+
+### 20261012-111513-1: Decide whether the pssc tags check should model rename.
+- **Why (found in 20261007-200000-1):** pssc's `tags` description says keys are "matched after rename", but the pinned pssc (`64d1c768`) has no `rename` setting in `pg_settings`. The worker's tags check compares keys as written, so a rename that produces a mapped key could make it warn falsely. The builder couldn't read pssc's source: its sandbox blocked cloning the repo and running `docker run` against the image.
+- **Do:** Read pssc's source at the pinned commit to find where rename lives (a setting, an extractor parameter, or not yet built). If it exists, make the tags check account for it; otherwise keep the documented gap.
+- **Needs:** someone able to read the pssc source.
+- **Red test:** If rename exists, a renamed key that maps to `controller` doesn't warn.
+- **Outcome:** rename is a per-extractor parameter in `extractors`, and pssc applies `tags` after it, so the existing check is already right. Comment fixed, test added; no behavior change.
+- Completed: 2026-10-12, 4b7c720
