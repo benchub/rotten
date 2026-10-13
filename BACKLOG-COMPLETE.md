@@ -1696,3 +1696,10 @@ Completed: 2026-10-12, 1bf6485
 - **Red test:** A system spec: after login, the landing page shows the four stats and the heat map, and has no Run reports button.
 - **Outcome:** rotten-server calls SECURITY DEFINER `rotten.refresh_home_stats(as_of)` at startup and every 5 minutes, filling `home_stats` and `home_heatmap`; the UI reads both in one snapshot. User approved the tables approach (2026-10-12). Refresh takes 4.3s on the 10M-row seed; the page read takes about 1ms.
 - Completed: 2026-10-12, 353f173
+
+### 20261013-090000-1: Tests write state to a fixed folder in the checkout.
+- **Why (found in 20261012-180500-1):** `openSenderStore` and the crash test (`internal/worker/outbox_sender_test.go:354`, `:402`) keep state in `.test-artifacts/<test name>`, not `t.TempDir()`. Two `go test` runs of the package in one checkout break each other (SQLite disk I/O errors, "another worker is using this StateDir"). Same pattern: `cmd/rotten-worker/e2e_test.go:113`, `cmd/rotten-worker/config_test.go:170`, `:422`, `internal/serverclient/client_test.go:512`.
+- **Do:** Move them to `t.TempDir()`, unless one needs a folder in the checkout (then say why).
+- **Needs:** nothing.
+- **Red test:** Two concurrent runs of `./internal/worker/` in one checkout both pass.
+- Completed: 2026-10-13, 5d9b2eb
