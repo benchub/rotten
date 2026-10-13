@@ -1678,3 +1678,21 @@ Completed: 2026-10-12, 1bf6485
 - **Red test:** A perf case that runs the 7d match reports with a concurrent load generator and requires them to finish under the UI's timeout.
 - **Outcome:** Mostly CPU starvation; generic plans misestimated and failed first. Report transactions now force custom plans (user, 2026-10-12). 64MB work_mem was faster but peaked at 350–430MB on match-all, so 4MB stays. At 60 busy loops on 10 CPUs, 7d matches take 6.5–9.6s. `TestPerfMatchUnderLoad` added.
 - Completed: 2026-10-12, 09e15ae
+
+### 20261012-200000-1: Landing page shows rotten stats instead of a Run reports button.
+- **Why (user, 2026-10-12):** After login, the landing page (`home#show`) has one button to run reports, which duplicates the navbar.
+- **Do:** Remove the button. Show:
+  - ingest rate;
+  - unique fingerprints tracked;
+  - hosts seen in the last hour;
+  - hosts seen in the last week;
+  - a heat map of the last week: x is time, y is duration, and each cell's color is the number of fingerprints in that time and duration bucket. Draw it as inline SVG on the server, like the other charts (decision -51), with log-scale duration buckets.
+  - First define each stat precisely (for example, "host" may mean an observed cluster or database, and "ingest rate" may be batches, events or calls per second) and say which definition you chose.
+- **Caching:** These read a week of events, so don't compute them per request. Pick one, and document why:
+  - a materialized view refreshed periodically (Postgres has no native auto-refresh, so it needs a refresher, such as the server or pg_cron, and `REFRESH ... CONCURRENTLY` needs a unique index);
+  - or a cache shared by all UI processes. The UI's `cache_store` is `:memory_store` today, which is per process, so this means adding Solid Cache (or Redis) in the rotten DB.
+  - Show how old the numbers are on the page.
+- **Needs:** nothing. Measure it on the perf seed, so it stays fast at 10M rows.
+- **Red test:** A system spec: after login, the landing page shows the four stats and the heat map, and has no Run reports button.
+- **Outcome:** rotten-server calls SECURITY DEFINER `rotten.refresh_home_stats(as_of)` at startup and every 5 minutes, filling `home_stats` and `home_heatmap`; the UI reads both in one snapshot. User approved the tables approach (2026-10-12). Refresh takes 4.3s on the 10M-row seed; the page read takes about 1ms.
+- Completed: 2026-10-12, 353f173
