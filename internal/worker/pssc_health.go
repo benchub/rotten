@@ -20,10 +20,11 @@ import (
 // before pg_stat_statements; the observer can't read
 // shared_preload_libraries to check the order directly).
 //
-// The tags check compares the allowlist with the mapped keys as written. It
-// doesn't model pssc renaming keys before matching them (the pinned pssc
-// has no rename setting to read), so a rename that produces a mapped key
-// could make it warn falsely.
+// The tags check compares the allowlist with the mapped keys as written, and
+// that's right even when keys are renamed. In pssc, rename is a parameter of
+// each extractor in the extractors setting (rename=old:new|...), and the tags
+// allowlist applies after it, so tags already names final keys. A key renamed
+// to controller survives only if tags lists controller.
 
 const (
 	psscInUseMessage          = "pg_stat_statement_context is in use, so contexts come from it"

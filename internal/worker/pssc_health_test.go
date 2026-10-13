@@ -110,6 +110,21 @@ func TestPSSCSettingsWarnOncePerValue(t *testing.T) {
 	}
 }
 
+// pssc applies the tags allowlist after an extractor's rename parameter, so
+// tags names final keys. A route key renamed to controller is kept only
+// because tags lists controller, and the check doesn't warn.
+func TestPSSCTagsCheckIgnoresRename(t *testing.T) {
+	var logs syncBuffer
+	w := loggingWorker(&logs)
+	w.checkPSSCSettings(pssc.Settings{
+		Extractors: "sqlcommenter(position=any, rename=route:controller)",
+		Tags:       "action, controller, job",
+	})
+	if got := logs.String(); strings.Contains(got, psscTagsWarning) {
+		t.Fatalf("logs = %s, want no %q", got, psscTagsWarning)
+	}
+}
+
 // utility_missing_queryid rising 3 times within the last 6 harvests warns
 // once, whether or not the rises are back to back; a single rise (a
 // prepared utility statement re-run) doesn't. A reconnect starts over.
