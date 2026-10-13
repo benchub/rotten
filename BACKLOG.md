@@ -67,6 +67,22 @@ Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel 
 - **Needs:** nothing.
 - **Red test:** A perf case that runs the 7d match reports with a concurrent load generator and requires them to finish under the UI's timeout.
 
+### 20261012-200000-1: Landing page shows rotten stats instead of a Run reports button.
+- **Why (user, 2026-10-12):** After login, the landing page (`home#show`) has one button to run reports, which duplicates the navbar.
+- **Do:** Remove the button. Show:
+  - ingest rate;
+  - unique fingerprints tracked;
+  - hosts seen in the last hour;
+  - hosts seen in the last week;
+  - a heat map of the last week: x is time, y is duration, and each cell's color is the number of fingerprints in that time and duration bucket. Draw it as inline SVG on the server, like the other charts (decision -51), with log-scale duration buckets.
+  - First define each stat precisely (for example, "host" may mean an observed cluster or database, and "ingest rate" may be batches, events or calls per second) and say which definition you chose.
+- **Caching:** These read a week of events, so don't compute them per request. Pick one, and document why:
+  - a materialized view refreshed periodically (Postgres has no native auto-refresh, so it needs a refresher, such as the server or pg_cron, and `REFRESH ... CONCURRENTLY` needs a unique index);
+  - or a cache shared by all UI processes. The UI's `cache_store` is `:memory_store` today, which is per process, so this means adding Solid Cache (or Redis) in the rotten DB.
+  - Show how old the numbers are on the page.
+- **Needs:** nothing. Measure it on the perf seed, so it stays fast at 10M rows.
+- **Red test:** A system spec: after login, the landing page shows the four stats and the heat map, and has no Run reports button.
+
 ## Phase F: Docs.
 
 ## Phase G: Context from pg_stat_statement_context.
