@@ -1703,3 +1703,11 @@ Completed: 2026-10-12, 1bf6485
 - **Needs:** nothing.
 - **Red test:** Two concurrent runs of `./internal/worker/` in one checkout both pass.
 - Completed: 2026-10-13, 5d9b2eb
+
+### 20261015-090255-1: Quiet TLS handshake EOFs from load balancer health checks.
+- **Why (user, 2026-10-15):** On Trigger, rotten-server sits behind an NLB in TCP passthrough with a TCP health check. Each NLB node (one per AZ) opens a connection and closes it without a ClientHello, about every 7s. `slogErrorWriter` logs each one at ERROR as `http: TLS handshake error from <ip>:<port>: EOF`, so an idle server logs a steady stream of false errors. An HTTPS health check isn't a good fix: Trigger drops all its NLB defaults when you set any annotation, and `/healthz` pings the database.
+- **Do:** In `slogErrorWriter` (`cmd/rotten-server/serve.go`), log `http: TLS handshake error from ...: EOF` at DEBUG instead of ERROR. Every other server error, including other handshake failures (bad certificate, protocol version, timeouts, resets), stays at ERROR with the same message.
+- **Needs:** nothing.
+- **Red test:** a handshake EOF line written to the writer logs at DEBUG; a non-EOF handshake error and an unrelated server error log at ERROR. Also an end-to-end check against the real server: a TCP connect-then-close produces no ERROR record.
+- **Outcome:** Matches only `http: TLS handshake error from <addr>: EOF` (IPv4 or IPv6 address, nothing wrapped); `unexpected EOF`, wrapped read errors, timeouts and resets stay at ERROR. The e2e test half-closes, then reads to EOF, so it's deterministic. Known gap, documented in docs/server.md: a client that closes silently after a ClientHello is hidden too.
+- Completed: 2026-10-15, 39fd491
