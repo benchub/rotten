@@ -446,7 +446,18 @@ type slogErrorWriter struct {
 }
 
 func (w slogErrorWriter) Write(p []byte) (int, error) {
-	w.logger.Error("http server error", "message", strings.TrimSpace(string(p)))
+	msg := strings.TrimSpace(string(p))
+	// A peer that connects and closes without a ClientHello, like an NLB TCP
+	// health check, ends the handshake with a bare io.EOF. Match only
+	// "<addr>: EOF": "unexpected EOF" or a wrapped read error means something
+	// else went wrong, so those stay at ERROR.
+	if rest, ok := strings.CutPrefix(msg, "http: TLS handshake error from "); ok {
+		if addr, tail, ok := strings.Cut(rest, ": "); ok && tail == "EOF" && !strings.Contains(addr, " ") {
+			w.logger.Debug("http server error", "message", msg)
+			return len(p), nil
+		}
+	}
+	w.logger.Error("http server error", "message", msg)
 	return len(p), nil
 }
 

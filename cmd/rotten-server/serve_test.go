@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -960,5 +961,82 @@ func TestServeInvalidTLSFailsBeforeDatabase(t *testing.T) {
 	code := run([]string{"serve", "-tls-cert", "missing.crt", "-tls-key", "missing.key"}, &out, &errb)
 	if code != 1 || !strings.Contains(errb.String(), "load TLS certificate") {
 		t.Fatalf("code %d, stderr %q; want certificate loading failure", code, errb.String())
+	}
+}
+
+func TestSlogErrorWriterLevels(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want slog.Level
+	}{
+		{"http: TLS handshake error from 10.0.0.1:5555: EOF\n", slog.LevelDebug},
+		{"http: TLS handshake error from [::1]:5555: EOF\n", slog.LevelDebug},
+		{"http: TLS handshake error from 10.0.0.1:5555: remote error: tls: bad certificate\n", slog.LevelError},
+		{"http: TLS handshake error from 10.0.0.1:5555: unexpected EOF\n", slog.LevelError},
+		{"http: TLS handshake error from 10.0.0.1:5555: read tcp 10.0.0.2:8443->10.0.0.1:5555: read: connection reset by peer\n", slog.LevelError},
+		{"http: TLS handshake error from 10.0.0.1:5555: read tcp 10.0.0.2:8443->10.0.0.1:5555: EOF\n", slog.LevelError},
+		{"http: TLS handshake error from 10.0.0.1:5555: read tcp 10.0.0.2:8443->10.0.0.1:5555: i/o timeout\n", slog.LevelError},
+		{"http: Accept error: accept tcp: too many open files; retrying in 5ms\n", slog.LevelError},
+	} {
+		var buf bytes.Buffer
+		w := slogErrorWriter{logger: slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+		if n, err := w.Write([]byte(tc.line)); err != nil || n != len(tc.line) {
+			t.Fatalf("Write(%q) = %d, %v", tc.line, n, err)
+		}
+		var rec struct{ Level, Msg, Message string }
+		if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+			t.Fatalf("%q: %v in %q", tc.line, err, buf.String())
+		}
+		if rec.Level != tc.want.String() || rec.Msg != "http server error" || rec.Message != strings.TrimSpace(tc.line) {
+			t.Errorf("%q logged %+v, want level %v", tc.line, rec, tc.want)
+		}
+	}
+}
+
+func TestServeTCPHealthCheckNotLoggedAsError(t *testing.T) {
+	db := testdb.StartRotten(t)
+	ca := newTestCA(t)
+	cert, priv := ca.pair(t, 1)
+	certFile, keyFile := writePair(t, cert, priv)
+	proc := startServe(t, db.DSNAs(t, testdb.IngestRole), certFile, keyFile)
+	// Connect and close without a ClientHello, as an NLB TCP health check does.
+	// Half-close and wait for the server to close its side. The server writes
+	// the log line before closing, but its output reaches proc.logs through an
+	// exec pipe, so the line may not be captured yet when we see EOF.
+	raddr, err := net.ResolveTCPAddr("tcp", proc.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := net.DialTCP("tcp", nil, raddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, c); err != nil {
+		t.Fatalf("waiting for server to close: %v", err)
+	}
+	// A non-TLS byte stream still logs at ERROR. This second connection is
+	// load-bearing; don't remove it: its record comes after the first one in
+	// the pipe, so waiting for it guarantees the first line has been captured.
+	c2, err := net.Dial("tcp", proc.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c2.Write([]byte("not a TLS record at all\r\n"))
+	c2.Close()
+	waitForLog(t, proc.logs, "TLS handshake error")
+	for _, line := range strings.Split(proc.logs.String(), "\n") {
+		if strings.Contains(line, `"level":"ERROR"`) && strings.HasSuffix(strings.TrimSuffix(line, "}"), `: EOF"`) {
+			t.Errorf("TCP connect-then-close logged at ERROR: %s", line)
+		}
+	}
+	if !strings.Contains(proc.logs.String(), `"level":"ERROR","msg":"http server error"`) {
+		t.Errorf("malformed handshake was not logged at ERROR:\n%s", proc.logs.String())
 	}
 }

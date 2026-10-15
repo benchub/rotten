@@ -127,6 +127,14 @@ new names there.
 unhealthy` if not, without the error text. Use it for load balancer or
 Kubernetes readiness. Liveness is the service manager's job.
 
+A TCP health check that connects and closes without starting TLS isn't an
+error. The server logs that handshake `EOF` at debug level, which it doesn't
+output. Other TLS handshake failures are logged at error level. A client that
+sends a ClientHello and then closes without an alert, such as a non-Go client
+silently rejecting the certificate, also ends in a bare `EOF` and is hidden
+too; rotten-worker sends a bad certificate alert, so its failures stay at
+error level.
+
 `SIGINT` or `SIGTERM` stops accepting connections and waits up to
 `ShutdownTimeout` for requests in flight. After that the server cancels them,
 closes connections so open transactions roll back, and exits nonzero.
