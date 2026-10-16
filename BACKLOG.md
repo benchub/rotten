@@ -74,6 +74,42 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
   - Update the comment on `Diff` and `docs/worker.md`.
 - **Red test:** a snapshot without key K, then a harvest where K has 1,000,000 calls and `stats_since` before the previous snapshot, sends no delta for K and keeps K in the next snapshot. The harvest after that sends only the growth. On 17+, an entry with `stats_since` after the previous snapshot is still sent in full. On 14-16, any entry missing from the snapshot sends nothing on its first appearance.
 
+### 20261016-170000-1: Multi-select source filters with chips.
+- **Why (user, 2026-10-16):** With several clusters reporting, the Project, Environment and Cluster dropdowns (`ui/app/views/reports/_source_fields.html.erb`, `source_picker_controller.js`) force one value each. Only Role has "All roles".
+- **Do:** Each of Project, Environment, Cluster and Role gets an "All" option and a chip field below its dropdown.
+  - Picking a specific value adds it as a chip (no duplicates).
+  - Each chip has its own remove button.
+  - Picking "All" empties that field's chips.
+  - An empty field means all values.
+  - Values in a field are OR'd. Fields are AND'd with each other.
+  - The dropdowns keep narrowing each other the way the source picker does now. A chip that no longer exists under the other filters is shown as stale and ignored, not silently dropped.
+  - Carry the selection in the URL as repeated params (`project[]=...`), so links and the form still round-trip.
+  - Update `ReportQuery` validation and every report's SQL to filter on arrays (`= ANY($n)`), still as bound parameters.
+  - Reports that need exactly one role, such as replica utilization with its primary and replica roles, keep their own fields.
+  - Works without JS: a plain multi-select fallback is fine.
+- **Red test:** a system spec picks two clusters as chips, removes one, then picks "All", and the report rows follow each step. A request spec shows `cluster[]=a&cluster[]=b` returning both clusters' rows and no others.
+
+### 20261016-170000-2: Several match patterns, plus exclude patterns.
+- **Why (user, 2026-10-16):** One Match regex isn't enough. The user wants several matches OR'd together, and a list of exclude regexes.
+- **Do:** Turn Match into a chip field of patterns, OR'd together, and add an Exclude chip field.
+  - Excludes are applied first, then matches filter what's left.
+  - Overlap between them is the user's concern; don't warn about it.
+  - Validate every pattern with `match_compiles?`, and say which pattern is invalid.
+  - Keep `MAX_MATCH_LENGTH` per pattern and cap the number of patterns (pick a cap and document it).
+  - URL params are `match[]` and `exclude[]`. Accept the old single `match=` so existing links still work.
+  - Like Match, Exclude only applies to reports where `Report#matches?` holds.
+- **Red test:** with fingerprints A, B and C, matches A and B plus an exclude matching B return only A.
+
+### 20261016-170000-3: Click a context to filter on it; ignore untagged.
+- **Why (user, 2026-10-16):** In the context lists, like "wiki_pages_api#show_revision (33)", the user wants to click one and restrict every report to calls in that context. Untagged calls are noise in most views.
+- **Do:**
+  - Make each context entry a link that sets a context filter carried across all reports, not just the time series that has `context` today (`ReportQuery::CONTEXT_FORMAT`).
+  - With a context filter set, reports count only the calls and time attributed to that context, using the pssc counts, not every call of a fingerprint that has that context somewhere.
+  - Show the active filter with a remove control.
+  - Add an "Ignore untagged context" checkbox that drops untagged (`##`) calls from context lists and from report totals. The page must say that totals then leave out untagged calls.
+  - Decide and document whether the context filter is a single value or a chip list. A chip list matches the other filters and is preferred.
+- **Red test:** clicking a context on a report page reloads it with only fingerprints that have calls in that context, and their counts equal that context's calls. With "Ignore untagged" checked, a fingerprint whose only calls are untagged disappears.
+
 ## Phase E: Reports and UI (item 5).
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
