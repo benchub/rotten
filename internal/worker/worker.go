@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -130,9 +131,26 @@ type Config struct {
 	Logger       *slog.Logger
 }
 
-// ErrSanityCheckFailed is returned when the configured sanity check runs and
-// returns false. Supervisors should treat it as an intentional nonzero exit.
+// ErrSanityCheckFailed is returned, wrapped with the query and whether it
+// returned false or no rows, when the configured sanity check runs and
+// doesn't return true. Supervisors should treat it as an intentional nonzero exit.
 var ErrSanityCheckFailed = errors.New("sanity check fails")
+
+// maxSanityCheckErrorBytes bounds the query quoted in a sanity check error.
+const maxSanityCheckErrorBytes = 200
+
+// sanityCheckForError cuts query to maxSanityCheckErrorBytes, on a rune
+// boundary, and marks the cut with "...".
+func sanityCheckForError(query string) string {
+	if len(query) <= maxSanityCheckErrorBytes {
+		return query
+	}
+	cut := maxSanityCheckErrorBytes
+	for cut > 0 && !utf8.RuneStart(query[cut]) {
+		cut--
+	}
+	return query[:cut] + "..."
+}
 
 var errGracefulStop = errors.New("worker graceful stop")
 
@@ -314,12 +332,12 @@ func (w *Worker) Run(ctx context.Context) error {
 				continue
 			}
 			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrSanityCheckFailed
+				return fmt.Errorf("%w: %q returned no rows", ErrSanityCheckFailed, sanityCheckForError(cfg.SanityCheck))
 			}
 			return fmt.Errorf("couldn't run sanity check test: %w", err)
 		}
 		if !doIt {
-			return ErrSanityCheckFailed
+			return fmt.Errorf("%w: %q returned false", ErrSanityCheckFailed, sanityCheckForError(cfg.SanityCheck))
 		}
 
 		now := w.clk.Now()

@@ -796,6 +796,55 @@ func TestRunReturnsErrorWhenSanityCheckIsFalse(t *testing.T) {
 	if !errors.Is(err, ErrSanityCheckFailed) {
 		t.Fatalf("Run returned %v, want ErrSanityCheckFailed", err)
 	}
+	if msg := err.Error(); !strings.Contains(msg, `"select false"`) || !strings.Contains(msg, "returned false") {
+		t.Fatalf("Run error %q, want the query and that it returned false", msg)
+	}
+}
+
+// A long sanity check query is cut in the error so it can't flood the log.
+func TestRunSanityCheckErrorTruncatesLongQuery(t *testing.T) {
+	observed := startObservedForWorker(t)
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+	query := "select false -- " + strings.Repeat("x", 1000)
+	cfg := Config{
+		ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
+		ObservationInterval: 2,
+		SanityCheck:         query,
+		State:               store,
+		Logger:              slog.Default(),
+	}
+	w := New(cfg, RealClock{})
+	err := w.Run(context.Background())
+	if !errors.Is(err, ErrSanityCheckFailed) {
+		t.Fatalf("Run returned %v, want ErrSanityCheckFailed", err)
+	}
+	msg := err.Error()
+	if len(msg) > 300 || !strings.Contains(msg, "select false -- xxx") || !strings.Contains(msg, "...") || !strings.Contains(msg, "returned false") {
+		t.Fatalf("Run error %q (%d bytes), want a truncated query with ... and the result", msg, len(msg))
+	}
+}
+
+func TestRunReturnsErrorWhenSanityCheckReturnsNoRows(t *testing.T) {
+	observed := startObservedForWorker(t)
+	store := openStore(t, t.TempDir())
+	defer store.Close()
+	query := "select true where false"
+	cfg := Config{
+		ObservedDB:          observerConn(t, observed.DSNAs(t, "rotten_observer")),
+		ObservationInterval: 2,
+		SanityCheck:         query,
+		State:               store,
+		Logger:              slog.Default(),
+	}
+	w := New(cfg, RealClock{})
+	err := w.Run(context.Background())
+	if !errors.Is(err, ErrSanityCheckFailed) {
+		t.Fatalf("Run returned %v, want ErrSanityCheckFailed", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, fmt.Sprintf("%q", query)) || !strings.Contains(msg, "returned no rows") {
+		t.Fatalf("Run error %q, want the query and that it returned no rows", msg)
+	}
 }
 
 func TestRunReturnsErrorWhenSanityCheckIsNullOrNoRows(t *testing.T) {

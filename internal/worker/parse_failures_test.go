@@ -301,3 +301,70 @@ func TestNoIdleHandsWatchdogDoesNotFireDuringReconnectBackoffCap(t *testing.T) {
 		t.Fatal("Run did not stop")
 	}
 }
+
+// Postgres 17+ pg_stat_statements shows savepoint names as $1. Those
+// entries get parsed fingerprints, one per kind, as pgss keeps them apart.
+func TestSavepointPlaceholdersNotUnparsed(t *testing.T) {
+	for _, version := range []int{17, 18} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			db := testdb.StartObserved(t, version)
+			conn := db.Connect(t)
+			ctx := context.Background()
+			for _, q := range []string{
+				"begin",
+				"savepoint a", "release savepoint a",
+				"savepoint b", "release b",
+				"savepoint c", "rollback to savepoint c",
+				"savepoint d", "rollback to d",
+				"commit",
+			} {
+				if _, err := conn.Exec(ctx, q); err != nil {
+					t.Fatalf("%s: %v", q, err)
+				}
+			}
+			reader := pgss.NewReader(conn)
+			stats, err := reader.ReadStats(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			texts := pgss.NewTextCache(reader)
+			if err := texts.Fill(ctx, stats); err != nil {
+				t.Fatal(err)
+			}
+			var deltas []pgss.Delta
+			for _, s := range stats {
+				q := strings.ToLower(s.Query)
+				if strings.HasPrefix(q, "savepoint") || strings.HasPrefix(q, "release") || strings.HasPrefix(q, "rollback to") {
+					deltas = append(deltas, pgss.Delta{Stat: s})
+				}
+			}
+			// pgss keys savepoint statements by kind: the long and short
+			// RELEASE and ROLLBACK TO forms share an entry.
+			if len(deltas) != 3 {
+				t.Fatalf("want 3 savepoint entries from pg_stat_statements, got %d: %v", len(deltas), deltas)
+			}
+			w := New(Config{}, RealClock{})
+			var sendLog bytes.Buffer
+			old := log.Writer()
+			log.SetOutput(&sendLog)
+			batch := w.buildHarvestBatch(ctx, texts, deltas, time.Unix(1, 0), time.Unix(2, 0))
+			log.SetOutput(old)
+			if strings.Contains(sendLog.String(), "couldn't parse query") || strings.Contains(sendLog.String(), "unparsed") {
+				t.Errorf("savepoints logged as parse failures: %s", sendLog.String())
+			}
+			if count, _, _ := w.parseFailureSnapshot(); count != 0 {
+				t.Errorf("want 0 unparsed entries, got %d", count)
+			}
+			fingerprints := map[string]bool{}
+			for _, agg := range batch.GetAggregates() {
+				if agg.GetUnparsed() {
+					t.Errorf("aggregate sent as unparsed: %v", agg)
+				}
+				fingerprints[agg.GetFingerprint()] = true
+			}
+			if len(fingerprints) != 3 {
+				t.Errorf("want 3 fingerprints, got %v", fingerprints)
+			}
+		})
+	}
+}

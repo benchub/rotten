@@ -410,3 +410,28 @@ func wantSourceRows(t *testing.T, db *pgxpool.Pool, project, environment, cluste
 		t.Fatalf("source rows logical=%d physical=%d, want logical=%d physical=%d", logical, physical, wantLogical, wantPhysical)
 	}
 }
+
+// A rejected pin names the FQDN the worker sent, so a worker sending the
+// wrong name can see it, but not the key's pin. The pin and key ID go to
+// the server log.
+func TestRegisterPinMismatchNamesReceivedFQDN(t *testing.T) {
+	f := setupRegister(t, "*.example.com")
+	var logs bytes.Buffer
+	f.handler = ingest.NewHandler(f.ingest, ingest.Options{
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	_, err := f.handler.Register(f.ctx, registerRequest("inventory", "prod", "north", "primary", "db1.other.com"))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("Register err = %v, want PermissionDenied", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, `"db1.other.com"`) || strings.Contains(msg, f.key.FQDN) || strings.Contains(msg, "example.com") {
+		t.Fatalf("Register error %q, want the received fqdn quoted and not the pin", msg)
+	}
+	logText := logs.String()
+	for _, want := range []string{"level=WARN", "key_id=", "pin=*.example.com", "fqdn=db1.other.com"} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("logs = %q, want %q", logText, want)
+		}
+	}
+}

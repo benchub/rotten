@@ -646,6 +646,9 @@ func Normalized(query string, opts Options) (fingerprint string, err error) {
 				"VALUES ${1}"),
 			"IN (1)")*/
 	modified_query := query
+	if named, ok := savepointPlaceholder(query); ok {
+		modified_query = named
+	}
 
 	tree, err := pg_query.Parse(modified_query)
 	if err != nil {
@@ -682,6 +685,9 @@ func Normalized(query string, opts Options) (fingerprint string, err error) {
 // fingerprint. The ingest server stores this representative text when it
 // first sees a fingerprint.
 func Query(query string) (string, error) {
+	if _, ok := savepointPlaceholder(query); ok {
+		return canonicalSavepoint(query), nil
+	}
 	normalized, err := pg_query.Normalize(query)
 	if err != nil {
 		log.Println("couldn't normalize query", query, err)

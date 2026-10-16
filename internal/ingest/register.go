@@ -93,7 +93,9 @@ func (h *Handler) Register(ctx context.Context, req *connect.Request[rottenv1.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if !key.AllowsFQDN(src.FQDN) {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("pass key is not pinned to this fqdn"))
+		// The worker sees the FQDN it sent, not the key's pin.
+		h.logger.Warn("pass key pin rejected fqdn", "key_id", key.ID, "pin", key.FQDN, "fqdn", src.FQDN)
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("pass key is not pinned to fqdn %q", src.FQDN))
 	}
 	reg, err := RegisterSource(ctx, h.db, src)
 	if err != nil {
