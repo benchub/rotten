@@ -54,3 +54,29 @@ func TestKeyAllowsFQDN(t *testing.T) {
 		t.Error("unpinned key allows an fqdn; unpinned keys may not register sources")
 	}
 }
+
+func TestKeySuffixPinAllowsFQDN(t *testing.T) {
+	k := Key{ID: 3, FQDN: "*.example.com"}
+	for _, h := range []string{"db1.example.com", "a.b.example.com", "DB1.Example.COM", "db1.example.com."} {
+		if !k.AllowsFQDN(h) {
+			t.Errorf("*.example.com refuses %q", h)
+		}
+	}
+	for _, h := range []string{
+		"example.com", "example.com.", ".example.com", "..example.com", "badexample.com", "db1.badexample.com",
+		"db1.example.com.evil", "db1.example.co", "*.example.com", "x.*.example.com", "db_1.example.com",
+		"db1..example.com", "db1.example.com..", " db1.example.com", "", "com",
+		"\u212a.example.com", "\u0130.example.com", "db1.ex\u00e4mple.example.com", "d\u00e91.example.com",
+	} {
+		if k.AllowsFQDN(h) {
+			t.Errorf("*.example.com allows %q", h)
+		}
+	}
+	if !(Key{ID: 4, FQDN: "*.Example.COM."}).AllowsFQDN("db1.example.com") {
+		t.Error("suffix pin match depends on the pin's case or trailing dot")
+	}
+	// An exact pin is compared as a string: "*" in a host is never a wildcard.
+	if (Key{ID: 5, FQDN: "db1.example.com"}).AllowsFQDN("*.example.com") {
+		t.Error("exact pin allows a wildcard host")
+	}
+}

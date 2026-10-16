@@ -87,7 +87,7 @@ func TestKeysCreateFQDN(t *testing.T) {
 		return out.String(), errb.String(), code
 	}
 
-	for i, bad := range []string{"db_1.example.com", "*.example.com", "db1..example.com", "."} {
+	for i, bad := range []string{"db_1.example.com", "*.com", "db*.example.com", "db1..example.com", "."} {
 		out, errs, code := keys("create", "--fqdn", bad, fmt.Sprintf("bad%d", i))
 		if code == 0 || !strings.Contains(errs, "fqdn") || strings.Contains(out, "rotten_") {
 			t.Errorf("create --fqdn %q: code %d, stdout %q, stderr %q; want an fqdn error and no key", bad, code, out, errs)
@@ -96,7 +96,13 @@ func TestKeysCreateFQDN(t *testing.T) {
 	if _, errs, code := keys("create", "--fqdn", "DB1.Example.COM.", "mixed"); code != 0 {
 		t.Fatalf("create mixed: %d %s", code, errs)
 	}
+	if _, errs, code := keys("create", "--fqdn", "*.DB.Example.COM.", "fleet"); code != 0 {
+		t.Fatalf("create fleet: %d %s", code, errs)
+	}
 	out, _, _ := keys("list")
+	if !strings.Contains(out, "*.db.example.com") {
+		t.Errorf("list has no suffix pin *.db.example.com:\n%s", out)
+	}
 	if strings.Contains(out, "bad") {
 		t.Errorf("a key with a bad fqdn was stored:\n%s", out)
 	}

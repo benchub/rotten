@@ -61,6 +61,17 @@ func TestCreateKeyNormalizesFQDN(t *testing.T) {
 		t.Errorf("stored fqdn %q, want db1.example.com", stored)
 	}
 
+	w, err := auth.CreateKey(ctx, f.owner, "fleet", " *.DB.Example.COM. ", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.owner.QueryRow(ctx, "select fqdn from rotten.api_keys where id = $1", w.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "*.db.example.com" {
+		t.Errorf("stored suffix pin %q, want *.db.example.com", stored)
+	}
+
 	u, err := auth.CreateKey(ctx, f.owner, "unpinned", "", "test")
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +85,7 @@ func TestCreateKeyNormalizesFQDN(t *testing.T) {
 func TestCreateKeyRejectsInvalidFQDN(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	for _, in := range []string{"db_1.example.com", ".", " ", "*.example.com", "db1.example.com:5432"} {
+	for _, in := range []string{"db_1.example.com", ".", " ", "*.com", "db*.example.com", "db1.example.com:5432"} {
 		if _, err := auth.CreateKey(ctx, f.owner, "bad", in, "test"); err == nil || !strings.Contains(err.Error(), "fqdn") {
 			t.Errorf("CreateKey(fqdn %q) = %v, want an fqdn error", in, err)
 		}

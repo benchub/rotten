@@ -105,6 +105,23 @@ RSpec.describe "Pass key admin", :api_keys, type: :system do
     expect(owner_api_key_count).to eq(1)
   end
 
+  it "lets an admin pin a key to every host under a domain" do
+    sign_in("admin")
+
+    visit "/admin/keys/new"
+    expect(page).to have_css("label", text: "FQDN or suffix pin")
+    expect(page).to have_css("#fqdn-hint", text: "*.db.example.com")
+    fill_in "Name", with: "db-fleet"
+    fill_in "FQDN", with: "*.DB.Example.test."
+    click_button "Create pass key"
+
+    expect(page).to have_css("#pass-key-token")
+    expect(page).to have_text("pinned to *.db.example.test")
+    click_link "Back to pass keys"
+    expect(page).to have_css("h1", text: "Pass keys")
+    expect(page).to have_text("*.db.example.test")
+  end
+
   # The form submits without Turbo, so the whole document is replaced. Wait on
   # an element only the new document has: have_text on the page reads the old
   # <html> node, which goes stale mid-read if the swap lands in between.

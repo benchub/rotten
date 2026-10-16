@@ -80,7 +80,7 @@ then a `sslrootcert` from a service in the service file (`PGSERVICE` and
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `FQDN` | yes | The observed host's name. It must match the FQDN the pass key is pinned to (case and a trailing dot don't matter). Reports use it to point you at the right host's logs. |
+| `FQDN` | yes | The observed host's name. It must match the FQDN the pass key is pinned to, or be under the domain of a suffix pin such as `*.db.example.com` (case and a trailing dot don't matter). Reports use it to point you at the right host's logs. |
 | `Project` | yes | Logical source: the project this database serves. |
 | `Environment` | yes | Logical source: the environment, such as `production`. |
 | `Cluster` | yes | Logical source: the cluster. |

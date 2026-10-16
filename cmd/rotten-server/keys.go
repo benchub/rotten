@@ -25,8 +25,10 @@ ROTTEN_ADMIN_DSN (or -dsn).
 create prints the new key once. It isn't stored and can't be shown again.
 --fqdn pins the key to one worker host. Register and SubmitHarvest refuse a
 key without a pinned fqdn, so every worker key needs --fqdn. HOST must be a
-host name such as db1.example.com, checked as the UI checks it; it's stored
-lowercased, without a trailing dot.
+host name such as db1.example.com, or a suffix pin such as
+'*.db.example.com' that allows every host under that domain (but not the
+domain itself). It's checked as the UI checks it and stored lowercased,
+without a trailing dot.
 list never shows secrets. revoke takes effect within the server's key cache
 TTL of 30 seconds.
 `

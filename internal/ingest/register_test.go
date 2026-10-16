@@ -180,6 +180,41 @@ func TestRegisterRejectsPinnedFQDNMismatchWithoutWriting(t *testing.T) {
 	wantSourceRows(t, f.owner, "inventory", "prod", "north", "primary", "other.example.com", 0, 0)
 }
 
+// A suffix pin lets one key act for every host under its domain, and only
+// those.
+func TestRegisterAndSubmitWithSuffixPin(t *testing.T) {
+	f := setupRegister(t, "*.db.example.com")
+	reg, err := f.handler.Register(f.ctx, registerRequest("fleet", "prod", "east", "primary", "pg1.db.example.com"))
+	if err != nil {
+		t.Fatalf("Register under the suffix: %v", err)
+	}
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	if _, err := f.handler.SubmitHarvest(f.ctx, harvestRequest(reg.Msg.GetLogicalSourceId(), reg.Msg.GetPhysicalSourceId(), start, "suffix")); err != nil {
+		t.Fatalf("SubmitHarvest under the suffix: %v", err)
+	}
+	wantSourceRows(t, f.owner, "fleet", "prod", "east", "primary", "pg1.db.example.com", 1, 1)
+
+	for _, fqdn := range []string{"db.example.com", "pg1.baddb.example.com", "pg1.other.example.com"} {
+		_, err := f.handler.Register(f.ctx, registerRequest("fleet", "prod", "east", "replica", fqdn))
+		if connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Errorf("Register %q err = %v, want PermissionDenied", fqdn, err)
+		}
+		wantSourceRows(t, f.owner, "fleet", "prod", "east", "replica", fqdn, 0, 0)
+	}
+
+	// A source outside the suffix, registered by its own key, can't be
+	// written with the suffix key.
+	other := auth.Key{ID: f.key.ID + 1000, FQDN: "pg9.other.example.com"}
+	outside, err := f.handler.Register(auth.NewContext(context.Background(), other), registerRequest("other", "prod", "east", "primary", "pg9.other.example.com"))
+	if err != nil {
+		t.Fatalf("Register outside source: %v", err)
+	}
+	_, err = f.handler.SubmitHarvest(f.ctx, harvestRequest(outside.Msg.GetLogicalSourceId(), outside.Msg.GetPhysicalSourceId(), start, "outside"))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("SubmitHarvest outside the suffix err = %v, want PermissionDenied", err)
+	}
+}
+
 func TestRegisterRejectsReservedLogicalSource(t *testing.T) {
 	f := setupRegister(t, "db4.example.com")
 	req := registerRequest("all", "all", "all", "all", "db4.example.com")

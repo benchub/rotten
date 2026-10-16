@@ -6,7 +6,8 @@
 // stores only hex(sha256(secret)). A plain hash is enough for a
 // high-entropy random secret; a slow password hash would buy nothing.
 //
-// Source binding. A key pinned to an fqdn may act only for that host.
+// Source binding. A key pinned to an fqdn may act only for that host, and
+// one with a suffix pin (*.db.example.com) only for hosts under that domain.
 // A key with no pinned fqdn authenticates, but AllowsFQDN reports false
 // for every host, so Register and SubmitHarvest refuse it with
 // PermissionDenied. That fails closed: api_keys has no other link to a
@@ -35,17 +36,32 @@ var errMalformed = errors.New("malformed pass key")
 type Key struct {
 	ID   int64
 	Name string
-	// FQDN is the host the key is pinned to, or "" if it isn't pinned.
+	// FQDN is the host or suffix pin the key is pinned to, or "" if it
+	// isn't pinned.
 	FQDN string
 }
 
 // AllowsFQDN reports whether the key may act for host. An unpinned key
-// allows no host (see the package comment).
+// allows no host (see the package comment). A suffix pin allows only a
+// well-formed host name with at least one label before the suffix, so
+// "*.example.com" allows neither "example.com" nor "badexample.com".
 func (k Key) AllowsFQDN(host string) bool {
 	if k.FQDN == "" {
 		return false
 	}
-	return normFQDN(k.FQDN) == normFQDN(host)
+	pin := normFQDN(k.FQDN)
+	domain, suffix := strings.CutPrefix(pin, SuffixPrefix)
+	if !suffix {
+		return pin == normFQDN(host)
+	}
+	// ASCII-lowercase only: Unicode folding would turn the Kelvin sign into
+	// "k" and let a second spelling of a host through. NormalizeFQDN refuses
+	// any non-ASCII host.
+	h := strings.TrimSuffix(asciiLower(host), ".")
+	if n, err := NormalizeFQDN(h); err != nil || n != h || strings.HasPrefix(h, SuffixPrefix) {
+		return false
+	}
+	return strings.HasSuffix(h, "."+domain)
 }
 
 func normFQDN(s string) string { return strings.TrimSuffix(strings.ToLower(s), ".") }

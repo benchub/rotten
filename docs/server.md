@@ -21,7 +21,7 @@ subcommands take only flags and environment variables:
 | `migrate` | `-dsn` | `ROTTEN_OWNER_DSN` | Required. Connect as `rotten_owner`. |
 | `migrate` | `-retention` | `ROTTEN_RETENTION` | `21 days`. See [database.md](database.md#retention). |
 | `keys create`, `keys list`, `keys revoke` | `-dsn` | `ROTTEN_ADMIN_DSN` | Required. Connect as `rotten_owner`. |
-| `keys create` | `-fqdn` | | None, but the server refuses a key without one, so always pass it. The worker host the key is pinned to. See [keys.md](keys.md). |
+| `keys create` | `-fqdn` | | None, but the server refuses a key without one, so always pass it. The worker host the key is pinned to, or a suffix pin such as `*.db.example.com` for every host under that domain. See [keys.md](keys.md). |
 
 A flag wins over its environment variable.
 

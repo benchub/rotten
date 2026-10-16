@@ -22,10 +22,10 @@
         <%= form.text_field :name, required: true, maxlength: ApiKeyIssue::NAME_MAX, autocomplete: "off" %>
       </div>
       <div class="field">
-        <%= form.label :fqdn, "FQDN" %>
+        <%= form.label :fqdn, "FQDN or suffix pin" %>
         <%= form.text_field :fqdn, required: true, maxlength: ApiKeyIssue::FQDN_MAX, autocomplete: "off",
               placeholder: "db1.example.com", aria: { describedby: "fqdn-hint" } %>
-        <p class="hint" id="fqdn-hint">The worker host this key is pinned to, as the worker reports it.</p>
+        <p class="hint" id="fqdn-hint">The worker host this key is pinned to, as the worker reports it. Or *. and a domain, such as *.db.example.com, to pin it to every host under that domain.</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <%= form.submit "Create pass key", class: "btn btn-primary" %>

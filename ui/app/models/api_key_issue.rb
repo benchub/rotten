@@ -6,11 +6,13 @@ class ApiKeyIssue
 
   NAME_MAX = 64
   NAME_FORMAT = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
-  # A host name as the server compares it: lowercase, no trailing dot, labels
-  # of letters, digits and inner hyphens, 253 characters at most.
+  # A pin as the server compares it (internal/auth.NormalizeFQDN): lowercase,
+  # no trailing dot, labels of letters, digits and inner hyphens, 253
+  # characters at most. Either a host name, or "*." and a domain of two or
+  # more labels whose last label isn't all digits.
   FQDN_MAX = 253
   FQDN_LABEL = /[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/
-  FQDN_FORMAT = /\A#{FQDN_LABEL}(?:\.#{FQDN_LABEL})*\z/
+  FQDN_FORMAT = /\A(?:#{FQDN_LABEL}(?:\.#{FQDN_LABEL})*|\*(?:\.#{FQDN_LABEL})+\.(?![0-9]+\z)#{FQDN_LABEL})\z/
 
   Issued = Data.define(:api_key, :token)
 
@@ -21,7 +23,7 @@ class ApiKeyIssue
   validates :name, format: { with: NAME_FORMAT, message: "may only contain letters, digits, '.', '_' and '-', and must start with a letter or digit" },
                    allow_blank: true
   validates :fqdn, presence: true, length: { maximum: FQDN_MAX }
-  validates :fqdn, format: { with: FQDN_FORMAT, message: "must be a host name such as db1.example.com" }, allow_blank: true
+  validates :fqdn, format: { with: FQDN_FORMAT, message: "must be a host name such as db1.example.com, or a suffix pin such as *.db.example.com" }, allow_blank: true
   validate :name_unused
 
   def self.human_attribute_name(attribute, options = {})

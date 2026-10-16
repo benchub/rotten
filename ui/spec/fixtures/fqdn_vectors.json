@@ -1,5 +1,5 @@
 {
-  "_comment": "FQDN test vectors shared by internal/auth/fqdn_test.go and ui/spec/models/api_key_issue_fqdn_spec.rb, so the CLI and the UI accept and normalize the same pinned FQDNs. valid maps input to the stored form: ASCII whitespace trimmed, ASCII-lowercased, one trailing dot dropped. Labels are letters, digits and inner hyphens, 63 characters at most; the whole name is 253 characters at most after normalizing. An empty input isn't here: the UI requires an FQDN, while the CLI treats an empty --fqdn as an unpinned key.",
+  "_comment": "FQDN pin test vectors shared by internal/auth/fqdn_test.go and ui/spec/models/api_key_issue_fqdn_spec.rb, so the CLI and the UI accept and normalize the same pins. valid maps input to the stored form: ASCII whitespace trimmed, ASCII-lowercased, one trailing dot dropped. Labels are letters, digits and inner hyphens, 63 characters at most; the whole pin is 253 characters at most after normalizing. A pin is an exact host name or a suffix pin: '*.' and a domain of at least two labels whose last label isn't all digits. '*' is allowed only as that whole first label. An empty input isn't here: the UI requires an FQDN, while the CLI treats an empty --fqdn as an unpinned key.",
   "valid": [
     {
       "input": "db1.example.com",
@@ -56,6 +56,30 @@
     {
       "input": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.",
       "fqdn": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "input": "*.example.com",
+      "fqdn": "*.example.com"
+    },
+    {
+      "input": "*.db.prod.example.com",
+      "fqdn": "*.db.prod.example.com"
+    },
+    {
+      "input": " *.DB.Example.COM. ",
+      "fqdn": "*.db.example.com"
+    },
+    {
+      "input": "*.xn--d1-6ka.example",
+      "fqdn": "*.xn--d1-6ka.example"
+    },
+    {
+      "input": "*.10.0.0.example",
+      "fqdn": "*.10.0.0.example"
+    },
+    {
+      "input": "*.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fqdn": "*.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
   ],
   "invalid": [
@@ -71,7 +95,6 @@
     "db 1.example.com",
     "db1.example.com:5432",
     "db1.example.com/",
-    "*.example.com",
     "[::1]",
     "::1",
     "d\u00e91.example.com",
@@ -80,6 +103,29 @@
     "\u0130.example.com",
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example",
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "*",
+    "*.",
+    "*..",
+    "*.com",
+    "*.localhost",
+    "*.com.",
+    "*.example",
+    "db*.example.com",
+    "*x.example.com",
+    "a.*.example.com",
+    "*.*.example.com",
+    "**.example.com",
+    "*.example.*",
+    "*.0.0.1",
+    "*.10.0.0.1",
+    "*..example.com",
+    ".*.example.com",
+    "*.example.com..",
+    "* .example.com",
+    "*.-db.example.com",
+    "*.db_1.example.com",
+    "\u2217.example.com",
+    "*.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   ]
 }
