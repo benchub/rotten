@@ -63,21 +63,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Needs:** the user's call on existing rows.
 - **Red test:** registering as `DB1.Example.COM.` and as `db1.example.com` yields one physical source.
 
-### 20261016-150747-1: Say which FQDN a pin rejected.
-- **Why (user, 2026-10-16):** `Register` (`internal/ingest/register.go:94-96`) answers `pass key is not pinned to this fqdn` without the FQDN it received. In the first sandbox rollout the worker sent its config `FQDN`, not the observed DB host, and nothing in the error said so.
-- **Do:** Include the received FQDN (quoted, `%q`) in the PermissionDenied message, and in the worker's log of that error if it doesn't already pass the server's message through. Don't include the key's pin in the client-visible error. Log the pin and key ID server-side at WARN. Update `docs/worker.md` troubleshooting if it quotes the message.
-- **Red test:** Register with a key pinned to `*.example.com` and FQDN `db1.other.com` gets an error whose message contains `"db1.other.com"` and doesn't contain the pin.
-
-### 20261016-150747-2: Say why the sanity check failed.
-- **Why (user, 2026-10-16):** `worker stopped with error: sanity check fails` doesn't say whether the query returned `false` or no rows, or which query ran. A primary copied a replica's `select pg_is_in_recovery()` and the log gave no hint.
-- **Do:** Wrap `ErrSanityCheckFailed` (keep `errors.Is` working) with the query text and the result: `returned false` or `returned no rows`. Check `docs/worker.md` still matches.
-- **Red test:** Worker tests for both cases assert `errors.Is(err, ErrSanityCheckFailed)` and that the message names the query and the result.
-
-### 20261016-150747-3: Group SAVEPOINT $1 statements without a parse failure.
-- **Why (user, 2026-10-16):** Postgres 17+ pg_stat_statements normalizes savepoint names to `$1`, so `SAVEPOINT $1`, `RELEASE SAVEPOINT $1` and `ROLLBACK TO SAVEPOINT $1` (and the `RELEASE $1` / `ROLLBACK TO $1` short forms) don't parse. The worker logs `couldn't parse query` every window and sends them under text fingerprints.
-- **Do:** Recognize these shapes before the parser (case-insensitive, whitespace-tolerant) and give each a stable fingerprint, one per statement kind, matching how Postgres groups them (check whether pgss keys them by kind; don't merge what Postgres keeps apart). They shouldn't count as unparsed or be logged as parse failures. Anything else that fails to parse keeps today's behavior.
-- **Red test:** `SAVEPOINT $1`, `RELEASE SAVEPOINT $1`, `ROLLBACK TO SAVEPOINT $1` each fingerprint without error, the three differ from each other, and `savepoint   $1` matches `SAVEPOINT $1`. A harvest containing them reports 0 unparsed entries.
-
 ### 20261016-161500-1: Don't send lifetime totals for entries the snapshot didn't have.
 - **Why (user, 2026-10-16):** On canvas-c20, after `pg_read_all_stats` was granted mid-run, about 620 previously hidden entries became visible. `pgss.Diff` rule 4 (`internal/pgss/diff.go:158`, "Not in the snapshot: new") sent each one's lifetime counters as one window's activity. `SAVEPOINT $1` alone reported 67,286,178 calls in a single window, which wrecks trending. The same thing happens to any entry that was missing from the previous snapshot for any reason other than being created during the window. The worker already treats its first harvest as a baseline; this is the per-entry version of that.
 - **Do:** For an entry not in the previous snapshot (rule 4 only):

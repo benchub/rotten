@@ -1730,3 +1730,21 @@ Completed: 2026-10-12, 1bf6485
 - **Red tests:** Go and Ruby share an accept/refuse/normalize table that includes the suffix cases above. `AllowsFQDN` matches a deeper host, refuses the bare suffix, refuses a sibling domain that only shares a string suffix (`*.example.com` must not match `badexample.com`), and ignores case and a trailing dot. End to end: a worker whose FQDN is under a suffix key's domain registers and submits; one outside it gets `PermissionDenied`.
 - **Outcome:** Built as specified. Beyond the spec: a suffix whose last label is all digits is refused (no IPv4); the 253-character limit counts the stored `*.`; hosts under a suffix pin must be ASCII and already well formed, apart from case and one trailing dot. Review closed a Unicode case-folding gap (Kelvin sign) and added a docs warning that public suffixes such as `*.co.uk` pass the two-label rule. Follow-up: 20261016-104605-1.
 - Completed: 2026-10-16, c6f718a
+
+### 20261016-150747-1: Say which FQDN a pin rejected.
+- **Why (user, 2026-10-16):** `Register` (`internal/ingest/register.go:94-96`) answers `pass key is not pinned to this fqdn` without the FQDN it received. In the first sandbox rollout the worker sent its config `FQDN`, not the observed DB host, and nothing in the error said so.
+- **Do:** Include the received FQDN (quoted, `%q`) in the PermissionDenied message, and in the worker's log of that error if it doesn't already pass the server's message through. Don't include the key's pin in the client-visible error. Log the pin and key ID server-side at WARN. Update `docs/worker.md` troubleshooting if it quotes the message.
+- **Red test:** Register with a key pinned to `*.example.com` and FQDN `db1.other.com` gets an error whose message contains `"db1.other.com"` and doesn't contain the pin.
+- Completed: 2026-10-16, dc00d51
+
+### 20261016-150747-2: Say why the sanity check failed.
+- **Why (user, 2026-10-16):** `worker stopped with error: sanity check fails` doesn't say whether the query returned `false` or no rows, or which query ran. A primary copied a replica's `select pg_is_in_recovery()` and the log gave no hint.
+- **Do:** Wrap `ErrSanityCheckFailed` (keep `errors.Is` working) with the query text and the result: `returned false` or `returned no rows`. Check `docs/worker.md` still matches.
+- **Red test:** Worker tests for both cases assert `errors.Is(err, ErrSanityCheckFailed)` and that the message names the query and the result.
+- Completed: 2026-10-16, dc00d51
+
+### 20261016-150747-3: Group SAVEPOINT $1 statements without a parse failure.
+- **Why (user, 2026-10-16):** Postgres 17+ pg_stat_statements normalizes savepoint names to `$1`, so `SAVEPOINT $1`, `RELEASE SAVEPOINT $1` and `ROLLBACK TO SAVEPOINT $1` (and the `RELEASE $1` / `ROLLBACK TO $1` short forms) don't parse. The worker logs `couldn't parse query` every window and sends them under text fingerprints.
+- **Do:** Recognize these shapes before the parser (case-insensitive, whitespace-tolerant) and give each a stable fingerprint, one per statement kind, matching how Postgres groups them (check whether pgss keys them by kind; don't merge what Postgres keeps apart). They shouldn't count as unparsed or be logged as parse failures. Anything else that fails to parse keeps today's behavior.
+- **Red test:** `SAVEPOINT $1`, `RELEASE SAVEPOINT $1`, `ROLLBACK TO SAVEPOINT $1` each fingerprint without error, the three differ from each other, and `savepoint   $1` matches `SAVEPOINT $1`. A harvest containing them reports 0 unparsed entries.
+- Completed: 2026-10-16, dc00d51
