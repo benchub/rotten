@@ -1711,3 +1711,22 @@ Completed: 2026-10-12, 1bf6485
 - **Red test:** a handshake EOF line written to the writer logs at DEBUG; a non-EOF handshake error and an unrelated server error log at ERROR. Also an end-to-end check against the real server: a TCP connect-then-close produces no ERROR record.
 - **Outcome:** Matches only `http: TLS handshake error from <addr>: EOF` (IPv4 or IPv6 address, nothing wrapped); `unexpected EOF`, wrapped read errors, timeouts and resets stay at ERROR. The e2e test half-closes, then reads to EOF, so it's deterministic. Known gap, documented in docs/server.md: a client that closes silently after a ClientHello is hidden too.
 - Completed: 2026-10-15, 39fd491
+
+### 20261016-102622-1: Suffix pins for pass keys.
+- **Why (user, 2026-10-16):** One key per observed host doesn't scale to a fleet, and a self-service key API would defeat the point of keys. The user chose suffix pins over enrollment tokens or cloud identity: one key may act for every host under a domain, so a stolen key can only impersonate hosts in that domain.
+- **Decisions (user chose suffix pins; details proposed in session, 2026-10-16):**
+  - A pin is either an exact FQDN, as today, or `*.` followed by a suffix: `*.db.prod.example.com`.
+  - `*.S` matches any host with one or more labels before `S` (`db1.db.prod.example.com`, `a.b.db.prod.example.com`). It doesn't match `S` itself.
+  - The suffix must have at least two labels, so `*.com` and `*.localhost` are refused. The suffix gets the same label checks as an exact FQDN. `*` is allowed only as the whole first label: `db*.x.com`, `*x.x.com`, `a.*.x.com` and a bare `*` are refused. No IPv4 suffix.
+  - Matching ignores case and a trailing dot, like exact pins. Normalization stores `*.` plus the normalized suffix.
+  - Exact pins behave exactly as before. Unpinned keys are still refused.
+- **Do:**
+  - Server: `internal/auth/fqdn.go` (`NormalizeFQDN`) accepts the suffix form; `internal/auth/key.go` (`AllowsFQDN`) matches it. Both `Register` (`internal/ingest/register.go`) and `SubmitHarvest` (`internal/ingest/submit.go`) already go through `AllowsFQDN`; confirm nothing else compares the pin directly.
+  - CLI: `rotten-server keys create --fqdn '*.x.y.z'` works; update its help text.
+  - UI: the Ruby validation and normalization in `ui/app/models/api_key*.rb` must accept and normalize the same forms. The form's field label and hint should say a suffix pin is allowed. Add suffix cases to the shared vectors (`ui/spec/fixtures/pass_key_vectors.json`, or a new shared fixture for pins) so Go and Ruby are tested against the same accept/refuse/normalize table.
+  - Docs: `docs/keys.md` (pinning, CLI, UI, issuing to a fleet, and the tradeoff: revoking a suffix key cuts off every host under it), `docs/worker.md:83`, `docs/server.md:24`.
+  - No schema change is expected (`api_keys.fqdn` is text). If a migration turns out to be needed, say why.
+- **Needs:** nothing.
+- **Red tests:** Go and Ruby share an accept/refuse/normalize table that includes the suffix cases above. `AllowsFQDN` matches a deeper host, refuses the bare suffix, refuses a sibling domain that only shares a string suffix (`*.example.com` must not match `badexample.com`), and ignores case and a trailing dot. End to end: a worker whose FQDN is under a suffix key's domain registers and submits; one outside it gets `PermissionDenied`.
+- **Outcome:** Built as specified. Beyond the spec: a suffix whose last label is all digits is refused (no IPv4); the 253-character limit counts the stored `*.`; hosts under a suffix pin must be ASCII and already well formed, apart from case and one trailing dot. Review closed a Unicode case-folding gap (Kelvin sign) and added a docs warning that public suffixes such as `*.co.uk` pass the two-label rule. Follow-up: 20261016-104605-1.
+- Completed: 2026-10-16, c6f718a

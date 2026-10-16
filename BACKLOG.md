@@ -57,6 +57,12 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
+### 20261016-104605-1: Register stores the worker's FQDN unnormalized.
+- **Why (found in 20261016-102622-1 review):** `Register` (`internal/ingest/register.go:85-97`, upsert at `:133-137`) writes the raw `src.FQDN` into `rotten.physical_sources`. Pins match ignoring case and a trailing dot, so `DB1.example.com`, `db1.example.com.` and `db1.example.com` authenticate as the same host but become three physical sources, splitting that host's reports. Suffix pins widen this from one host's spellings to a whole domain's.
+- **Do:** Store the normalized FQDN (lowercase, no trailing dot) in `Register`, for every pin type. Decide what happens to existing rows with other spellings: a migration that merges them, or leave them and document it. Check whether the worker's own registration identity (`internal/state`, `cmd/rotten-worker`) compares FQDNs and would see a normalized value as a change of identity, which drops the outbox (`docs/worker.md`).
+- **Needs:** the user's call on existing rows.
+- **Red test:** registering as `DB1.Example.COM.` and as `db1.example.com` yields one physical source.
+
 ## Phase E: Reports and UI (item 5).
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
