@@ -246,6 +246,27 @@ drops the oldest harvests down to the new cap when it starts, logs
 `worker outbox cap dropped oldest batches at startup`, and counts them in
 `dropped_cap`.
 
+The same baseline rule applies to single entries. When a harvest finds a
+pg_stat_statements entry that wasn't in the last snapshot, the worker sends
+its full counters only if the entry started after that snapshot was taken
+(its `stats_since`, Postgres 17 and later). An entry that's older, such as
+the hundreds that appear when the worker's role is granted
+`pg_read_all_stats`, is saved as a baseline and sends nothing that window;
+the next harvest sends only its growth. On Postgres 14 through 16 there's no
+`stats_since`, so a new entry's first window is dropped, unless
+pg_stat_statements evicted entries since the last harvest (its `dealloc`
+count changed). Then a missing entry may have been evicted and recreated
+during the window, so it's counted in full; otherwise entries that churn
+under `pg_stat_statements.max` would never be counted. The cost is that on
+14 through 16, if evictions and a visibility change such as a
+`pg_read_all_stats` grant happen in the same window, lifetime totals can
+still go out. The worker logs one line per harvest with how many entries it
+held and their calls. The comparison uses the
+worker's clock for the snapshot time and the database server's clock for
+`stats_since`, so clock skew between them only decides whether an entry
+created right around a harvest is counted or held. A global
+`pg_stat_statements_reset()` still counts every entry in full.
+
 The upper bound of 2016 is a week at a 5-minute interval. A harvest is
 usually tens of kilobytes, but the server accepts up to 32 MiB, so a full
 outbox of the biggest possible harvests could take tens of gigabytes. Past a

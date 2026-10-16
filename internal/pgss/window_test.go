@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+	"time"
 )
 
 // cumulative mimics pg_stat_statements: total, Welford mean, and population
@@ -56,7 +57,7 @@ func windowOf(t *testing.T, a, b []float64) []Delta {
 	t.Helper()
 	pa := cumulative(a)
 	cur := cumulative(append(append([]float64{}, a...), b...))
-	ds, _ := Diff(Snapshot{Entries: map[Key]Stat{KeyOf(pa): pa}}, []Stat{cur}, Info{})
+	ds, _, _ := Diff(Snapshot{Entries: map[Key]Stat{KeyOf(pa): pa}}, []Stat{cur}, Info{}, time.Time{})
 	return ds
 }
 

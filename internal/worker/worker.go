@@ -573,7 +573,12 @@ func (w *Worker) harvest(ctx context.Context, reader *pgss.Reader, psscReader *p
 		log.Println("the last snapshot save failed, so this harvest is a baseline")
 		loaded = emptyBaseline()
 	}
-	deltas, next := pgss.Diff(loaded.Snapshot, stats, info)
+	deltas, next, held := pgss.Diff(loaded.Snapshot, stats, info, loaded.TakenAt)
+	if held.Entries > 0 && !loaded.Baseline {
+		// One line per harvest: a grant of pg_read_all_stats can reveal
+		// hundreds of entries at once.
+		log.Printf("%d pg_stat_statements entries (%d calls) weren't in the snapshot but may predate it, so they're held as baselines and send nothing this window", held.Entries, held.Calls)
+	}
 	psscDeltas, psscNext := pssc.Diff(loaded.PSSC, psscStats)
 	contexts := newPSSCContexts(psscOK, psscDeltas, loaded.PSSC, psscNext, loaded.TakenAt)
 	texts.Retain(stats)

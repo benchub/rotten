@@ -252,6 +252,9 @@ func TestWorkerOutboxHarvestQueuesValidPayloadsInWindowOrder(t *testing.T) {
 	store := openStore(t, t.TempDir())
 	defer store.Close()
 	workload := observed.Connect(t)
+	// Run it once before the baseline: on 16 an entry the snapshot doesn't have
+	// is held as a baseline, so its first window would send nothing.
+	runDiffWorkload(t, workload, 1)
 
 	rn := startOutboxWorker(t, observed.DSNAs(t, "rotten_observer"), 7, 42, store, store)
 	base := rn.harvest[0]
@@ -326,6 +329,9 @@ func TestOutboxHarvestAdvancesProgressCountersAndContexts(t *testing.T) {
 	store := openStore(t, t.TempDir())
 	defer store.Close()
 	workload := observed.Connect(t)
+	// Run it once before the baseline: on 16 an entry the snapshot doesn't have
+	// is held as a baseline, so its first window would send nothing.
+	runDiffWorkload(t, workload, 1)
 	rn := startOutboxWorker(t, observed.DSNAs(t, "rotten_observer"), 7, 42, store, store)
 
 	query := `select count(*) from widgets where id > 3 /*controller:users,action:show,job:CleanupJob*/`
@@ -414,6 +420,8 @@ func TestBuildHarvestBatchCarriesSkippedTextDeltas(t *testing.T) {
 	info := pgss.Info{StatsReset: time.Unix(1, 0)}
 	t0 := time.Unix(9, 0)
 	tAfterSecondWindow := time.Unix(31, 0)
+	firstStart := time.Unix(10, 0)
+	tNew := time.Unix(11, 0) // after firstStart, so newKey is new
 	existingKey := pgss.Key{UserID: 1, DBID: 1, TopLevel: true, QueryID: 101}
 	newKey := pgss.Key{UserID: 1, DBID: 1, TopLevel: true, QueryID: 102}
 	prev := pgss.Snapshot{
@@ -424,9 +432,10 @@ func TestBuildHarvestBatchCarriesSkippedTextDeltas(t *testing.T) {
 	}
 	firstStats := []pgss.Stat{
 		{UserID: existingKey.UserID, DBID: existingKey.DBID, TopLevel: existingKey.TopLevel, QueryID: existingKey.QueryID, Calls: 13, TotalExecTime: 13, TotalTime: 13, MeanTime: 1, MinmaxStatsSince: &t0},
-		{UserID: newKey.UserID, DBID: newKey.DBID, TopLevel: newKey.TopLevel, QueryID: newKey.QueryID, Calls: 4, TotalExecTime: 4, TotalTime: 4, MeanTime: 1, MinmaxStatsSince: &t0},
+		{UserID: newKey.UserID, DBID: newKey.DBID, TopLevel: newKey.TopLevel, QueryID: newKey.QueryID, StatsSince: &tNew, Calls: 4, TotalExecTime: 4, TotalTime: 4, MeanTime: 1, MinmaxStatsSince: &t0},
 	}
-	firstDeltas, firstNext := pgss.Diff(prev, firstStats, info)
+	// prev was taken at the window start, as in the worker.
+	firstDeltas, firstNext, _ := pgss.Diff(prev, firstStats, info, firstStart)
 	filler := &sequenceTextFiller{
 		failures: textFetchAttempts,
 		texts: map[int64]string{
@@ -434,16 +443,16 @@ func TestBuildHarvestBatchCarriesSkippedTextDeltas(t *testing.T) {
 			newKey.QueryID:      "select name from widgets where id = 102",
 		},
 	}
-	firstBatch, carried := w.buildHarvestBatchAndSnapshot(context.Background(), filler, prev, firstNext, firstDeltas, time.Unix(10, 0), time.Unix(20, 0))
+	firstBatch, carried := w.buildHarvestBatchAndSnapshot(context.Background(), filler, prev, firstNext, firstDeltas, firstStart, time.Unix(20, 0))
 	if len(firstBatch.GetAggregates()) != 0 {
 		t.Fatalf("failed text fetch batch has %d aggregates, want 0", len(firstBatch.GetAggregates()))
 	}
 
 	secondStats := []pgss.Stat{
 		{UserID: existingKey.UserID, DBID: existingKey.DBID, TopLevel: existingKey.TopLevel, QueryID: existingKey.QueryID, Calls: 15, TotalExecTime: 15, TotalTime: 15, MeanTime: 1, MinmaxStatsSince: &tAfterSecondWindow},
-		{UserID: newKey.UserID, DBID: newKey.DBID, TopLevel: newKey.TopLevel, QueryID: newKey.QueryID, Calls: 6, TotalExecTime: 6, TotalTime: 6, MeanTime: 1, MinmaxStatsSince: &tAfterSecondWindow},
+		{UserID: newKey.UserID, DBID: newKey.DBID, TopLevel: newKey.TopLevel, QueryID: newKey.QueryID, StatsSince: &tNew, Calls: 6, TotalExecTime: 6, TotalTime: 6, MeanTime: 1, MinmaxStatsSince: &tAfterSecondWindow},
 	}
-	secondDeltas, secondNext := pgss.Diff(carried, secondStats, info)
+	secondDeltas, secondNext, _ := pgss.Diff(carried, secondStats, info, time.Time{})
 	secondBatch, _ := w.buildHarvestBatchAndSnapshot(context.Background(), filler, carried, secondNext, secondDeltas, time.Unix(20, 0), time.Unix(30, 0))
 	got := map[string]uint64{}
 	for _, aggregate := range secondBatch.GetAggregates() {
@@ -477,7 +486,7 @@ func TestBuildHarvestBatchEmptyTextSuccessAdvancesSnapshot(t *testing.T) {
 	firstStats := []pgss.Stat{
 		{UserID: key.UserID, DBID: key.DBID, TopLevel: key.TopLevel, QueryID: key.QueryID, Calls: 13, TotalExecTime: 13, TotalTime: 13, MeanTime: 1},
 	}
-	firstDeltas, firstNext := pgss.Diff(prev, firstStats, info)
+	firstDeltas, firstNext, _ := pgss.Diff(prev, firstStats, info, time.Time{})
 	emptyText := &sequenceTextFiller{
 		texts: map[int64]string{
 			key.QueryID: "",
@@ -491,7 +500,7 @@ func TestBuildHarvestBatchEmptyTextSuccessAdvancesSnapshot(t *testing.T) {
 	secondStats := []pgss.Stat{
 		{UserID: key.UserID, DBID: key.DBID, TopLevel: key.TopLevel, QueryID: key.QueryID, Calls: 15, TotalExecTime: 15, TotalTime: 15, MeanTime: 1},
 	}
-	secondDeltas, secondNext := pgss.Diff(advanced, secondStats, info)
+	secondDeltas, secondNext, _ := pgss.Diff(advanced, secondStats, info, time.Time{})
 	goodText := &sequenceTextFiller{
 		texts: map[int64]string{
 			key.QueryID: "select id from widgets where id = 301",
@@ -687,10 +696,13 @@ func TestWorkerReconnectsToObservedDatabaseAfterRestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ran := make(chan error, 1)
+	workload := observed.Connect(t)
+	// Run it once before the baseline: on 16 an entry the snapshot doesn't have
+	// is held as a baseline, so its first window would send nothing.
+	runDiffWorkload(t, workload, 1)
 	go func() { ran <- w.Run(ctx) }()
 	clk.waitSleep(t)
 
-	workload := observed.Connect(t)
 	runDiffWorkload(t, workload, 4)
 	observed.Restart(t, func() {
 		clk.proceed <- struct{}{}

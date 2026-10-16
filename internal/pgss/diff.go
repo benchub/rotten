@@ -31,8 +31,9 @@ type Snapshot struct {
 // and max from WindowMinMax.
 //
 // New is true when the entry was treated as new (global reset, entry reset, a
-// counter went down, or no snapshot entry), so the counters are the entry's
-// full current values rather than a difference.
+// counter went down, or no snapshot entry and not held as a baseline), so
+// the counters are the entry's full current values rather than a
+// difference.
 //
 // Prev is the snapshot entry the counters were subtracted from, so callers
 // can rebuild the old side's sums (for example stddev from the old mean,
@@ -146,17 +147,46 @@ func sameTime(a, b *Stat) bool {
 	return x.Equal(*y)
 }
 
+// Held counts the entries Diff held as baselines (rule 4) and their calls.
+type Held struct {
+	Entries int
+	Calls   int64
+}
+
 // Diff compares the current harvest against the previous snapshot and
-// returns each entry's activity for the window plus the snapshot to keep for
-// next time. It's pure: no database and no I/O, and it doesn't modify prev or
-// cur. Rules, checked in order for each entry:
+// returns each entry's activity for the window, the snapshot to keep for
+// next time, and what it held as baselines (rule 4). It's pure:
+// no database and no I/O, and it doesn't modify prev or cur. prevTakenAt is
+// when prev was taken, by the worker's clock. Rules, checked in order for
+// each entry:
 //
 //  1. info.StatsReset differs from prev.Info.StatsReset: new.
 //  2. StatsSince changed (17+): new.
 //  3. Any cumulative counter is lower than the snapshot, or an optional
 //     counter is present on only one side: new.
-//  4. Not in the snapshot: new.
+//  4. Not in the snapshot: new if its StatsSince (17+) is at or after
+//     prevTakenAt, so it was created during the window. Otherwise its
+//     counters reach back before the window (for example it was hidden until
+//     the role was granted pg_read_all_stats, or the snapshot lost it), so
+//     it's held as a baseline: nothing is sent for it, it goes into next as
+//     read, and the next harvest sends only its growth. On 14 through 16
+//     there's no StatsSince, so it's held when info.Dealloc equals
+//     prev.Info.Dealloc, and the first window of a new query is lost. When
+//     dealloc changed, the entry may have been evicted and recreated inside
+//     the window (churn under pg_stat_statements.max), so it counts in full;
+//     holding it would lose every window of an entry that churns each time.
+//     The cost: if evictions and a visibility change (such as a
+//     pg_read_all_stats grant) land in the same window, lifetime totals can
+//     still go out.
 //  5. Otherwise, current minus snapshot.
+//
+// StatsSince is the observed server's clock and prevTakenAt the worker's,
+// compared directly, the same way newPSSCContexts in internal/worker treats
+// pssc. Skew between the clocks only decides whether an entry created right
+// around the snapshot is counted or held for a window. For a held entry pgss
+// and pssc agree: the worker ships contexts only for pgss deltas, so its pssc
+// calls aren't shipped either. newPSSCContexts' handling of an empty pssc
+// snapshot is a separate rule and can still send pssc calls untagged.
 //
 // Entries missing from cur (evicted) are dropped from next. Every entry in
 // cur goes into next as read. Deltas with zero calls are left out of the
@@ -171,14 +201,21 @@ func sameTime(a, b *Stat) bool {
 // Diff doesn't handle the first-run baseline: an empty prev with a zero
 // StatsReset trips rule 1 and returns everything as new. The caller decides
 // whether a snapshot counts as a baseline.
-func Diff(prev Snapshot, cur []Stat, info Info) ([]Delta, Snapshot) {
+func Diff(prev Snapshot, cur []Stat, info Info, prevTakenAt time.Time) ([]Delta, Snapshot, Held) {
 	next := Snapshot{Info: info, Entries: make(map[Key]Stat, len(cur))}
 	globalReset := !prev.Info.StatsReset.Equal(info.StatsReset)
+	dealloc := prev.Info.Dealloc != info.Dealloc
 	var deltas []Delta
+	var held Held
 	for _, c := range cur {
 		k := KeyOf(c)
 		next.Entries[k] = c
 		old, ok := prev.Entries[k]
+		if !globalReset && !ok && predates(c, prevTakenAt, dealloc) {
+			held.Entries++
+			held.Calls += c.Calls
+			continue
+		}
 		d := Delta{Stat: c}
 		switch {
 		case entryNew(c, old, ok, globalReset):
@@ -197,11 +234,23 @@ func Diff(prev Snapshot, cur []Stat, info Info) ([]Delta, Snapshot) {
 		}
 		deltas = append(deltas, d)
 	}
-	return deltas, next
+	return deltas, next, held
+}
+
+// predates reports whether c's counters may reach back before prevTakenAt.
+// On 14 through 16 there's no stats_since, so it's whether no entry was
+// deallocated since the snapshot (dealloc false): if one was, c may have been
+// recreated inside the window.
+func predates(c Stat, prevTakenAt time.Time, dealloc bool) bool {
+	if c.StatsSince == nil {
+		return !dealloc
+	}
+	return c.StatsSince.Before(prevTakenAt)
 }
 
 // entryNew reports whether c, with snapshot entry old (ok when present),
-// is a new entry by Diff's rules 1 through 4.
+// is a new entry by Diff's rules 1 through 4, counting a held entry (rule
+// 4) as new.
 func entryNew(c, old Stat, ok, globalReset bool) bool {
 	return globalReset || !ok || !sameTime(&c, &old) || optMismatch(&c, &old) || anyLower(c, old)
 }

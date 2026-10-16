@@ -40,6 +40,9 @@ func harvestOneWindow(t *testing.T, db *testdb.DB, workload func(*pgx.Conn)) *ro
 	store := openStore(t, t.TempDir())
 	defer store.Close()
 	conn := db.Connect(t)
+	// Run it once before the baseline: on 16 an entry the snapshot doesn't have
+	// is held as a baseline, so its first window would send nothing.
+	runTimes(t, conn, psscQuery, 1)
 	rn := startOutboxWorker(t, db.DSNAs(t, "rotten_observer"), 7, 42, store, store)
 	workload(conn)
 	rn.window(t)

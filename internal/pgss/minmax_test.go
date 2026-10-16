@@ -84,7 +84,8 @@ func TestMinmaxResetWindow(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				return pgss.Diff(prev, stats, info)
+				d, n, _ := pgss.Diff(prev, stats, info, time.Time{})
+				return d, n
 			}
 
 			run(0.3)
