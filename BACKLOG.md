@@ -63,17 +63,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Needs:** the user's call on existing rows.
 - **Red test:** registering as `DB1.Example.COM.` and as `db1.example.com` yields one physical source.
 
-### 20261016-161500-1: Don't send lifetime totals for entries the snapshot didn't have.
-- **Why (user, 2026-10-16):** On canvas-c20, after `pg_read_all_stats` was granted mid-run, about 620 previously hidden entries became visible. `pgss.Diff` rule 4 (`internal/pgss/diff.go:158`, "Not in the snapshot: new") sent each one's lifetime counters as one window's activity. `SAVEPOINT $1` alone reported 67,286,178 calls in a single window, which wrecks trending. The same thing happens to any entry that was missing from the previous snapshot for any reason other than being created during the window. The worker already treats its first harvest as a baseline; this is the per-entry version of that.
-- **Do:** For an entry not in the previous snapshot (rule 4 only):
-  - 17+: if `stats_since` is at or after the previous snapshot's time (allow for clock skew the way `pssc_contexts.go:83` does), it really is new, so count it. Otherwise, save it in the next snapshot and send nothing for it this window.
-  - 14-16 (no `stats_since`): always save it and send nothing. That gives up the first window of each new query, which the user accepted ("throw away the first read").
-  - Rules 1-3 (global reset, recreated, counters went down) stay as they are.
-  - Log one line per harvest with the count of entries held as baselines, not one line per entry.
-  - Check how this interacts with `carrySkippedTextSnapshot`/`zeroCarryBaseline` and the pssc untagged path, so contexts and pgss agree on which calls count.
-  - Update the comment on `Diff` and `docs/worker.md`.
-- **Red test:** a snapshot without key K, then a harvest where K has 1,000,000 calls and `stats_since` before the previous snapshot, sends no delta for K and keeps K in the next snapshot. The harvest after that sends only the growth. On 17+, an entry with `stats_since` after the previous snapshot is still sent in full. On 14-16, any entry missing from the snapshot sends nothing on its first appearance.
-
 ### 20261016-170000-1: Multi-select source filters with chips.
 - **Why (user, 2026-10-16):** With several clusters reporting, the Project, Environment and Cluster dropdowns (`ui/app/views/reports/_source_fields.html.erb`, `source_picker_controller.js`) force one value each. Only Role has "All roles".
 - **Do:** Each of Project, Environment, Cluster and Role gets an "All" option and a chip field below its dropdown.
