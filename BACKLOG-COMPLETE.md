@@ -1799,3 +1799,17 @@ Completed: 2026-10-12, 1bf6485
   - Decide and document whether the context filter is a single value or a chip list. A chip list matches the other filters and is preferred.
 - **Red test:** clicking a context on a report page reloads it with only fingerprints that have calls in that context, and their counts equal that context's calls. With "Ignore untagged" checked, a fingerprint whose only calls are untagged disappears.
 - Completed: 2026-10-16, 7a1694f
+
+### 20261017-080000-1: Chip and filter-form polish.
+- **Why (user, 2026-10-17, from a screenshot of the Dataset form):** The chips are tall ovals with too much padding. Their text sits slightly above the midline while the remove "x" is centered, which is obvious on an oval. The Time range field sits lower than Project, Environment, Cluster and Role. Picking Custom opens the from/to fields on the left of the form instead of under Time range. The help text is wordy.
+- **Do:**
+  - Make chips compact rectangles with slightly rounded corners and much less padding. Put the remove "x" in the chip's upper-right corner and make it red. Keep it a real button with its aria-label, and keep it keyboard usable. Apply this to every chip: source, Match, Exclude and context.
+  - Put Time range on the same row and baseline as the other four fields.
+  - Show the Custom from/to fields directly under Time range, the way chips sit under their field.
+  - Replace the help text with these exact strings:
+    - Match: "Optional case-insensitive Postgres regex on the query text and context sources. Ignored in the time series."
+    - Exclude: "Like Match, but the inverse."
+    - Ignore untagged context: "Leave out queries without context. Ignored by the outliers report."
+  - Update any specs that assert the old text.
+- **Red test:** a system spec asserts the three help strings. Another checks that Time range's label is on the same row as Role's (equal top offsets) and that the Custom fields render under Time range (their left offset is at or right of Time range's).
+- Completed: 2026-10-17, d75d1a8

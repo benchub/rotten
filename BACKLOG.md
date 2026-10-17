@@ -66,19 +66,6 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 - **Needs:** the user's call on existing rows.
 - **Red test:** registering as `DB1.Example.COM.` and as `db1.example.com` yields one physical source.
 
-### 20261017-080000-1: Chip and filter-form polish.
-- **Why (user, 2026-10-17, from a screenshot of the Dataset form):** The chips are tall ovals with too much padding. Their text sits slightly above the midline while the remove "x" is centered, which is obvious on an oval. The Time range field sits lower than Project, Environment, Cluster and Role. Picking Custom opens the from/to fields on the left of the form instead of under Time range. The help text is wordy.
-- **Do:**
-  - Make chips compact rectangles with slightly rounded corners and much less padding. Put the remove "x" in the chip's upper-right corner and make it red. Keep it a real button with its aria-label, and keep it keyboard usable. Apply this to every chip: source, Match, Exclude and context.
-  - Put Time range on the same row and baseline as the other four fields.
-  - Show the Custom from/to fields directly under Time range, the way chips sit under their field.
-  - Replace the help text with these exact strings:
-    - Match: "Optional case-insensitive Postgres regex on the query text and context sources. Ignored in the time series."
-    - Exclude: "Like Match, but the inverse."
-    - Ignore untagged context: "Leave out queries without context. Ignored by the outliers report."
-  - Update any specs that assert the old text.
-- **Red test:** a system spec asserts the three help strings. Another checks that Time range's label is on the same row as Role's (equal top offsets) and that the Custom fields render under Time range (their left offset is at or right of Time range's).
-
 ## Phase E: Reports and UI (item 5).
 
 Tasks -42 through -47 are plain SQL tested from Go, so they can run in parallel with Phase D after -26. The UI conventions are in `docs/plan.md`.
