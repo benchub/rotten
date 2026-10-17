@@ -23,14 +23,17 @@ func TestTopByTotalTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := conn.Query(ctx, string(query),
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		3,
 		nil,
 		nil,
+		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -142,14 +145,17 @@ func TestTopByTotalTimeHonorsLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := conn.Query(ctx, string(query),
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		2,
 		nil,
 		nil,
+		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)

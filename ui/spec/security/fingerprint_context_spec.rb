@@ -34,12 +34,15 @@ RSpec.describe "Fingerprint context filter", type: :request do
     expect(ReportFixture.table_counts).to eq(@counts)
   end
 
-  it "rejects arrays and hashes" do
+  it "rejects hashes, and lists of more than MAX_CONTEXTS or with a malformed context" do
     expect(ReportRunner).not_to receive(:new)
 
-    get "#{users_path}?#{params.to_query}&context[]=users%23show%23"
-    expect(response).to have_http_status(:unprocessable_content)
     get "#{users_path}?#{params.to_query}&context[x]=1"
+    expect(response).to have_http_status(:unprocessable_content)
+    too_many = Array.new(ReportQuery::MAX_CONTEXTS + 1) { |i| "context[]=c#{i}%23a%23" }.join("&")
+    get "#{users_path}?#{params.to_query}&#{too_many}"
+    expect(response).to have_http_status(:unprocessable_content)
+    get "#{users_path}?#{params.to_query}&context[]=users%23show%23&context[]=nohash"
     expect(response).to have_http_status(:unprocessable_content)
   end
 
@@ -82,7 +85,7 @@ RSpec.describe "Fingerprint context filter", type: :request do
     expect(response.body).not_to include("<script>alert(1)")
     expect(response.body).not_to include("<img src=x")
     page = Nokogiri::HTML5(response.body)
-    expect(page.at_css("input[type=hidden][name=context]")["value"]).to eq(context)
+    expect(page.at_css("input[type=hidden][name='context[]']")["value"]).to eq(context)
     expect(page.at_css(".context-filter").text).to include("<script>alert(1)</script>")
   end
 
@@ -92,7 +95,7 @@ RSpec.describe "Fingerprint context filter", type: :request do
     allow(ReportSql).to receive(:read).with("fingerprint_context_timeseries.sql")
                                       .and_return("select pg_sleep(2), $1::text, $2::text, $3::text, $4::bigint, " \
                                                   "$5::timestamptz, $6::timestamptz, $7::text, $8::text, " \
-                                                  "$9::text, $10::text, $11::text")
+                                                  "$9::text, $10::boolean")
 
     get users_path, params: params.merge(context: "users#show#")
 

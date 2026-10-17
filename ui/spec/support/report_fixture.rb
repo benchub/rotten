@@ -228,6 +228,31 @@ module ReportFixture
     conn&.close
   end
 
+  # Adds a fingerprint whose only calls, in one recent window on canvas 13
+  # primary, are untagged. Returns its id.
+  def self.add_untagged_fingerprint!(normalized, calls:, time:, start_ago: 35 * M)
+    conn = connect
+    conn.transaction do
+      source = conn.exec("select id from rotten.logical_sources where project = 'canvas' and cluster = '13' and role = 'primary'").getvalue(0, 0)
+      physical = conn.exec("select id from rotten.physical_sources where fqdn = 'canvas13p.db.example'").getvalue(0, 0)
+      id = conn.exec_params("insert into rotten.fingerprints (fingerprint, normalized) values ($1, $1) returning id", [normalized]).getvalue(0, 0)
+      start = conn.exec_params("select date_trunc('minute', now()) - make_interval(secs => $1)", [start_ago]).getvalue(0, 0)
+      event = conn.exec_params(<<~SQL, [id, source, physical, start, calls, time]).getvalue(0, 0)
+        insert into rotten.events
+          (fingerprint_id, logical_source_id, physical_source_id, observed_window_start, observed_window_end, calls, time)
+        values ($1, $2, $3, $4::timestamptz, $4::timestamptz + interval '10 minutes', $5, $6) returning id
+      SQL
+      conn.exec_params(<<~SQL, [event, start, calls, source, time])
+        insert into rotten.event_context
+          (event_id, observed_window_start, observed_window_end, c, logical_source_id, attributed_time)
+        values ($1, $2::timestamptz, $2::timestamptz + interval '10 minutes', $3, $4, $5)
+      SQL
+      Integer(id)
+    end
+  ensure
+    conn&.close
+  end
+
   # Adds a context with c calls to the newest recent event of the fingerprint
   # on canvas 13 primary, for contexts the fixture doesn't have (a # in a
   # controller, say). Its attributed_time is 1.

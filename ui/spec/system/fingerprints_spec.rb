@@ -31,7 +31,7 @@ RSpec.describe "Fingerprint detail", type: :system do
 
     expect(page).to have_css("h1", text: "Fingerprint #{users_id}")
     expect(find("pre.fingerprint-sql").text).to eq("select * from users where id = $1")
-    expect(page).to have_select("Cluster", selected: "13")
+    expect(source_chips("Cluster")).to eq(["13"])
 
     # Three hours in one-minute buckets, picked automatically.
     expect(chart_points("calls").size).to eq(180)
@@ -62,8 +62,8 @@ RSpec.describe "Fingerprint detail", type: :system do
     ])
 
     expect(table_rows("table.fingerprint-sources")).to eq([
-      ["primary", "900", "450.00", "0.50", "30,000", "0.50", "0.10"],
-      ["replica", "200", "80.00", "0.40", "", "", ""]
+      ["canvas/production/13", "primary", "900", "450.00", "0.50", "30,000", "0.50", "0.10"],
+      ["canvas/production/13", "replica", "200", "80.00", "0.40", "", "", ""]
     ])
     # Every project, environment, cluster and role over the same 3 hours,
     # with the all-sources history (logical source 0).
@@ -110,10 +110,10 @@ RSpec.describe "Fingerprint detail", type: :system do
     select "replica", from: "Role"
     click_button "Show"
 
-    expect(page).to have_current_path(/role=replica/)
+    expect(page).to have_current_path(/role%5B%5D=replica/)
     expect(chart_points("calls").sum { |point| point["data-value"].to_f }).to eq(200)
     expect(table_rows("table.fingerprint-contexts")).to eq([["grades#show", "200"]])
-    expect(table_rows("table.fingerprint-sources")).to eq([["replica", "200", "80.00", "0.40", "", "", ""]])
+    expect(table_rows("table.fingerprint-sources")).to eq([["canvas/production/13", "replica", "200", "80.00", "0.40", "", "", ""]])
     expect(find("table.fingerprint-sources tfoot tr.all-sources").all("th, td").map(&:text))
       .to eq(["All sources", "1,325", "640.00", "0.48", "50,000", "0.50", "0.20"])
   end
@@ -284,7 +284,7 @@ RSpec.describe "Fingerprint detail", type: :system do
 
       expect(page).to have_current_path(/range=custom/)
       expect(url_query).to include("range" => "custom", "from" => expected_from, "to" => expected_to,
-                                   "bucket" => "10m", "reset_range" => "3h", "cluster" => "13")
+                                   "bucket" => "10m", "reset_range" => "3h", "cluster[]" => "13")
       zoomed = chart_points("calls")
       expect(zoomed.size).to eq(6)
       expect(local(zoomed.first["data-time"])).to eq(expected_from)
@@ -323,7 +323,7 @@ RSpec.describe "Fingerprint detail", type: :system do
       mark_leaving
       within("table.fingerprint-contexts") { click_link "users#show" }
 
-      expect(page).to have_current_path(/context=users%23show%23/)
+      expect(page).to have_current_path(/context%5B%5D=users%23show%23/)
       within(".context-filter") do
         expect(page).to have_text("users#show")
         expect(page).to have_link("Show all contexts")
@@ -341,7 +341,7 @@ RSpec.describe "Fingerprint detail", type: :system do
       drag(center(points[busy.last + 1]), center(points[busy.first]))
 
       expect(page).to have_current_path(/range=custom/)
-      expect(url_query).to include("context" => "users#show#", "reset_range" => "3h")
+      expect(url_query).to include("context[]" => "users#show#", "reset_range" => "3h")
       expect(page).to have_css(".context-filter", text: "users#show")
       # The page before the zoom has 18 points, so this waits for the new one.
       expect(page).to have_css("svg.timeseries-chart[data-series='calls'] circle.chart-point", minimum: 1, maximum: 17, visible: :all)
@@ -354,7 +354,7 @@ RSpec.describe "Fingerprint detail", type: :system do
       mark_leaving
       click_link "Reset zoom"
       expect(page).to have_current_path(/[?&]range=3h/)
-      expect(url_query).to include("context" => "users#show#")
+      expect(url_query).to include("context[]" => "users#show#")
       expect(fresh_calls_sum(18)).to eq(600)
 
       mark_leaving
@@ -366,12 +366,12 @@ RSpec.describe "Fingerprint detail", type: :system do
     end
 
     it "keeps the context when the form changes the bucket" do
-      visit "#{base_url}&context=users%23show%23"
+      visit "#{base_url}&context[]=users%23show%23"
       select "1 hour", from: "Bucket"
       click_button "Show"
 
       expect(page).to have_current_path(/bucket=1h/)
-      expect(url_query).to include("context" => "users#show#")
+      expect(url_query).to include("context[]" => "users#show#")
       # Three hours in 1-hour buckets; the 10-minute page before has 18.
       expect(page).to have_css("svg.timeseries-chart[data-series='calls'] circle.chart-point", count: 3, visible: :all)
       expect(chart_points("calls").sum { |point| point["data-value"].to_f }).to eq(600)
@@ -390,8 +390,8 @@ RSpec.describe "Fingerprint detail", type: :system do
 
     expect(chart_points("calls").size).to eq(18)
     expect(table_rows("table.fingerprint-sources")).to eq([
-      ["primary", "900", "450.00", "0.50", "30,000", "0.50", "0.10"],
-      ["replica", "200", "80.00", "0.40", "", "", ""]
+      ["canvas/production/13", "primary", "900", "450.00", "0.50", "30,000", "0.50", "0.10"],
+      ["canvas/production/13", "replica", "200", "80.00", "0.40", "", "", ""]
     ])
     row = find("table.fingerprint-sources tfoot tr.all-sources.unavailable")
     expect(row.all("th, td").map(&:text)).to eq(["All sources", "Timed out"])

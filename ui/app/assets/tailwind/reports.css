@@ -8,8 +8,34 @@
   .report-form :is(.source-picker, .time-window) { @apply contents; }
   .report-form .field select { @apply min-w-36; }
   .report-form .field input[type="text"] { @apply w-36; }
+  /* Source fields: a dropdown that adds chips (source_picker_controller.js). */
+  .report-form .source-picker > .field { @apply self-start; }
+  .source-chips { @apply m-0 mt-2 flex max-w-60 list-none flex-wrap gap-1 p-0; }
+  .source-chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-primary bg-primary-soft py-0.5 pr-1 pl-2 text-sm;
+  }
+  .source-chip-stale { @apply border-dashed border-warning-line bg-warning-soft text-warning; }
+  .source-chip-stale > span:first-child { @apply line-through; }
+  .source-chip-note { @apply text-xs; }
+  .source-chip-remove {
+    @apply inline-flex size-5 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 text-base leading-none;
+    @apply hover:bg-surface-muted;
+  }
   .report-form .report-match { @apply basis-full; }
   .report-form .report-match input[type="text"] { @apply w-full max-w-xl font-mono; }
+  /* Match and Exclude: pattern chips (pattern_list_controller.js) over the entry field. */
+  .pattern-chips { @apply m-0 mb-2 flex list-none flex-wrap gap-1 p-0; }
+  .pattern-chip:has(code) {
+    @apply inline-flex items-center gap-1 rounded-full border border-primary bg-primary-soft py-0.5 pr-1 pl-2 text-sm;
+  }
+  .pattern-chip:not(:has(code)) { @apply w-full; }
+  .pattern-chip code { @apply font-mono; }
+  .pattern-entry { @apply flex items-center gap-2; }
+  /* The context filter's chips and Ignore untagged context. */
+  .report-form :is(.report-untagged, .report-context-filter) { @apply basis-full; }
+  .report-context-filter .source-chips { @apply max-w-none; }
+  .field label.checkbox-label { @apply inline-flex items-center gap-2; }
+  .context-filter { @apply mb-3 flex flex-col gap-2; }
   .report-form .custom-range {
     @apply flex flex-wrap items-end gap-3 rounded-md border border-dashed border-line-strong bg-surface-muted px-3 py-2;
   }

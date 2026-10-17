@@ -42,6 +42,7 @@ type outlierRow struct {
 
 func readOutliers(t *testing.T, conn *pgx.Conn, args ...any) []outlierRow {
 	t.Helper()
+	args = fillReportArgs("outliers.sql", args)
 	ctx := context.Background()
 	query, err := os.ReadFile("outliers.sql")
 	if err != nil {
@@ -89,9 +90,9 @@ func readOutliers(t *testing.T, conn *pgx.Conn, args ...any) []outlierRow {
 func readFixtureOutliers(t *testing.T, conn *pgx.Conn, fixture *testdb.Reports, cluster string, limit int) []outlierRow {
 	t.Helper()
 	return readOutliers(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		cluster,
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{cluster},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		limit,

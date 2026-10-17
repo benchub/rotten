@@ -15,12 +15,11 @@
     <fieldset class="report-dataset">
       <legend>Dataset</legend>
       <%= render "reports/source_fields", query: @query, reports: Report.all %>
-      <div class="field report-match">
-        <%= label_tag :match, "Match" %>
-        <%= text_field_tag :match, @query.match, maxlength: ReportQuery::MAX_MATCH_LENGTH, autocomplete: "off",
-                           spellcheck: false, placeholder: "e.g. users|#index", aria: { describedby: "match-hint" } %>
-        <p class="hint" id="match-hint">Optional. A case-insensitive Postgres regex on the query text and the contexts (controller#action, job). The time series ignores it. Untagged calls never match by context.</p>
-      </div>
+      <%= render "reports/pattern_field", field: :match, label: "Match", patterns: @query.match_patterns, placeholder: "e.g. users|#index",
+                 hint: "Optional, up to #{ReportQuery::MAX_PATTERNS} patterns, any of which keeps a row. Each is a case-insensitive Postgres regex on the query text and the contexts (controller#action, job). The time series ignores it. Untagged calls never match by context." %>
+      <%= render "reports/pattern_field", field: :exclude, label: "Exclude", patterns: @query.exclude_patterns, placeholder: "e.g. ^pg_catalog",
+                 hint: "Optional, up to #{ReportQuery::MAX_PATTERNS} patterns. A row any of them matches, the same way, is dropped before Match applies." %>
+      <%= render "reports/context_fields", query: @query %>
     </fieldset>
     <fieldset class="report-chooser">
       <legend>Report</legend>
@@ -68,7 +67,16 @@
         <%= render "reports/messages", query: @query, timeout_seconds: @timeout_seconds %>
 
         <% if ran && @query.ignored_match? %>
-          <p class="report-ignored-match alert alert-warning">Match was ignored: the time series is for one fingerprint.</p>
+          <p class="report-ignored-match alert alert-warning">Match and Exclude were ignored: the time series is for one fingerprint.</p>
+        <% end %>
+
+        <% if ran && @query.ignored_context? %>
+          <p class="report-ignored-context alert alert-warning">The context filter and Ignore untagged context were ignored: outliers scores whole queries.</p>
+        <% elsif ran && @query.ignore_untagged? %>
+          <p class="report-untagged-note alert alert-warning">Ignoring untagged context: these totals and context lists leave out untagged calls.</p>
+        <% end %>
+        <% if ran && @query.contexts.any? && !@query.ignored_context? %>
+          <p class="report-context-note text-sm text-ink-muted">Counting only the calls in the context filter's contexts. Total ms is their estimated share of each window's time.</p>
         <% end %>
 
         <% if ran && @query.needs_fingerprint? %>

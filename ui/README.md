@@ -299,7 +299,7 @@ counts as ended, so everyone signs in again once after upgrading.
 `/reports` is the workbench, and any signed-in user, viewer or admin, can
 use it. One form holds the dataset and the report to run on it:
 
-- **Dataset:** a project, environment and cluster, optionally a role, and a
+- **Dataset:** the sources (see **Source filters** below) and a
   **Time range**: a preset such as **Last 3 hours**, or **Custom**.
   **From** and **To** (UTC, at most 31 days apart) show only when Custom is
   picked, and picking it fills them with the window the preset had, so it
@@ -315,6 +315,27 @@ use it. One form holds the dataset and the report to run on it:
   utilization reports don't filter by it, but keep it (hidden) so switching
   back to another report doesn't widen the dataset.
 
+**Source filters.** **Project**, **Environment**, **Cluster** and **Role**
+each take any number of values. Each is a dropdown: picking a value adds it
+as a chip under it, each chip has a remove button (labeled, say, "Remove
+cluster 13", so it works from the keyboard and screen readers), and picking
+**All** removes the field's chips. A field with no chips means every value.
+Values in one field are OR'd, and the fields are AND'd. The dropdowns narrow
+each other in that order: each offers only the values some source has under
+the chips of the fields before it. A chip the earlier fields rule out, such
+as cluster 7 with only project bridge picked, stays, marked as ignored, and
+the server ignores it too and lists it under **Ignored filters**. A field
+whose chips are all ignored matches nothing, so the report is empty, and the
+banner says that's why. A value no source has at
+all fails validation. Up to 100 values per field. The values travel as
+repeated parameters, `project[]=canvas&cluster[]=13&cluster[]=7`, so links
+and the form round-trip; an old link's single `cluster=13` still works.
+Without JavaScript each field is a plain multi-select. The utilization
+reports need exactly one primary and one replica role, so they keep their
+own **Primary role** and **Replica role** fields. Outliers, the utilization
+reports and the fingerprint page's stats table have a **Source** column
+(`project/environment/cluster`), since their rows can come from several.
+
 **Run report** loads `/reports?report=<name>&...`. Every run states the
 window it used, such as `2026-10-04 06:35 to 09:35 UTC (last 3 hours)`.
 To switch reports, pick another one in the form and press **Run report**
@@ -324,16 +345,27 @@ An unknown report gets a 422. The old per-report
 pages, `/reports/<name>?...`, redirect (301) to the workbench with every
 parameter kept, so bookmarks still work.
 
-**Match** is a case-insensitive Postgres regex (`~*`, Postgres's ARE
-syntax), at most 200 characters, kept exactly as typed (spaces count). The
-top and outlier reports keep a query if its normalized text matches, or if
+**Match** and **Exclude** each take a list of patterns, shown as chips:
+type one and press Enter or **Add**, and each chip has a remove button
+("Remove match pattern users", say). A pattern left typed in the field when
+the report runs is added too. Each is a case-insensitive Postgres regex
+(`~*`, Postgres's ARE syntax), at most 200 characters, kept exactly as typed
+(spaces count), and each list takes at most 20 patterns. The patterns of
+Match are OR'd: a row any of them matches is kept. A row any Exclude
+pattern matches, by the same rules, is dropped first, then Match filters
+what's left; a pattern on both lists just drops its rows. Postgres checks
+every pattern before the report runs, and an error names the one it can't
+compile. The URL carries them as `match[]=...&exclude[]=...`; an old link's
+single `match=` still works. Without JavaScript each chosen pattern is a
+text field of its own (clear it to drop it), and the last field adds one.
+The top and outlier reports keep a query if its normalized text matches, or if
 it ran in the time range (on the same source, for outliers) in a context
 whose `controller#action` or job tag matches. The utilization reports match
 their name column, `controller#action` or the job. The filter is in the
 report SQL, before the 50-row limit, so it's the top 50 matching rows, not
 the shown 50 narrowed down. Only an empty match is no filter; one of only
 spaces filters on them, and is highlighted and kept in links. The time series is
-for one fingerprint, so it ignores match and says so. Match is part of the
+for one fingerprint, so it ignores Match and Exclude and says so. Both are part of the
 dataset: it carries across reports, into the fingerprint links and sort
 links, and through the fingerprint page (which doesn't filter) back to the
 workbench.
@@ -355,7 +387,9 @@ gets a 422 with its error, such as `parentheses () not balanced`. A pattern
 that's slow on the data is stopped by the report timeout like any report.
 
 Matches are marked with `<mark>` in the query text (inside the one-line
-disclosure too), the top contexts and the utilization name column.
+disclosure too), the top contexts and the utilization name column. Every
+Match pattern's matches are marked, overlapping ones as one mark; Exclude
+patterns aren't marked, since their rows are gone.
 
 Context counts are exact. They come from `pg_stat_statement_context` (see
 "Query context" in `docs/worker.md`). Calls it didn't tag, and every call
@@ -368,6 +402,36 @@ context never matches the Match pattern, not even `untagged`, though its
 query text still can. A `(capped)` tag value, which pssc stores once a key
 passes its cardinality cap, shows as it is. Context column headers have a
 `title` saying the counts are exact and what untagged means.
+
+**Context filter.** Each context in a context list (the top and utilization
+reports' Top contexts, and the fingerprint page's) links to the same page
+with that context added to a filter, `context[]=controller#action#job_tag`,
+with an empty part for what the context doesn't have (`##` is the untagged
+context). The filter is a chip list: the dataset shows each context with a
+remove link ("Remove context users#show"), and it carries across every
+report, the fingerprint links and the fingerprint page. With it, the top
+reports, the utilization reports, the fingerprint page's chart and stats
+for each source, and the unparsed note count only the calls
+(`event_context.c`, from pg_stat_statement_context) and time
+(`attributed_time`, the worker's estimate of the context's share) in those
+contexts, not every call of a fingerprint that ran in one somewhere. A query
+with no calls in them drops out, and its Top contexts lists only them. A
+context must match all three parts exactly; one nothing ran in matches
+nothing. At most 20 contexts. With a context filter, Match and Exclude
+look at a query's text and the filtered contexts only, not every context it
+ran in: with users#show filtered, Exclude `grades` doesn't drop a query
+because it also ran in grades#show. The utilization reports' rows are
+already only the filtered contexts.
+
+**Ignore untagged context** (`ignore_untagged=1`) leaves the untagged
+context's calls and time out of the same totals and its row out of every
+context list, so a query whose only calls are untagged drops out. The page
+says the totals then leave out untagged calls. It carries across reports
+like the context filter.
+
+Outliers scores a query's whole windows against its history, so it ignores
+both, and says so. Scoring within a context would need the history per
+context too.
 
 `ReportsHelper#highlight_match` HTML-escapes the text and wraps only the
 matched spans. Ruby replays the pattern, and its regex dialect differs from
@@ -450,31 +514,33 @@ no chart library, adds to them:
   bucket as they are now. Those parameters get the same validation as the
   page's own; if they fail it, the page acts as if it weren't zoomed.
   Picking a range with the form starts over.
-- **Context filter:** each row in Top contexts links to the page with
-  `context=controller#action#job_tag`, with an empty part for what the
-  context doesn't have (`##` is the untagged context). The two charts then
-  show only that context, a "Showing only" line names it with a **Show all
-  contexts** link, and the filter stays through zoom, **Reset zoom**, the
-  form's Show button and the time-series-as-a-table link. The list itself,
-  the stats for each source and the all-sources row stay unfiltered. The
-  chart runs `fingerprint_context_timeseries.sql`: calls are the exact
+- **Context filter:** each row in Top contexts links to the page with the
+  context added to the context filter (see **Context filter** under
+  Reports), and a row already in the filter is marked and not a link. The
+  filter shows over the charts as chips with remove links and a **Show all
+  contexts** link, and it stays through zoom, **Reset zoom**, the form's Show
+  button and the time-series-as-a-table link. The charts and the stats for
+  each source then count only those contexts' calls and time; the list
+  itself stays whole (less the untagged row with **Ignore untagged
+  context**) so another can be picked, and the history columns and the
+  all-sources row stay the fingerprint's. The chart runs
+  `fingerprint_context_timeseries.sql`: calls are the exact
   `event_context.c`, but Total ms (`attributed_time`) is an estimate of the
-  context's share of each window's time. A context
-  must match all three parts exactly. One the fingerprint never ran in draws
-  zeros. A value that isn't `controller#action#job_tag` (the job tag may
-  contain `#`), or is over 1,000 characters or has control characters, gets a
-  422. A context whose controller or action contains a `#` can't be written
-  in that form, so its row in Top contexts is plain text with no link. The query reads the same events and
-  `event_context` rows as Top contexts, so it shares that cost and the page's
-  one report timeout.
+  contexts' share of each window's time. A value that isn't
+  `controller#action#job_tag` (the job tag may contain `#`), or is over
+  1,000 characters or has control characters, gets a 422. A context whose
+  controller or action contains a `#` can't be written in that form, so its
+  row in Top contexts is plain text with no link. The query reads the same
+  events and `event_context` rows as Top contexts, so it shares that cost
+  and the page's one report timeout.
 
 The controller only toggles classes and sets attributes and CSSOM
 properties, so it works under the strict CSP with no inline script or style.
 An unknown or malformed ID gets a 404. The page runs
 `fingerprint_timeseries.sql`, `fingerprint_contexts.sql`,
 `fingerprint_sources.sql` and `fingerprint_all_sources.sql` (and
-`fingerprint_context_timeseries.sql` in place of the first when a context is
-picked); all but the time series aren't listed under `/reports`. They share one report timeout. The
+`fingerprint_context_timeseries.sql` in place of the first with a context
+filter or Ignore untagged context); all but the time series aren't listed under `/reports`. They share one report timeout. The
 all-sources query runs last; if it runs out of time, or less than 100ms is
 left for it, the page still answers 200 with everything else and shows the
 All sources row as timed out.

@@ -50,12 +50,12 @@ func TestOutliersMatchesHistoryDefinition(t *testing.T) {
 			want := d.outliers(c)
 			var role, match any
 			if c.role != "" {
-				role = c.role
+				role = []string{c.role}
 			}
 			if c.match != "" {
 				match = c.match
 			}
-			got := readOutliers(t, conn, oracleProject, testdb.ReportEnvironment, oracleCluster, c.start, c.end,
+			got := readOutliers(t, conn, []string{oracleProject}, []string{testdb.ReportEnvironment}, []string{oracleCluster}, c.start, c.end,
 				c.limit, c.sigma, defaultMinHistory, defaultRatio, role, match)
 			if len(want) < 3 && c.match != "nothing matches this" {
 				t.Fatalf("the oracle scores only %d groups; the data doesn't exercise the report", len(want))

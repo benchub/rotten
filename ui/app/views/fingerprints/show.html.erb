@@ -20,8 +20,10 @@
   <%= form_with url: fingerprint_path(@fingerprint.id), method: :get, class: "report-form card", data: { turbo: false } do %>
     <%= render "reports/source_fields", query: @query, reports: [@query.report] %>
     <%= render "reports/report_fields", query: @query, reports: [@query.report], fingerprint_field: false %>
+    <%= render "reports/context_fields", query: @query, chips: false %>
     <%# This page doesn't filter, but keeps the workbench's match for the links back to it. %>
-    <%= hidden_field_tag :match, @query.match_pattern, id: nil if @query.match_pattern %>
+    <% @query.match_patterns.each do |pattern| %><%= hidden_field_tag "match[]", pattern, id: nil %><% end %>
+    <% @query.exclude_patterns.each do |pattern| %><%= hidden_field_tag "exclude[]", pattern, id: nil %><% end %>
     <div class="form-actions">
       <%= submit_tag "Show", name: nil, class: "btn btn-primary" %>
     </div>
@@ -39,12 +41,15 @@
         Hover over or tab to a point for its value. Drag across a chart to zoom in.
         <% if @reset_zoom_params %><%= link_to "Reset zoom", fingerprint_path(@fingerprint.id, @reset_zoom_params), class: "chart-reset btn btn-sm ml-2" %><% end %>
       </p>
-      <% if (filter = @query.context_filter) %>
-        <p class="context-filter">
-          Showing only <strong><%= report_context_label(filter) %></strong>.
-          Total ms is an estimate of this context's share of each window's time.
-          <%= link_to "Show all contexts", fingerprint_path(@fingerprint.id, @context_link_params), class: "btn btn-sm ml-2" %>
-        </p>
+      <% if @query.context_filtered? %>
+        <div class="context-filter">
+          <%= context_filter_chips(@query) { |left| fingerprint_path(@fingerprint.id, @context_link_params.merge(context: left)) } %>
+          <p class="m-0 text-sm">
+            <% if @query.ignore_untagged? %>Untagged calls are left out. <% end %>
+            Total ms is an estimate of the contexts' share of each window's time.
+            <% if @query.contexts.any? %><%= link_to "Show all contexts", fingerprint_path(@fingerprint.id, @context_link_params.merge(context: [])), class: "btn btn-sm ml-2" %><% end %>
+          </p>
+        </div>
       <% end %>
       <div class="chart-grid">
         <div class="chart-panel">
@@ -80,7 +85,11 @@
                   <td>
                     <% value = context_filter_value(context) %>
                     <% if value %>
-                      <%= link_to report_context_label(context), fingerprint_path(@fingerprint.id, @context_link_params.merge(context: value)), title: "Show only this context over time" %>
+                      <% if active_context?(@query, context) %>
+                        <%= report_context_label(context) %>
+                      <% else %>
+                        <%= link_to report_context_label(context), fingerprint_path(@fingerprint.id, @context_link_params.merge(context: @query.contexts + [value])), title: "Count only the calls in this context" %>
+                      <% end %>
                     <% else %>
                       <%= report_context_label(context) %>
                     <% end %>
@@ -125,7 +134,7 @@
             <% if @all_sources %>
               <tfoot>
                 <tr class="all-sources">
-                  <th scope="row" data-column="role">All sources</th>
+                  <th scope="row" colspan="2" data-column="role">All sources</th>
                   <% Report.internal("fingerprint_all_sources").columns.each do |column| %>
                     <td data-column="<%= column.key %>" class="<%= 'numeric' if column.numeric? %>"><%= report_cell(@query, column, @all_sources[column.key]) %></td>
                   <% end %>
@@ -135,7 +144,7 @@
               <% all_columns = Report.internal("fingerprint_all_sources").columns %>
               <tfoot>
                 <tr class="all-sources unavailable">
-                  <th scope="row" data-column="role">All sources</th>
+                  <th scope="row" colspan="2" data-column="role">All sources</th>
                   <td colspan="<%= all_columns.size %>">Timed out</td>
                 </tr>
               </tfoot>

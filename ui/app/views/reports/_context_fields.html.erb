@@ -1,0 +1,13 @@
+<%# The context filter and Ignore untagged context, part of the dataset. With chips (the workbench), the filter shows as chips with remove links; otherwise its contexts ride along as hidden inputs. %>
+<% if local_assigns.fetch(:chips, true) %>
+  <%= context_filter_chips(query) { |left| reports_path({ report: query.report.key }.merge(query.link_params(context: left))) } %>
+<% else %>
+  <% query.contexts.each do |context| %><%= hidden_field_tag "context[]", context, id: nil %><% end %>
+<% end %>
+<div class="field report-untagged">
+  <label for="ignore_untagged" class="checkbox-label">
+    <%= check_box_tag :ignore_untagged, "1", query.ignore_untagged?, aria: { describedby: "ignore_untagged-hint" } %>
+    Ignore untagged context
+  </label>
+  <p class="hint" id="ignore_untagged-hint">Leaves out calls pg_stat_statement_context didn't tag, and every call from a database without it, from the context lists and the totals. Totals then leave out untagged calls. Outliers ignores this.</p>
+</div>

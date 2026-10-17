@@ -85,6 +85,7 @@ func concat(parts ...[]float64) []float64 {
 // readOutlierMaps runs outliers.sql and returns each row by column name.
 func readOutlierMaps(t *testing.T, conn *pgx.Conn, args ...any) []map[string]any {
 	t.Helper()
+	args = fillReportArgs("outliers.sql", args)
 	query, err := os.ReadFile("outliers.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +115,7 @@ func readOutlierMaps(t *testing.T, conn *pgx.Conn, args ...any) []map[string]any
 
 func outliersForRange(t *testing.T, conn *pgx.Conn, cluster string, start, end time.Time) []map[string]any {
 	t.Helper()
-	return readOutlierMaps(t, conn, "canvas", testdb.ReportEnvironment, cluster, start, end, 50,
+	return readOutlierMaps(t, conn, []string{"canvas"}, []string{testdb.ReportEnvironment}, []string{cluster}, start, end, 50,
 		defaultSigma, defaultMinHistory, defaultRatio, nil, nil)
 }
 

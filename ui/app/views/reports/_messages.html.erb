@@ -19,3 +19,21 @@
     </p>
   </div>
 <% end %>
+
+<% if query.errors.none? && query.stale_values.any? %>
+  <div class="report-stale alert alert-warning">
+    <p class="alert-title">Ignored filters</p>
+    <% if query.sources_empty? %>
+      <p>No source has these under the other filters. A field has only these values, so no source matches, so the report is empty:</p>
+    <% else %>
+      <p>No source has these under the other filters, so the report ignores them:</p>
+    <% end %>
+    <ul>
+      <% query.stale_values.each do |field, values| %>
+        <% values.each do |value| %>
+          <li><%= ReportQuery.human_attribute_name(field) %> <%= value %></li>
+        <% end %>
+      <% end %>
+    </ul>
+  </div>
+<% end %>

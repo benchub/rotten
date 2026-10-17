@@ -13,6 +13,7 @@ import (
 
 func readFingerprintContexts(t *testing.T, conn *pgx.Conn, args ...any) []testdb.SeedContext {
 	t.Helper()
+	args = fillReportArgs("fingerprint_contexts.sql", args)
 	query, err := os.ReadFile("fingerprint_contexts.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +52,7 @@ func TestFingerprintContextsAcrossRoles(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readFingerprintContexts(t, conn,
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 		5, nil,
@@ -72,7 +73,7 @@ func TestFingerprintContextsAllWithinLimit(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readFingerprintContexts(t, conn,
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 		50, nil,
@@ -98,10 +99,10 @@ func TestFingerprintContextsFilterByRoleAndFingerprint(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readFingerprintContexts(t, conn,
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
-		50, testdb.ReportReplicaRole,
+		50, []string{testdb.ReportReplicaRole},
 	)
 	want := []testdb.SeedContext{{Controller: "grades", Action: "show", C: 200}}
 	if !reflect.DeepEqual(got, want) {
@@ -109,7 +110,7 @@ func TestFingerprintContextsFilterByRoleAndFingerprint(t *testing.T) {
 	}
 
 	got = readFingerprintContexts(t, conn,
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["jobs"],
 		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 		50, nil,
@@ -129,7 +130,7 @@ func TestFingerprintContextsExcludeWindowsOutsideRange(t *testing.T) {
 	// starts before the range, the one 50 minutes back straddles its end,
 	// and the replica's 45 minutes back starts at its end.
 	got := readFingerprintContexts(t, conn,
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-4*time.Hour+time.Minute), fixture.Anchor.Add(-45*time.Minute),
 		50, nil,
@@ -147,7 +148,7 @@ func TestFingerprintContextsPrunePartitions(t *testing.T) {
 
 	start, end := fixedMidnightCrossingRange()
 	plan := explainReport(t, conn, "fingerprint_contexts.sql",
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		start, end,
 		50, nil,

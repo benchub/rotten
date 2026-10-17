@@ -125,7 +125,7 @@ func TestSubmitHarvestStoresUntaggedContextForReports(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := f.owner.Query(context.Background(), string(query),
-		"submit", "test", "cluster", fpID, start.Add(-time.Second), start.Add(time.Minute), 10, nil)
+		[]string{"submit"}, []string{"test"}, []string{"cluster"}, fpID, start.Add(-time.Second), start.Add(time.Minute), 10, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,8 @@
 require "rails_helper"
 
-# The report form's source dropdowns narrow to the sources that exist as the
-# user picks a project, environment and cluster.
+# The report form's source fields: each is a dropdown that adds its values as
+# chips. The dropdowns narrow to the sources that exist under the chips of
+# the fields before them, and a chip those rule out stays, marked stale.
 RSpec.describe "Report source picker", type: :system do
   # Beyond ReportFixture's production sources: canvas/production/{13,7}/
   # {primary,replica} and bridge/production/13/primary.
@@ -26,111 +27,125 @@ RSpec.describe "Report source picker", type: :system do
     page.driver.browser.logs.get(:browser).map(&:message).grep(/Content Security Policy/i)
   end
 
-  it "limits the environments to the picked project's" do
-    visit "/reports/top_by_calls"
-    expect(page).to have_select("Project", options: %w[bridge canvas])
+  def report_rows(*columns)
+    within("table.report") do
+      all("tbody tr").map { |row| columns.map { |column| row.find("td[data-column='#{column}']").text } }
+    end
+  end
 
-    select "bridge", from: "Project"
-    expect(page).to have_select("Environment", options: %w[beta production])
+  def run_top_by_calls
+    choose "Top queries by calls"
+    click_button "Run report"
+    expect(page).to have_css("h2.report-title", text: "Top queries by calls")
+  end
 
+  it "adds picked clusters as chips, removes one, then All empties them, and the rows follow each step" do
+    visit "/reports"
     select "canvas", from: "Project"
-    expect(page).to have_select("Environment", options: %w[production staging])
+    select "production", from: "Environment"
+    select "13", from: "Cluster"
+    select "7", from: "Cluster"
+    expect(source_chip_states("Cluster")).to eq([["13", false], ["7", false]])
+    expect(page).to have_select("Cluster", with_options: ["All clusters"])
+    run_top_by_calls
+    expect(page).to have_current_path(/cluster%5B%5D=13&cluster%5B%5D=7/)
+    expect(report_rows("example", "calls")).to include(["select * from users where id = $1", "1,300"],
+                                                       ["select * from submissions where assignment_id = $1", "20"])
+
+    click_button "Remove cluster 13"
+    expect(source_chip_states("Cluster")).to eq([["7", false]])
+    run_top_by_calls
+    expect(report_rows("example", "calls")).to eq([["select * from users where id = $1", "200"],
+                                                   ["select * from submissions where assignment_id = $1", "20"]])
+
+    select "All clusters", from: "Cluster"
+    expect(source_chip_states("Cluster")).to be_empty
+    run_top_by_calls
+    expect(page).to have_no_current_path(/cluster%5B%5D=[^&]/)
+    expect(report_rows("example", "calls")).to include(["select * from users where id = $1", "1,300"],
+                                                       ["update delayed_jobs set locked_by = $1 where id = $2", "85"])
     expect(csp_violations).to be_empty
   end
 
-  it "limits the clusters to the picked environment's and the roles to the picked cluster's" do
-    visit "/reports/top_by_calls"
+  it "doesn't add a value twice, and the chip's remove button works from the keyboard" do
+    visit "/reports"
     select "canvas", from: "Project"
-    select "staging", from: "Environment"
-    expect(page).to have_select("Cluster", options: %w[13 21])
+    expect(page).to have_no_select("Project", with_options: ["canvas"])
+    expect(source_chip_states("Project")).to eq([["canvas", false]])
 
-    select "21", from: "Cluster"
-    expect(page).to have_select("Role", options: ["All roles", "primary"])
-
-    select "13", from: "Cluster"
-    expect(page).to have_select("Role", options: ["All roles", "replica"])
-
-    select "production", from: "Environment"
-    expect(page).to have_select("Cluster", options: %w[13 7])
-    select "13", from: "Cluster"
-    expect(page).to have_select("Role", options: ["All roles", "primary", "replica"])
+    find_button("Remove project canvas").send_keys(:enter)
+    expect(source_chip_states("Project")).to be_empty
+    expect(page).to have_select("Project", selected: "All projects", with_options: %w[bridge canvas])
   end
 
-  it "resets the choices that no longer exist when an earlier one changes" do
-    visit "/reports/top_by_calls"
-    select "canvas", from: "Project"
-    select "production", from: "Environment"
-    select "13", from: "Cluster"
-    select "replica", from: "Role"
+  it "narrows each dropdown to the sources under the chips before it" do
+    visit "/reports"
+    expect(page).to have_select("Environment", options: ["All environments", "beta", "production", "staging"])
 
     select "bridge", from: "Project"
-    expect(page).to have_select("Environment", selected: "production", options: %w[beta production])
-    expect(page).to have_select("Cluster", selected: "13", options: %w[13])
-    expect(page).to have_select("Role", selected: "All roles", options: ["All roles", "primary"])
-
-    select "beta", from: "Environment"
-    expect(page).to have_select("Cluster", selected: "5", options: %w[5])
-
+    expect(page).to have_select("Environment", options: ["All environments", "beta", "production"])
     select "canvas", from: "Project"
-    expect(page).to have_select("Environment", selected: "production", options: %w[production staging])
-    expect(page).to have_select("Cluster", selected: "13", options: %w[13 7])
+    expect(page).to have_select("Environment", options: ["All environments", "beta", "production", "staging"])
+
+    click_button "Remove project bridge"
+    expect(page).to have_select("Environment", options: ["All environments", "production", "staging"])
+    select "staging", from: "Environment"
+    expect(page).to have_select("Cluster", options: ["All clusters", "13", "21"])
+    select "21", from: "Cluster"
+    expect(page).to have_select("Role", with_options: ["All roles", "primary"])
+    expect(page).to have_no_select("Role", with_options: ["replica"])
   end
 
-  it "keeps a selection from the query string and narrows around it" do
-    visit "/reports/top_by_calls?project=canvas&environment=staging&cluster=21&role=primary&range=3h"
+  it "marks a chip the earlier fields rule out as stale, and the server ignores it" do
+    visit "/reports"
+    select "13", from: "Cluster"
+    select "7", from: "Cluster"
+    select "bridge", from: "Project"
+    expect(source_chip_states("Cluster")).to eq([["13", false], ["7", true]])
+    expect(page).to have_css(".source-chip-stale", text: "ignored")
 
-    expect(page).to have_select("Project", selected: "canvas")
-    expect(page).to have_select("Environment", selected: "staging", options: %w[production staging])
-    expect(page).to have_select("Cluster", selected: "21", options: %w[13 21])
-    expect(page).to have_select("Role", selected: "primary", options: ["All roles", "primary"])
+    run_top_by_calls
+    expect(page).to have_css(".report-stale", text: "Cluster 7")
+    expect(source_chip_states("Cluster")).to eq([["13", false], ["7", true]])
+    expect(report_rows("example", "calls")).to eq([["select * from courses where account_id = $1", "75"],
+                                                   ["select * from users where id = $1", "25"]])
+  end
+
+  it "shows no rows when a field's only chip is ruled out by the other filters" do
+    visit "/reports"
+    select "canvas", from: "Project"
+    select "7", from: "Cluster"
+    click_button "Remove project canvas"
+    select "bridge", from: "Project"
+    expect(source_chip_states("Cluster")).to eq([["7", true]])
+
+    run_top_by_calls
+    expect(page).to have_css(".report-stale", text: "so the report is empty")
+    expect(page).to have_no_css("table.report tbody tr")
+  end
+
+  it "keeps the chips from the query string" do
+    visit "/reports?report=top_by_calls&project[]=canvas&environment[]=staging&cluster[]=21&role[]=primary&range=3h"
+
+    expect(source_chip_states("Project")).to eq([["canvas", false]])
+    expect(source_chip_states("Environment")).to eq([["staging", false]])
+    expect(source_chip_states("Cluster")).to eq([["21", false]])
+    expect(source_chip_states("Role")).to eq([["primary", false]])
     expect(page).to have_no_css(".report-errors")
     expect(page).to have_text("No rows for this source and time range.")
 
     click_button "Run report"
-    expect(page).to have_current_path(/cluster=21/)
-    expect(page).to have_select("Cluster", selected: "21", options: %w[13 21])
+    expect(page).to have_current_path(/cluster%5B%5D=21/)
+    expect(source_chip_states("Cluster")).to eq([["21", false]])
     expect(csp_violations).to be_empty
-  end
-
-  it "keeps a cluster from the query string that doesn't exist, so the form matches the error" do
-    visit "/reports/top_by_calls?project=canvas&environment=staging&cluster=7&range=3h"
-
-    expect(page).to have_css(".report-errors", text: "No source matches that project, environment and cluster")
-    expect(page).to have_select("Environment", selected: "staging", options: %w[production staging])
-    expect(page).to have_select("Cluster", selected: "7", options: %w[13 21 7])
-
-    click_button "Run report"
-    expect(page).to have_current_path(/cluster=7/)
-    expect(page).to have_css(".report-errors", text: "No source matches that project, environment and cluster")
-
-    select "production", from: "Environment"
-    expect(page).to have_select("Cluster", selected: "7", options: %w[13 7])
-    select "staging", from: "Environment"
-    expect(page).to have_select("Cluster", selected: "13", options: %w[13 21])
-  end
-
-  it "keeps a role from the query string that the cluster doesn't have, so the query isn't widened" do
-    visit "/reports/top_by_calls?project=canvas&environment=staging&cluster=21&role=replica&range=3h"
-
-    expect(page).to have_css(".report-errors", text: "Role is not a role of that source")
-    expect(page).to have_select("Role", selected: "replica", options: ["All roles", "primary", "replica"])
-
-    click_button "Run report"
-    expect(page).to have_current_path(/role=replica/)
-    expect(page).to have_css(".report-errors", text: "Role is not a role of that source")
-
-    select "13", from: "Cluster"
-    expect(page).to have_select("Role", selected: "replica", options: ["All roles", "replica"])
-    select "21", from: "Cluster"
-    expect(page).to have_select("Role", selected: "All roles", options: ["All roles", "primary"])
   end
 
   it "narrows the fingerprint page's picker too" do
     visit "/fingerprints/#{@fixture.fingerprint_ids.fetch('users')}"
 
     select "bridge", from: "Project"
-    expect(page).to have_select("Environment", options: %w[beta production])
+    expect(page).to have_select("Environment", options: ["All environments", "beta", "production"])
     select "beta", from: "Environment"
-    expect(page).to have_select("Cluster", selected: "5", options: %w[5])
+    expect(page).to have_select("Cluster", options: ["All clusters", "5"])
   end
 end

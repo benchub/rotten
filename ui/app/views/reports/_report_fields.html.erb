@@ -18,5 +18,3 @@
   <%= label_tag :bucket, "Bucket" %>
   <%= select_tag :bucket, options_for_select([["Auto", ""]] + ReportQuery::BUCKETS.map { |key, (label, _)| [label, key] }, query.bucket.to_s) %>
 <% end %>
-<%# The context a time series is restricted to rides along with the other choices. %>
-<%= hidden_field_tag :context, query.context, id: nil if query.report.timeseries? && query.context.present? %>

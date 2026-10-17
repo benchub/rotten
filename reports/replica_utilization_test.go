@@ -35,6 +35,7 @@ const untaggedName = "<untagged>"
 
 func readReplicaUtilization(t *testing.T, conn *pgx.Conn, path string, args ...any) []replicaUtilizationRow {
 	t.Helper()
+	args = fillReportArgs(path, args)
 	query, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +52,8 @@ func readReplicaUtilization(t *testing.T, conn *pgx.Conn, path string, args ...a
 			r        replicaUtilizationRow
 			name     *string
 			untagged bool
+			project  string
+			env      string
 		)
 		if err := rows.Scan(
 			&name,
@@ -66,6 +69,8 @@ func readReplicaUtilization(t *testing.T, conn *pgx.Conn, path string, args ...a
 			&r.PrimaryTimePercent,
 			&r.ReplicaTimePercent,
 			&untagged,
+			&project,
+			&env,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -91,9 +96,9 @@ func TestReplicaUtilizationByJob(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readReplicaUtilization(t, conn, "replica_utilization_by_job.sql",
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
@@ -117,9 +122,9 @@ func TestReplicaUtilizationByControllerAction(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readReplicaUtilization(t, conn, "replica_utilization_by_controller_action.sql",
-		"canvas",
-		testdb.ReportEnvironment,
-		"7",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"7"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
@@ -142,9 +147,9 @@ func TestReplicaUtilizationByControllerActionSplitsEventTimeByContextCounts(t *t
 	conn := db.Connect(t)
 
 	got := readReplicaUtilization(t, conn, "replica_utilization_by_controller_action.sql",
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
@@ -182,9 +187,9 @@ func TestReplicaUtilizationByJobDoesNotDoubleCountRepeatedJobContexts(t *testing
 	})
 
 	got := readReplicaUtilization(t, conn, "replica_utilization_by_job.sql",
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
@@ -211,9 +216,9 @@ func TestReplicaUtilizationPercentagesSumToOneHundredAfterRounding(t *testing.T)
 	})
 
 	got := readReplicaUtilization(t, conn, "replica_utilization_by_job.sql",
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		testdb.ReportPrimaryRole,
@@ -244,9 +249,9 @@ func TestReplicaUtilizationPrunesEventContextPartitions(t *testing.T) {
 	} {
 		t.Run(report, func(t *testing.T) {
 			plan := explainReport(t, conn, report,
-				"canvas",
-				testdb.ReportEnvironment,
-				"13",
+				[]string{"canvas"},
+				[]string{testdb.ReportEnvironment},
+				[]string{"13"},
 				start,
 				end,
 				testdb.ReportPrimaryRole,
@@ -275,9 +280,9 @@ func TestReplicaUtilizationPrunesFixedMidnightCrossingRange(t *testing.T) {
 	} {
 		t.Run(report, func(t *testing.T) {
 			plan := explainReport(t, conn, report,
-				"canvas",
-				testdb.ReportEnvironment,
-				"13",
+				[]string{"canvas"},
+				[]string{testdb.ReportEnvironment},
+				[]string{"13"},
 				start,
 				end,
 				testdb.ReportPrimaryRole,
@@ -348,7 +353,7 @@ func TestReplicaUtilizationCountsContextsRepairedFromAPreMigrationServer(t *test
 		t.Helper()
 		byName := map[string]replicaUtilizationRow{}
 		for _, row := range readReplicaUtilization(t, conn, "replica_utilization_by_controller_action.sql",
-			"canvas", testdb.ReportEnvironment, "7",
+			[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"7"},
 			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 			testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil) {
 			byName[row.Name] = row
@@ -435,6 +440,7 @@ func assertFloat(t *testing.T, got float64, want float64, label string) {
 
 func explainReport(t *testing.T, conn *pgx.Conn, path string, args ...any) string {
 	t.Helper()
+	args = fillReportArgs(path, args)
 	query, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -457,4 +463,43 @@ func explainReport(t *testing.T, conn *pgx.Conn, path string, args ...any) strin
 		t.Fatal(err)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// Two projects can share a cluster name. Their rows stay apart: a job on
+// canvas cluster 13 and the same job on bridge cluster 13 are two rows.
+func TestReplicaUtilizationKeepsProjectsApart(t *testing.T) {
+	db := testdb.StartRotten(t)
+	fixture := testdb.SeedReports(t, db)
+	conn := db.Connect(t)
+
+	insertUtilizationEvent(t, conn, fixture, "bridge13p", fixture.Anchor.Add(-25*time.Minute), 7, 70, []utilizationContext{
+		{JobTag: "SendEmail", Count: 7},
+	})
+	query, err := os.ReadFile("replica_utilization_by_job.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := conn.Query(context.Background(), string(query), nil, []string{testdb.ReportEnvironment}, []string{"13"},
+		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, []string{"^SendEmail$"}, nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for rows.Next() {
+		vals, err := rows.Values()
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := map[string]any{}
+		for i, f := range rows.FieldDescriptions() {
+			row[f.Name] = vals[i]
+		}
+		got[row["project"].(string)+"/"+row["cluster"].(string)] += row["primary_calls"].(float64)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]float64{"canvas/13": 30, "bridge/13": 7}; !reflect.DeepEqual(got, want) {
+		t.Errorf("SendEmail primary calls by project/cluster = %v, want %v", got, want)
+	}
 }

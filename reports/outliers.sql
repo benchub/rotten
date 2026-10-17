@@ -2,9 +2,9 @@
 -- history on the same source.
 --
 -- Parameters:
---   $1 project
---   $2 environment
---   $3 cluster
+--   $1 projects (text[]), or NULL for every project
+--   $2 environments (text[]), or NULL for every environment
+--   $3 clusters (text[]), or NULL for every cluster
 --   $4 window start, inclusive
 --   $5 window end, exclusive for starts; windows must also end at or before it
 --   $6 row limit
@@ -12,13 +12,17 @@
 --   $8 minimum history samples before the range (recommended default: 30)
 --   $9 minimum slowdown: a window must also be more than this many times the
 --      history's median (recommended default: 2)
---   $10 role, or NULL for every role in the project, environment and cluster
---   $11 match: a case-insensitive POSIX regex (~*), or NULL for every query.
+--   $10 roles (text[]), or NULL for every role in the sources above
+--   $11 match: case-insensitive POSIX regexes (~*, text[]), OR'd, or NULL for
+--      every query.
 --      A query matches if its normalized text does, or if it ran in the range
 --      on the same source in a context whose controller#action or job tag does. It filters
 --      before the row limit.
 --      The untagged context never matches: it has no controller, action or
 --      job tag.
+--   $12 exclude: case-insensitive POSIX regexes (text[]), or NULL for none. A
+--      query any of them matches, the same way, is dropped before match
+--      applies.
 --
 -- Contexts:
 --   context lists a fingerprint's top five contexts by calls. The untagged
@@ -72,10 +76,10 @@
 with sources as (
   select id, project, environment, cluster, role
   from rotten.logical_sources
-  where project = $1
-    and environment = $2
-    and cluster = $3
-    and ($10::text is null or role = $10::text)
+  where ($1::text[] is null or project = any($1::text[]))
+    and ($2::text[] is null or environment = any($2::text[]))
+    and ($3::text[] is null or cluster = any($3::text[]))
+    and ($10::text[] is null or role = any($10::text[]))
 ), context_events as (
   -- In-range events with a context, grouped by context, so $11 runs once per
   -- distinct controller, action and job tag rather than once per
@@ -84,27 +88,40 @@ with sources as (
   select ec.controller_id, ec.action_id, ec.job_tag_id, array_agg(ec.event_id) as event_ids
   from rotten.event_context ec
   join sources s on s.id = ec.logical_source_id
-  where $11::text is not null
+  where ($11::text[] is not null or $12::text[] is not null)
     and ec.observed_window_start >= $4::timestamptz
     and ec.observed_window_start < $5::timestamptz
     and ec.observed_window_end <= $5::timestamptz
     and (ec.controller_id is not null or ec.action_id is not null or ec.job_tag_id is not null)
   group by ec.controller_id, ec.action_id, ec.job_tag_id
-), matched_events as materialized (
-  -- Events in the range with a context matching $11: controller#action, or
-  -- job tag. Empty when $11 is NULL. Materialized so aggregated_all's IN
-  -- probes one hash of it, built once. A left join to it instead lets a
-  -- generic plan nest-loop over it when many sources make the per-source
-  -- event estimate small (task 20261005-150200-1).
-  select distinct u.event_id
+), context_names as (
+  -- Each context's names: controller#action (NULL for a job tag alone) and
+  -- job tag.
+  select
+    k.event_ids,
+    case when k.controller_id is not null or k.action_id is not null
+      then coalesce(c.controller, '') || '#' || coalesce(ac.action, '') end as controller_action,
+    jt.job_tag
   from context_events k
   left join rotten.controllers c on c.id = k.controller_id
   left join rotten.actions ac on ac.id = k.action_id
   left join rotten.job_tags jt on jt.id = k.job_tag_id
+), matched_events as materialized (
+  -- Events in the range with a context one of $11's patterns matches:
+  -- controller#action, or job tag. Empty when $11 is NULL. Materialized so
+  -- aggregated_all's IN probes one hash of it, built once. A left join to it
+  -- instead lets a generic plan nest-loop over it when many sources make the
+  -- per-source event estimate small (task 20261005-150200-1).
+  select distinct u.event_id
+  from context_names k
   cross join lateral unnest(k.event_ids) as u(event_id)
-  where ((k.controller_id is not null or k.action_id is not null)
-      and coalesce(c.controller, '') || '#' || coalesce(ac.action, '') ~* $11::text)
-    or jt.job_tag ~* $11::text
+  where k.controller_action ~* any($11::text[]) or k.job_tag ~* any($11::text[])
+), excluded_events as materialized (
+  -- The same for $12: events in a context an exclude pattern matches.
+  select distinct u.event_id
+  from context_names k
+  cross join lateral unnest(k.event_ids) as u(event_id)
+  where k.controller_action ~* any($12::text[]) or k.job_tag ~* any($12::text[])
 ), aggregated_all as (
   -- Grouped by the two ids only; the source's text columns are joined after.
   -- Sorting every in-range event by them as well is much slower.
@@ -115,7 +132,8 @@ with sources as (
     sum(e.time)::double precision as total_ms,
     avg(e.time / e.calls)::double precision as avg_ms_per_call,
     max(e.time / e.calls)::double precision as worst_ms_per_call,
-    bool_or(e.id in (select event_id from matched_events)) as context_matched
+    bool_or(e.id in (select event_id from matched_events)) as context_matched,
+    bool_or(e.id in (select event_id from excluded_events)) as context_excluded
   from rotten.events e
   join sources s on s.id = e.logical_source_id
   -- Only windows fully inside [start, end) are counted; straddling windows are excluded on purpose.
@@ -125,20 +143,31 @@ with sources as (
     and e.calls > 0
   group by e.logical_source_id, e.fingerprint_id
 ), text_matched as (
-  -- Fingerprints in the range, without a matching context, whose query text
-  -- matches $11. Probed by id, so the fingerprints table isn't scanned. A
+  -- Fingerprints in the range, without a matching or excluded context, whose
+  -- query text one of $11's patterns matches. Probed by id, so the fingerprints table isn't scanned. A
   -- correlated lookup per group, in aggregated's HAVING, costs the same at run
   -- time, but the planner prices it per estimated group, which pushes the
   -- plan's cost past jit_optimize_above_cost and adds over a second of JIT.
   select f.id
   from rotten.fingerprints f
-  where $11::text is not null
+  where $11::text[] is not null
     and f.id = any(array(
-      select a.fingerprint_id from aggregated_all a where not a.context_matched))
-    and f.normalized ~* $11::text
+      select a.fingerprint_id from aggregated_all a where not a.context_matched and not a.context_excluded))
+    and f.normalized ~* any($11::text[])
+), text_excluded as (
+  -- Fingerprints in the range, without an excluded context, whose query text
+  -- one of $12's patterns matches. Probed by id, as text_matched is.
+  select f.id
+  from rotten.fingerprints f
+  where $12::text[] is not null
+    and f.id = any(array(
+      select a.fingerprint_id from aggregated_all a where not a.context_excluded))
+    and f.normalized ~* any($12::text[])
 ), aggregated as (
-  -- $11 keeps a group only if one of its events ran in a matching context, or
-  -- its query text matches. NULL keeps every group.
+  -- $12 drops a group if one of its events ran in an excluded context, or its
+  -- query text matches an exclude pattern. Then $11 keeps a group only if one
+  -- of its events ran in a matching context, or its query text matches.
+  -- NULL keeps every group.
   select
     a.logical_source_id,
     a.fingerprint_id,
@@ -147,9 +176,11 @@ with sources as (
     a.avg_ms_per_call,
     a.worst_ms_per_call
   from aggregated_all a
-  where $11::text is null
-    or a.context_matched
-    or a.fingerprint_id in (select id from text_matched)
+  where not a.context_excluded
+    and a.fingerprint_id not in (select id from text_excluded)
+    and ($11::text[] is null
+      or a.context_matched
+      or a.fingerprint_id in (select id from text_matched))
 ), history as (
   -- Every fingerprint's samples on the sources, read by source and window,
   -- then grouped. Joining to aggregated first would invite one index probe
@@ -166,9 +197,9 @@ with sources as (
     and h.observed_window_start < $4::timestamptz
     and h.observed_window_end <= $4::timestamptz
     and h.calls > 0
-    -- With $11, only the kept groups' samples are grouped, so the aggregate
-    -- stays in memory.
-    and ($11::text is null
+    -- With $11 or $12, only the kept groups' samples are grouped, so the
+    -- aggregate stays in memory.
+    and (($11::text[] is null and $12::text[] is null)
       or (h.logical_source_id, h.fingerprint_id) in (select logical_source_id, fingerprint_id from aggregated))
   group by h.logical_source_id, h.fingerprint_id
 ), short as (

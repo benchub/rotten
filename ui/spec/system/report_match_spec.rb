@@ -17,7 +17,7 @@ RSpec.describe "Report match filter", type: :system do
     choose "Top queries by calls"
     click_button "Run report"
     # The new URL shows the new page loaded.
-    expect(page).to have_current_path(/[?&]match=Users%7C%23index(&|\z)/)
+    expect(page).to have_current_path(/[?&]match%5B%5D=Users%7C%23index(&|\z)/)
 
     within("table.report") do
       expect(all("td[data-column=example]").map(&:text)).to eq([
@@ -33,11 +33,11 @@ RSpec.describe "Report match filter", type: :system do
     expect(page).to have_css("details.query-disclosure[open] .query-text mark", text: "users")
 
     choose "Replica utilization by controller and action"
-    expect(page).to have_field("Match", with: "Users|#index")
+    expect(page).to have_css("ul[aria-label='Match patterns'] code", exact_text: "Users|#index")
     click_button "Run report"
     expect(page).to have_current_path(/[?&]report=replica_utilization_by_controller_action(&|\z)/)
 
-    expect(page).to have_field("Match", with: "Users|#index")
+    expect(page).to have_css("ul[aria-label='Match patterns'] code", exact_text: "Users|#index")
     within("table.report") do
       names = all("td[data-column=controller_action]").map(&:text)
       expect(names).to contain_exactly("users#show", "users#index", "grades#index", "courses#index")
@@ -48,7 +48,7 @@ RSpec.describe "Report match filter", type: :system do
     fill_in "Fingerprint ID", with: @fixture.fingerprint_ids.fetch("users").to_s
     click_button "Run report"
     expect(page).to have_current_path(/[?&]report=fingerprint_timeseries(&|\z)/)
-    expect(page).to have_css(".report-ignored-match", text: "Match was ignored")
-    expect(page).to have_field("Match", with: "Users|#index")
+    expect(page).to have_css(".report-ignored-match", text: "Match and Exclude were ignored")
+    expect(page).to have_css("ul[aria-label='Match patterns'] code", exact_text: "Users|#index")
   end
 end

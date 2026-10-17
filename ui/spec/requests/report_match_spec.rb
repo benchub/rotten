@@ -102,7 +102,7 @@ RSpec.describe "Report match filter", type: :request do
 
       expect(response).to have_http_status(:ok)
       expect(doc.css("table.report tbody tr")).not_to be_empty
-      expect(doc.at_css(".report-ignored-match").text).to include("Match was ignored")
+      expect(doc.at_css(".report-ignored-match").text).to include("Match and Exclude were ignored")
     end
 
     it "doesn't run the regex check" do
@@ -124,9 +124,9 @@ RSpec.describe "Report match filter", type: :request do
       get "/reports", params: source_params.merge(report: "top_by_calls", match: "users(")
 
       expect(response).to have_http_status(:unprocessable_content)
-      expect(doc.at_css(".report-errors").text).to include("Match is not a valid regular expression")
+      expect(doc.at_css(".report-errors").text).to include(%q{Match pattern "users(" is not a valid regular expression})
       expect(doc.at_css(".report-errors").text).to include("parentheses () not balanced")
-      expect(doc.at_css("input[name=match]")["value"]).to eq("users(")
+      expect(doc.at_css("input[name='match[]'].pattern-value")["value"]).to eq("users(")
     end
 
     it "answers 422 for every report that uses match" do
@@ -134,7 +134,7 @@ RSpec.describe "Report match filter", type: :request do
         get "/reports", params: source_params.merge(report: key, match: "a{3,2}")
 
         expect(response).to have_http_status(:unprocessable_content), key
-        expect(response.body).to include("Match is not a valid regular expression"), key
+        expect(response.body).to include("is not a valid regular expression"), key
       end
     end
 
@@ -142,7 +142,7 @@ RSpec.describe "Report match filter", type: :request do
       get "/reports", params: source_params.merge(report: "top_by_calls", match: "a" * 201)
 
       expect(response).to have_http_status(:unprocessable_content)
-      expect(response.body).to include("Match is too long (at most 200 characters)")
+      expect(response.body).to include("is too long (at most 200 characters)")
 
       get "/reports", params: source_params.merge(report: "top_by_calls", match: "a" * 200)
       expect(response).to have_http_status(:ok)
@@ -151,7 +151,7 @@ RSpec.describe "Report match filter", type: :request do
     it "keeps the match exactly as typed, leading and trailing spaces included" do
       get "/reports", params: source_params.merge(report: "top_by_calls", match: " from users ")
 
-      expect(doc.at_css("input[name=match]")["value"]).to eq(" from users ")
+      expect(doc.at_css("input[name='match[]'].pattern-value")["value"]).to eq(" from users ")
       expect(column_text("example")).to eq(["select * from users where id = $1"])
     end
 
@@ -197,16 +197,16 @@ RSpec.describe "Report match filter", type: :request do
 
       expect(fingerprint_ids.size).to eq(ReportQuery::ROW_LIMIT)
       expect(doc.css("td[data-column=example] mark").map(&:text)).to include(" ")
-      expect(doc.at_css("input[name=match]")["value"]).to eq(" ")
+      expect(doc.at_css("input[name='match[]'].pattern-value")["value"]).to eq(" ")
       link = doc.at_css("td[data-column=fingerprint_id] a")["href"]
-      expect(Rack::Utils.parse_query(URI(link).query)).to include("match" => " ")
+      expect(Rack::Utils.parse_query(URI(link).query)).to include("match[]" => " ")
       sort = doc.at_css("th[data-column=calls] a")["href"]
-      expect(Rack::Utils.parse_query(URI(sort).query)).to include("match" => " ")
+      expect(Rack::Utils.parse_query(URI(sort).query)).to include("match[]" => " ")
 
       get link
 
       expect(response).to have_http_status(:ok)
-      expect(doc.at_css("form.report-form input[type=hidden][name=match]")["value"]).to eq(" ")
+      expect(doc.at_css("form.report-form input[type=hidden][name='match[]']")["value"]).to eq(" ")
     end
 
     it "says the time series ignored it" do
@@ -222,9 +222,9 @@ RSpec.describe "Report match filter", type: :request do
       get "/reports", params: source_params.merge(report: "top_by_calls", match: "needle")
 
       link = doc.at_css("td[data-column=fingerprint_id] a")["href"]
-      expect(Rack::Utils.parse_query(URI(link).query)).to include("match" => "needle")
+      expect(Rack::Utils.parse_query(URI(link).query)).to include("match[]" => "needle")
       sort = doc.at_css("th[data-column=calls] a")["href"]
-      expect(Rack::Utils.parse_query(URI(sort).query)).to include("match" => "needle")
+      expect(Rack::Utils.parse_query(URI(sort).query)).to include("match[]" => "needle")
     end
 
     it "keeps the match on the fingerprint page: in its form, its zoom and its table link, without filtering it" do
@@ -232,11 +232,11 @@ RSpec.describe "Report match filter", type: :request do
       get "/fingerprints/#{id}", params: source_params.merge(match: "needle")
 
       expect(response).to have_http_status(:ok)
-      expect(doc.at_css("form.report-form input[type=hidden][name=match]")["value"]).to eq("needle")
+      expect(doc.at_css("form.report-form input[type=hidden][name='match[]']")["value"]).to eq("needle")
       zoom = doc.at_css("[data-controller=chart]")["data-chart-zoom-url-value"]
-      expect(Rack::Utils.parse_query(URI(zoom).query)).to include("match" => "needle")
+      expect(Rack::Utils.parse_query(URI(zoom).query)).to include("match[]" => "needle")
       table = doc.css("a").find { |a| a.text == "Time series as a table" }["href"]
-      expect(Rack::Utils.parse_query(URI(table).query)).to include("match" => "needle")
+      expect(Rack::Utils.parse_query(URI(table).query)).to include("match[]" => "needle")
     end
 
     it "shows the fingerprint page whatever the match, even one Postgres can't compile" do

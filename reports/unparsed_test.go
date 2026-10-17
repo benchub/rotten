@@ -13,6 +13,7 @@ import (
 // readReportMaps runs a report and returns its rows keyed by column name.
 func readReportMaps(t *testing.T, conn *pgx.Conn, file string, args ...any) []map[string]any {
 	t.Helper()
+	args = fillReportArgs(file, args)
 	query, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +59,7 @@ func TestReportsFlagUnparsedFingerprints(t *testing.T) {
 	start, end := fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor
 
 	for _, file := range []string{"top_by_calls.sql", "top_by_total_time.sql"} {
-		rows := readReportMaps(t, conn, file, "canvas", testdb.ReportEnvironment, "13", start, end, 10, nil, nil)
+		rows := readReportMaps(t, conn, file, []string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"}, start, end, 10, nil, nil)
 		if len(rows) < 2 {
 			t.Fatalf("%s: want several rows, got %v", file, rows)
 		}
@@ -69,7 +70,7 @@ func TestReportsFlagUnparsedFingerprints(t *testing.T) {
 			}
 		}
 	}
-	rows := readReportMaps(t, conn, "outliers.sql", "canvas", testdb.ReportEnvironment, "7", start, end, 10,
+	rows := readReportMaps(t, conn, "outliers.sql", []string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"7"}, start, end, 10,
 		defaultSigma, defaultMinHistory, defaultRatio, nil, nil)
 	if len(rows) != 1 || rows[0]["fingerprint_id"] != fixture.FingerprintID["slow"] || rows[0]["unparsed"] != true {
 		t.Errorf("outliers: want the slow fingerprint flagged unparsed, got %v", rows)
@@ -85,7 +86,7 @@ func TestUnparsedSummary(t *testing.T) {
 	start, end := fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor
 	summary := func(role any) (int64, float64) {
 		t.Helper()
-		rows := readReportMaps(t, conn, "unparsed_summary.sql", "canvas", testdb.ReportEnvironment, "13", start, end, role)
+		rows := readReportMaps(t, conn, "unparsed_summary.sql", []string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"}, start, end, role)
 		if len(rows) != 1 {
 			t.Fatalf("want one summary row, got %v", rows)
 		}
@@ -112,7 +113,7 @@ func TestUnparsedSummary(t *testing.T) {
 	if n, calls := summary(nil); n != 2 || calls != want["canvas13p"]+want["canvas13r"] {
 		t.Errorf("every role: got %d fingerprints, %v calls; want 2, %v", n, calls, want["canvas13p"]+want["canvas13r"])
 	}
-	if _, calls := summary(testdb.ReportReplicaRole); calls != want["canvas13r"] {
+	if _, calls := summary([]string{testdb.ReportReplicaRole}); calls != want["canvas13r"] {
 		t.Errorf("replica: got %v calls, want %v", calls, want["canvas13r"])
 	}
 

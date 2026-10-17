@@ -484,6 +484,13 @@ func perfLiteral(v any) string {
 		return strconv.FormatFloat(x, 'g', -1, 64)
 	case time.Time:
 		return "'" + x.UTC().Format(time.RFC3339Nano) + "'"
+	case []string:
+		// A text[] literal: each element double-quoted, with \ and " escaped.
+		quoted := make([]string, len(x))
+		for i, s := range x {
+			quoted[i] = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
+		}
+		return perfLiteral("{" + strings.Join(quoted, ",") + "}")
 	default:
 		panic(fmt.Sprintf("perfLiteral: unsupported %T", v))
 	}
@@ -790,7 +797,7 @@ func sortedKeys(m map[string]bool) []string {
 func perfCases(f perfFixture) []perfCase {
 	end := f.anchor
 	h3, h24, d7, d21 := end.Add(-3*time.Hour), end.Add(-24*time.Hour), end.AddDate(0, 0, -7), end.Truncate(24*time.Hour).AddDate(0, 0, -(perfDays-1))
-	src := []any{perfProject, perfEnvironment, perfCluster}
+	src := []any{[]string{perfProject}, []string{perfEnvironment}, []string{perfCluster}}
 	with := func(xs ...any) []any { return append(slices.Clone(src), xs...) }
 	// Outliers gets 10s at 24h and 7d (user decision, 2026-10-04): the
 	// adaptive lookback (task 20261005-020000-2) reads up to 7 days of
@@ -800,6 +807,8 @@ func perfCases(f perfFixture) []perfCase {
 	const twoS, uiTimeout, outliersLongBudget = 2 * time.Second, 15 * time.Second, 10 * time.Second
 	var cases []perfCase
 	add := func(name, file string, start time.Time, budget time.Duration, runs int, args ...any) {
+		// Cases written before exclude end at the match.
+		args = fillReportArgs(file, args)
 		c := perfCase{name: name, file: file, args: args, start: start, end: end, budget: budget, runs: runs}
 		if file == "outliers.sql" {
 			c.historyFrom = start.Add(-7 * 24 * time.Hour)
@@ -817,10 +826,10 @@ func perfCases(f perfFixture) []perfCase {
 			outliersBudget = twoS
 		}
 		add("top_by_calls "+r.label, "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, nil)...)
-		add("top_by_calls "+r.label+" role=replica", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, testdb.ReportReplicaRole, nil)...)
+		add("top_by_calls "+r.label+" role=replica", "top_by_calls.sql", r.start, r.budget, r.runs, with(r.start, end, 50, []string{testdb.ReportReplicaRole}, nil)...)
 		add("top_by_total_time "+r.label, "top_by_total_time.sql", r.start, r.budget, r.runs, with(r.start, end, 50, nil, nil)...)
 		add("outliers "+r.label, "outliers.sql", r.start, outliersBudget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, nil, nil)...)
-		add("outliers "+r.label+" role=primary", "outliers.sql", r.start, outliersBudget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, testdb.ReportPrimaryRole, nil)...)
+		add("outliers "+r.label+" role=primary", "outliers.sql", r.start, outliersBudget, r.runs, with(r.start, end, 50, 3.0, 30, 2.0, []string{testdb.ReportPrimaryRole}, nil)...)
 		add("replica_utilization_by_controller_action "+r.label, "replica_utilization_by_controller_action.sql", r.start, r.budget, r.runs,
 			with(r.start, end, testdb.ReportPrimaryRole, testdb.ReportReplicaRole, nil)...)
 		add("replica_utilization_by_job "+r.label, "replica_utilization_by_job.sql", r.start, r.budget, r.runs,
@@ -857,7 +866,7 @@ func perfCases(f perfFixture) []perfCase {
 			id    int64
 		}{{"hot", f.hotFP}, {"typical", f.typicalFP}} {
 			add("fingerprint_timeseries "+r.label+" "+fp.label, "fingerprint_timeseries.sql", r.start, r.budget, 5, with(fp.id, r.start, end, r.bucket, nil)...)
-			add("fingerprint_timeseries "+r.label+" "+fp.label+" role=replica", "fingerprint_timeseries.sql", r.start, r.budget, 5, with(fp.id, r.start, end, r.bucket, testdb.ReportReplicaRole)...)
+			add("fingerprint_timeseries "+r.label+" "+fp.label+" role=replica", "fingerprint_timeseries.sql", r.start, r.budget, 5, with(fp.id, r.start, end, r.bucket, []string{testdb.ReportReplicaRole})...)
 			add("fingerprint_contexts "+r.label+" "+fp.label, "fingerprint_contexts.sql", r.start, r.budget, 5, with(fp.id, r.start, end, 10, nil)...)
 			add("fingerprint_sources "+r.label+" "+fp.label, "fingerprint_sources.sql", r.start, r.budget, 5, with(fp.id, r.start, end, nil)...)
 			add("fingerprint_all_sources "+r.label+" "+fp.label, "fingerprint_all_sources.sql", r.start, r.budget, 5, fp.id, r.start, end)

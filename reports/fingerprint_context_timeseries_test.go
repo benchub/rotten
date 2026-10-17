@@ -47,11 +47,11 @@ func TestFingerprintContextTimeseriesCountsOnlyThatContext(t *testing.T) {
 
 	args := func(controller, action, job any) []any {
 		return []any{
-			"canvas", testdb.ReportEnvironment, "13",
+			[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 			fixture.FingerprintID["users"],
 			fixture.Anchor.Add(-100 * time.Minute), fixture.Anchor.Add(-20 * time.Minute),
 			10 * time.Minute, nil,
-			controller, action, job,
+			[]string{contextKey(controller, action, job)}, false,
 		}
 	}
 
@@ -102,11 +102,11 @@ func TestFingerprintContextTimeseriesMatchesNullPartsExactly(t *testing.T) {
 
 	// The users fingerprint ran as the SyncLearners job on bridge 13.
 	got := readFingerprintContextTimeseries(t, conn,
-		"bridge", testdb.ReportEnvironment, "13",
+		[]string{"bridge"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-3*time.Hour), fixture.Anchor,
 		time.Hour, nil,
-		nil, nil, "SyncLearners",
+		[]string{"##SyncLearners"}, false,
 	)
 	var calls int64
 	for _, bucket := range got {
@@ -118,15 +118,27 @@ func TestFingerprintContextTimeseriesMatchesNullPartsExactly(t *testing.T) {
 
 	// The untagged context (all three null) must not pick up the job's calls.
 	got = readFingerprintContextTimeseries(t, conn,
-		"bridge", testdb.ReportEnvironment, "13",
+		[]string{"bridge"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-3*time.Hour), fixture.Anchor,
 		time.Hour, nil,
-		nil, nil, nil,
+		[]string{"##"}, false,
 	)
 	for _, bucket := range got {
 		if bucket.Calls != 0 {
 			t.Fatalf("untagged picked up the job's calls: %+v", got)
 		}
 	}
+}
+
+// contextKey is the "controller#action#job_tag" a context filter takes, with
+// an empty part for each nil.
+func contextKey(controller, action, job any) string {
+	part := func(v any) string {
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return ""
+	}
+	return part(controller) + "#" + part(action) + "#" + part(job)
 }

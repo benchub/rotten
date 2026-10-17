@@ -51,9 +51,9 @@ func TestFingerprintTimeseriesReturnsBucketsForOneFingerprintAndSource(t *testin
 	conn := db.Connect(t)
 
 	got := readFingerprintTimeseries(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
@@ -82,9 +82,9 @@ func TestFingerprintTimeseriesKeepsTrailingPartialBucket(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readFingerprintTimeseries(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
@@ -119,9 +119,9 @@ func TestFingerprintTimeseriesUsesFixedDayWidthAcrossDST(t *testing.T) {
 	insertTimeseriesEvent(t, conn, fixture, "canvas13p", fixture.FingerprintID["users"], gapEventStart, 13, 26)
 
 	got := readFingerprintTimeseries(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.FingerprintID["users"],
 		start,
 		end,
@@ -164,9 +164,9 @@ func TestFingerprintTimeseriesRejectsNonPositiveWidths(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := runTimeseriesExpectingError(t, conn, string(query),
-				"canvas",
-				testdb.ReportEnvironment,
-				"13",
+				[]string{"canvas"},
+				[]string{testdb.ReportEnvironment},
+				[]string{"13"},
 				fixture.FingerprintID["users"],
 				fixture.Anchor.Add(-100*time.Minute),
 				fixture.Anchor.Add(-20*time.Minute),
@@ -198,9 +198,9 @@ func TestFingerprintTimeseriesEmptyForEmptyOrInvertedRanges(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := readFingerprintTimeseries(t, conn,
-				"canvas",
-				testdb.ReportEnvironment,
-				"13",
+				[]string{"canvas"},
+				[]string{testdb.ReportEnvironment},
+				[]string{"13"},
 				fixture.FingerprintID["users"],
 				c.start,
 				c.end,
@@ -224,9 +224,9 @@ func TestFingerprintTimeseriesRejectsMonthWidth(t *testing.T) {
 	}
 
 	err = runTimeseriesExpectingError(t, conn, string(query),
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
@@ -251,9 +251,9 @@ func TestFingerprintTimeseriesCapsBuckets(t *testing.T) {
 	}
 
 	err = runTimeseriesExpectingError(t, conn, string(query),
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
@@ -278,9 +278,9 @@ func TestFingerprintTimeseriesPrunesEventPartitions(t *testing.T) {
 	expectedPartitions := partitionsOverlappingRange(t, conn, "rotten.events", start, end)
 
 	plan := explainReport(t, conn, "fingerprint_timeseries.sql",
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.FingerprintID["users"],
 		start,
 		end,
@@ -302,9 +302,9 @@ func TestFingerprintTimeseriesPrunesFixedMidnightCrossingRange(t *testing.T) {
 	}
 
 	plan := explainReport(t, conn, "fingerprint_timeseries.sql",
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.FingerprintID["users"],
 		start,
 		end,

@@ -57,8 +57,8 @@ func TestTopReportsShowUntaggedContexts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rows, err := conn.Query(context.Background(), string(query), "canvas", testdb.ReportEnvironment, "13",
-				fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, nil, nil)
+			rows, err := conn.Query(context.Background(), string(query), []string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
+				fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, nil, nil, nil, nil, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -134,7 +134,7 @@ func TestTopReportsMatchIgnoresUntaggedContexts(t *testing.T) {
 	}
 
 	addUntaggedContext(t, conn, fixture, "canvas7p", "slow", 40*time.Minute, 7)
-	if got := readOutliers(t, conn, "canvas", testdb.ReportEnvironment, "7",
+	if got := readOutliers(t, conn, []string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"7"},
 		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10,
 		defaultSigma, defaultMinHistory, defaultRatio, nil, "untagged"); len(got) != 0 {
 		t.Errorf("outliers match untagged = %+v, want none", got)
@@ -162,7 +162,7 @@ func TestReplicaUtilizationShowsUntaggedRow(t *testing.T) {
 
 	for _, report := range []string{"replica_utilization_by_controller_action.sql", "replica_utilization_by_job.sql"} {
 		t.Run(report, func(t *testing.T) {
-			args := []any{"canvas", testdb.ReportEnvironment, "13", fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
+			args := []any{[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"}, fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 				testdb.ReportPrimaryRole, testdb.ReportReplicaRole}
 			got := readReplicaUtilization(t, conn, report, append(args, nil)...)
 			row := findUtilizationRow(t, got, untaggedName)

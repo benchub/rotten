@@ -20,8 +20,8 @@ func topFingerprints(t *testing.T, conn *pgx.Conn, fixture *testdb.Reports, repo
 		t.Fatal(err)
 	}
 	rows, err := conn.Query(context.Background(), string(query),
-		"canvas", testdb.ReportEnvironment, "13",
-		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, limit, nil, match)
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
+		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, limit, nil, patterns(match), nil, nil, false)
 	if err != nil {
 		t.Fatalf("%s match %v: %v", report, match, err)
 	}
@@ -100,8 +100,8 @@ func TestTopReportsMatchKeepsWholeFingerprintTotals(t *testing.T) {
 	var calls float64
 	var contexts []byte
 	if err := conn.QueryRow(context.Background(), "select calls, context from ("+trimSemicolon(string(query))+") r",
-		"canvas", testdb.ReportEnvironment, "13",
-		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, nil, "grades#show").Scan(&calls, &contexts); err != nil {
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
+		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, nil, []string{"grades#show"}, nil, nil, false).Scan(&calls, &contexts); err != nil {
 		t.Fatal(err)
 	}
 	want := testdb.RecentTotals()[testdb.GroupKey{Project: "canvas", Cluster: "13", Fingerprint: "users"}]
@@ -109,9 +109,9 @@ func TestTopReportsMatchKeepsWholeFingerprintTotals(t *testing.T) {
 		t.Errorf("calls = %v, want %v", calls, want.Calls)
 	}
 	var unfiltered []byte
-	if err := conn.QueryRow(context.Background(), "select context from ("+trimSemicolon(string(query))+") r where fingerprint_id = $9",
-		"canvas", testdb.ReportEnvironment, "13",
-		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, nil, nil, fixture.FingerprintID["users"]).Scan(&unfiltered); err != nil {
+	if err := conn.QueryRow(context.Background(), "select context from ("+trimSemicolon(string(query))+") r where fingerprint_id = $12",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
+		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, nil, nil, nil, nil, false, fixture.FingerprintID["users"]).Scan(&unfiltered); err != nil {
 		t.Fatal(err)
 	}
 	if string(contexts) != string(unfiltered) {
@@ -143,7 +143,7 @@ func TestOutliersMatch(t *testing.T) {
 	} {
 		got := []string{}
 		for _, row := range readOutliers(t, conn,
-			"canvas", testdb.ReportEnvironment, "7",
+			[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"7"},
 			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 			10, defaultSigma, defaultMinHistory, defaultRatio, nil, c.match) {
 			got = append(got, keys[row.FingerprintID])
@@ -172,7 +172,7 @@ func TestReplicaUtilizationMatch(t *testing.T) {
 	} {
 		got := []string{}
 		for _, row := range readReplicaUtilization(t, conn, c.report,
-			"canvas", testdb.ReportEnvironment, "13",
+			[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 			testdb.ReportPrimaryRole, testdb.ReportReplicaRole, c.match) {
 			got = append(got, row.Name)
@@ -195,13 +195,59 @@ func TestMatchPrunesEventContextPartitions(t *testing.T) {
 		t.Fatalf("fixed range touches %d partitions, want 2", len(expected))
 	}
 	for report, args := range map[string][]any{
-		"top_by_calls.sql":      {"canvas", testdb.ReportEnvironment, "13", start, end, 50, nil, "users"},
-		"top_by_total_time.sql": {"canvas", testdb.ReportEnvironment, "13", start, end, 50, nil, "users"},
-		"outliers.sql":          {"canvas", testdb.ReportEnvironment, "13", start, end, 50, defaultSigma, defaultMinHistory, defaultRatio, nil, "users"},
+		"top_by_calls.sql":      {[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"}, start, end, 50, nil, "users"},
+		"top_by_total_time.sql": {[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"}, start, end, 50, nil, "users"},
+		"outliers.sql":          {[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"}, start, end, 50, defaultSigma, defaultMinHistory, defaultRatio, nil, "users"},
 	} {
 		t.Run(report, func(t *testing.T) {
 			plan := explainReport(t, conn, report, args...)
 			assertPlanTouchesOnlyPartitions(t, conn, plan, "rotten.event_context", expected)
 		})
 	}
+}
+
+// patterns turns a single match pattern into the text[] the reports take,
+// and leaves nil or a slice as it is.
+func patterns(v any) any {
+	if s, ok := v.(string); ok {
+		return []string{s}
+	}
+	return v
+}
+
+// reportShape is a report's argument count, and the defaults for its
+// trailing arguments: exclude, contexts and ignore-untagged, added after the
+// tests that leave them off were written. match is the index of its match
+// patterns, or -1.
+type reportShape struct {
+	match    int
+	defaults []any
+	full     int
+}
+
+var reportShapes = map[string]reportShape{
+	"top_by_calls.sql":      {7, []any{nil, nil, false}, 11},
+	"top_by_total_time.sql": {7, []any{nil, nil, false}, 11},
+	"outliers.sql":          {10, []any{nil}, 12},
+	"replica_utilization_by_controller_action.sql": {7, []any{nil, nil, false}, 11},
+	"replica_utilization_by_job.sql":               {7, []any{nil, nil, false}, 11},
+	"fingerprint_contexts.sql":                     {-1, []any{false}, 9},
+	"fingerprint_sources.sql":                      {-1, []any{nil, false}, 9},
+	"unparsed_summary.sql":                         {-1, []any{nil, false}, 8},
+}
+
+// fillReportArgs completes arguments that stop before a report's newer
+// trailing parameters: a single match pattern becomes a text[], and each
+// missing parameter gets its default (no exclude, no context filter,
+// untagged kept).
+func fillReportArgs(file string, args []any) []any {
+	shape, ok := reportShapes[file]
+	if !ok || len(args) >= shape.full || len(args) < shape.full-len(shape.defaults) {
+		return args
+	}
+	out := append([]any{}, args...)
+	if shape.match >= 0 && shape.match < len(out) {
+		out[shape.match] = patterns(out[shape.match])
+	}
+	return append(out, shape.defaults[len(args)-(shape.full-len(shape.defaults)):]...)
 }

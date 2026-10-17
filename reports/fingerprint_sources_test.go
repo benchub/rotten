@@ -25,6 +25,7 @@ type fingerprintSourceRow struct {
 
 func readFingerprintSources(t *testing.T, conn *pgx.Conn, args ...any) []fingerprintSourceRow {
 	t.Helper()
+	args = fillReportArgs("fingerprint_sources.sql", args)
 	query, err := os.ReadFile("fingerprint_sources.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +39,8 @@ func readFingerprintSources(t *testing.T, conn *pgx.Conn, args ...any) []fingerp
 	var out []fingerprintSourceRow
 	for rows.Next() {
 		var r fingerprintSourceRow
-		if err := rows.Scan(&r.Role, &r.Calls, &r.TotalMS, &r.AvgMSPerCall, &r.HistorySamples, &r.HistoryMeanMS, &r.HistoryDeviationMS); err != nil {
+		var project, environment, cluster string
+		if err := rows.Scan(&project, &environment, &cluster, &r.Role, &r.Calls, &r.TotalMS, &r.AvgMSPerCall, &r.HistorySamples, &r.HistoryMeanMS, &r.HistoryDeviationMS); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, r)
@@ -58,7 +60,7 @@ func TestFingerprintSourcesOneRowPerRole(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readFingerprintSources(t, conn,
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 		nil,
@@ -79,10 +81,10 @@ func TestFingerprintSourcesFilterByRole(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readFingerprintSources(t, conn,
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
-		testdb.ReportReplicaRole,
+		[]string{testdb.ReportReplicaRole},
 	)
 	want := []fingerprintSourceRow{{testdb.ReportReplicaRole, 200, 80, float64Ptr(0.4), nil, nil, nil}}
 	if !reflect.DeepEqual(got, want) {
@@ -98,7 +100,7 @@ func TestFingerprintSourcesKeepHistoryWithoutEventsInRange(t *testing.T) {
 	// No users windows on canvas 13 fall in the last 20 minutes. The primary
 	// still has history; the replica has neither and is left out.
 	got := readFingerprintSources(t, conn,
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-20*time.Minute), fixture.Anchor,
 		nil,
@@ -115,7 +117,7 @@ func TestFingerprintSourcesScopedToProjectAndFingerprint(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readFingerprintSources(t, conn,
-		"canvas", testdb.ReportEnvironment, "7",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"7"},
 		fixture.FingerprintID["slow"],
 		fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 		nil,
@@ -139,7 +141,7 @@ func TestFingerprintSourcesPrunePartitions(t *testing.T) {
 		t.Fatalf("fixed range touches %d partitions, want 2", len(expected))
 	}
 	plan := explainReport(t, conn, "fingerprint_sources.sql",
-		"canvas", testdb.ReportEnvironment, "13",
+		[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
 		fixture.FingerprintID["users"],
 		start, end,
 		nil,

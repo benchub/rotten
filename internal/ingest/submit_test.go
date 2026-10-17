@@ -384,14 +384,17 @@ func TestSubmitHarvestStoresUint64ContextCountForReports(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := f.owner.Query(context.Background(), string(query),
-		"submit",
-		"test",
-		"cluster",
+		[]string{"submit"},
+		[]string{"test"},
+		[]string{"cluster"},
 		start.Add(-time.Second),
 		start.Add(time.Minute),
 		1,
 		nil,
 		nil,
+		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)

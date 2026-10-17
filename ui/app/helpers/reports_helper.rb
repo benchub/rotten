@@ -11,7 +11,7 @@ module ReportsHelper
     return untagged_label if value.nil? && column.context? && row&.dig("untagged")
     return "" if value.nil?
 
-    pattern = query&.report&.matches? ? query.match_pattern : nil
+    pattern = query&.report&.matches? ? query.match_patterns : nil
     case column.type
     when :fingerprint
       link = link_to(value.to_s, fingerprint_path(value, query.source_params))
@@ -19,7 +19,7 @@ module ReportsHelper
     when :count then number_with_delimiter(value.round)
     when :ms, :percent, :number then number_with_precision(value, precision: 2, delimiter: ",")
     when :time then value.utc.strftime("%Y-%m-%d %H:%M")
-    when :context then report_contexts(value, pattern)
+    when :context then report_contexts(value, pattern, query)
     else
       if column.key == "example" then report_query_text(value.to_s, pattern)
       elsif HIGHLIGHTED_COLUMNS.include?(column.key) then highlight_match(value.to_s, pattern)
@@ -65,12 +65,18 @@ module ReportsHelper
   # than wrong ones where Ruby's regex dialect may differ from Postgres's.
   # One highlighter per pattern serves the whole page, so its time budget
   # and a timeout's give-up span every cell.
+  #
+  # pattern may be a list, as the match patterns: the marks are every
+  # pattern's matches, overlapping ones merged.
   def highlight_match(text, pattern)
     text = text.to_s
-    return ERB::Util.html_escape(text) if pattern.nil? || pattern.empty?
+    patterns = Array(pattern).reject(&:empty?)
+    return ERB::Util.html_escape(text) if patterns.empty?
 
     @match_highlighters ||= {}
-    spans = (@match_highlighters[pattern] ||= MatchHighlighter.new(pattern, ascii_folding_safe: MatchHighlighter.ascii_folding_safe?)).spans(text)
+    spans = merge_spans(patterns.flat_map do |each|
+      (@match_highlighters[each] ||= MatchHighlighter.new(each, ascii_folding_safe: MatchHighlighter.ascii_folding_safe?)).spans(text)
+    end)
     parts = []
     at = 0
     spans.each do |from, to|
@@ -80,12 +86,31 @@ module ReportsHelper
     safe_join(parts << text[at..])
   end
 
-  def report_contexts(contexts, pattern = nil)
+  # Sorted spans with overlapping ones joined. Touching ones stay apart, as
+  # one pattern's back-to-back matches do.
+  def merge_spans(spans)
+    spans.sort.each_with_object([]) do |(from, to), merged|
+      if merged.any? && from < merged.last[1]
+        merged.last[1] = [merged.last[1], to].max
+      else
+        merged << [from, to]
+      end
+    end
+  end
+
+  # With query, each context not already in its filter links to the same
+  # report with the context added to the filter.
+  def report_contexts(contexts, pattern = nil, query = nil)
     items = Array(contexts).filter_map do |context|
       next unless context.is_a?(Hash)
 
-      tag.li(safe_join([report_context_label(context, pattern),
-                        " (#{number_with_delimiter(context['times'].to_i)})"]))
+      label = report_context_label(context, pattern)
+      value = context_filter_value(context)
+      if query&.report && value && !query.contexts.include?(value)
+        label = link_to(label, reports_path({ report: query.report.key }.merge(query.link_params(context: query.contexts + [value]))),
+                        title: "Count only the calls in this context, in every report")
+      end
+      tag.li(safe_join([label, " (#{number_with_delimiter(context['times'].to_i)})"]))
     end
     items.empty? ? "" : tag.ul(safe_join(items), class: "report-contexts")
   end
@@ -121,10 +146,29 @@ module ReportsHelper
     "#{controller}##{action}##{job_tag}"
   end
 
-  # Whether a contexts row is the one the time series is restricted to.
+  # Whether a contexts row is in the query's context filter.
   def active_context?(query, context)
-    filter = query.context_filter
-    filter.present? && filter == context.slice("controller", "action", "job_tag").transform_values(&:presence)
+    value = context_filter_value(context)
+    !value.nil? && query.contexts.include?(value)
+  end
+
+  # The context filter's chips, each with a link that removes it: url gets the
+  # contexts left. Each also has a hidden context[] input, for the form it's in.
+  def context_filter_chips(query, &url)
+    return if query.contexts.empty?
+
+    items = query.contexts.map do |context|
+      parts = ReportQuery.context_parts(context) || {}
+      name = report_context_label(parts)
+      tag.li(safe_join([hidden_field_tag("context[]", context, id: nil), tag.span(name),
+                        link_to("×", url.call(query.contexts - [context]), class: "source-chip-remove",
+                                title: "Remove context #{strip_tags(name.to_s)}",
+                                aria: { label: "Remove context #{strip_tags(name.to_s)}" })]), class: "source-chip")
+    end
+    tag.div(class: "report-context-filter") do
+      safe_join([tag.p("Counting only the calls in these contexts:", class: "m-0 text-sm font-semibold"),
+                 tag.ul(safe_join(items), class: "source-chips", aria: { label: "Context filter" })])
+    end
   end
 
   # A sort link for a column header: the first click sorts numbers

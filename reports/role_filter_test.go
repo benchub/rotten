@@ -43,16 +43,16 @@ func TestTopReportsFilterByRole(t *testing.T) {
 		role   any
 		want   []roleTotals
 	}{
-		{"top_by_calls.sql", testdb.ReportReplicaRole, []roleTotals{
+		{"top_by_calls.sql", []string{testdb.ReportReplicaRole}, []roleTotals{
 			recentTotals("canvas13r", "users"), recentTotals("canvas13r", "jobs"),
 		}},
-		{"top_by_total_time.sql", testdb.ReportReplicaRole, []roleTotals{
+		{"top_by_total_time.sql", []string{testdb.ReportReplicaRole}, []roleTotals{
 			recentTotals("canvas13r", "jobs"), recentTotals("canvas13r", "users"),
 		}},
-		{"top_by_calls.sql", testdb.ReportPrimaryRole, []roleTotals{
+		{"top_by_calls.sql", []string{testdb.ReportPrimaryRole}, []roleTotals{
 			recentTotals("canvas13p", "users"), recentTotals("canvas13p", "courses"), recentTotals("canvas13p", "jobs"),
 		}},
-		{"top_by_calls.sql", "no-such-role", nil},
+		{"top_by_calls.sql", []string{"no-such-role"}, nil},
 	}
 	for _, c := range cases {
 		query, err := os.ReadFile(c.report)
@@ -60,8 +60,8 @@ func TestTopReportsFilterByRole(t *testing.T) {
 			t.Fatal(err)
 		}
 		rows, err := conn.Query(ctx, string(query),
-			"canvas", testdb.ReportEnvironment, "13",
-			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, c.role, nil)
+			[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"},
+			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 10, c.role, nil, nil, nil, false)
 		if err != nil {
 			t.Fatalf("%s role %v: %v", c.report, c.role, err)
 		}
@@ -97,11 +97,11 @@ func TestOutliersFilterByRole(t *testing.T) {
 		want int
 	}{
 		{nil, 1},
-		{testdb.ReportPrimaryRole, 1},
-		{testdb.ReportReplicaRole, 0},
+		{[]string{testdb.ReportPrimaryRole}, 1},
+		{[]string{testdb.ReportReplicaRole}, 0},
 	} {
 		got := readOutliers(t, conn,
-			"canvas", testdb.ReportEnvironment, "7",
+			[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"7"},
 			fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor,
 			10, defaultSigma, defaultMinHistory, defaultRatio, c.role, nil)
 		if len(got) != c.want {
@@ -121,14 +121,14 @@ func TestFingerprintTimeseriesFiltersByRole(t *testing.T) {
 	conn := db.Connect(t)
 
 	got := readFingerprintTimeseries(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.FingerprintID["users"],
 		fixture.Anchor.Add(-100*time.Minute),
 		fixture.Anchor.Add(-20*time.Minute),
 		30*time.Minute,
-		testdb.ReportReplicaRole,
+		[]string{testdb.ReportReplicaRole},
 	)
 	want := []fingerprintTimeseriesBucket{
 		{fixture.Anchor.Add(-100 * time.Minute), fixture.Anchor.Add(-70 * time.Minute), 0, 0},

@@ -1,7 +1,9 @@
 # Deploying the UI
 
 The UI is a Rails 8.1 app in `ui/`. It has the reports workbench
-(`/reports`: pick a dataset, optionally narrowed by a **Match** regex, then
+(`/reports`: pick a dataset, any number of projects, environments, clusters
+and roles, optionally narrowed by **Match** and **Exclude** regexes and a
+context filter, then
 the report to run on it; pick another report in the same form to switch),
 a page for each
 fingerprint, pass key admin and the audit log. It connects to the rotten

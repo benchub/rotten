@@ -1,20 +1,22 @@
 <%# The source picker and time window shared by the report workbench and the fingerprint page. reports are the reports the form can run; a field only some of them read is tagged with them. %>
+<%# Each source field is a multi-select of every value, so the form works without JavaScript. source_picker_controller.js turns each into a dropdown that adds chips and narrows to the sources the fields before it allow. %>
 <%= tag.div class: "source-picker", data: { controller: "source-picker", source_picker_catalog_value: query.catalog.to_json } do %>
-  <div class="field">
-    <%= label_tag :project, "Project" %>
-    <%= select_tag :project, options_for_select(query.projects, query.project), data: { source_picker_target: "project", action: "source-picker#narrow" } %>
-  </div>
-  <div class="field">
-    <%= label_tag :environment, "Environment" %>
-    <%= select_tag :environment, options_for_select(query.environments, query.environment), data: { source_picker_target: "environment", action: "source-picker#narrow" } %>
-  </div>
-  <div class="field">
-    <%= label_tag :cluster, "Cluster" %>
-    <%= select_tag :cluster, options_for_select(query.clusters, query.cluster), data: { source_picker_target: "cluster", action: "source-picker#narrow" } %>
-  </div>
-  <%= report_field(reports, :role, keep: true) do %>
-    <%= label_tag :role, "Role" %>
-    <%= select_tag :role, options_for_select([["All roles", ""]] + query.roles, query.role.to_s), data: { source_picker_target: "role" } %>
+  <% { project: [query.projects, "projects"], environment: [query.environments, "environments"],
+       cluster: [query.clusters, "clusters"], role: [query.roles, "roles"] }.each_with_index do |(field, (choices, plural)), level| %>
+    <% chosen = query.public_send(field) %>
+    <% body = capture do %>
+      <%= label_tag field, ReportQuery.human_attribute_name(field) %>
+      <%= select_tag "#{field}[]", options_for_select(choices | chosen, chosen), multiple: true, id: field,
+                     aria: { describedby: "#{field}-hint" },
+                     data: { source_picker_target: "values", level: level, noun: ReportQuery.human_attribute_name(field).downcase,
+                             all_label: "All #{plural}" } %>
+      <p class="hint source-hint" id="<%= field %>-hint">None picked means all <%= plural %>.</p>
+    <% end %>
+    <% if field == :role %>
+      <%= report_field(reports, :role, keep: true) { body } %>
+    <% else %>
+      <%= tag.div(body, class: "field") %>
+    <% end %>
   <% end %>
 <% end %>
 <%= tag.div class: "time-window", data: { controller: "time-window", time_window_now_value: query.now.iso8601 } do %>

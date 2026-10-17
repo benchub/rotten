@@ -1,9 +1,14 @@
 # The parameters for one report run, validated against strict whitelists
-# before anything reaches the database. The source fields must name a
-# source that exists, the range and bucket come from fixed choices, and sort
-# must be one of the report's columns. Match is a Postgres regex, checked by
-# Postgres itself (match_compiles?). Values then go to the SQL as bound
-# parameters, never into its text.
+# before anything reaches the database. The source fields (project,
+# environment, cluster and role) each take a list of values: values in one
+# field are OR'd, the fields are AND'd, and an empty field means every value.
+# Each value must be one some source has; one that no source has under the
+# fields before it (stale_values) is ignored rather than failing the run, and
+# a field whose values are all ignored matches nothing (sources_empty?). The
+# range and bucket come from fixed choices, and sort must be one of the
+# report's columns. Match and Exclude are lists of Postgres regexes, each
+# checked by Postgres itself (match_compiles?). Values then go to the SQL as
+# bound parameters, never into its text.
 class ReportQuery
   include ActiveModel::Validations
 
@@ -43,10 +48,19 @@ class ReportQuery
   DATETIME = /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?\z/
   MAX_VALUE_LENGTH = 1000
   MAX_MATCH_LENGTH = 200
+  # Match and Exclude each take at most this many patterns.
+  MAX_PATTERNS = 20
+  PATTERN_FIELDS = %i[match exclude].freeze
+  # The source fields, in the order they narrow each other, as the catalog's
+  # columns.
+  SOURCE_FIELDS = %i[project environment cluster role].freeze
+  MAX_SOURCE_VALUES = 100
   # A context filter is "controller#action#job_tag", each part empty when the
   # context has none, so "##" is the untagged context. Controller and action
   # can't hold a #; the job tag, last, may.
   CONTEXT_FORMAT = /\A([^#]*)#([^#]*)#(.*)\z/m
+  # The context filter takes at most this many contexts.
+  MAX_CONTEXTS = 20
   # Compiles a match pattern without reading any rows.
   MATCH_CHECK_SQL = "SELECT ''::text ~* $1::text".freeze
   MATCH_ERROR_PREFIX = "invalid regular expression: ".freeze
@@ -55,15 +69,17 @@ class ReportQuery
   # the sort. Each report's own fields (Report#own_fields) are read only for
   # it, so a form that sends every report's fields runs any of them. Reports
   # that don't filter by role keep a valid one, so the form carries it on.
-  # Match is read for every report so it carries across them, but only the
-  # reports that filter on it (Report#matches?) use it.
-  COMMON_FIELDS = %i[project environment cluster role range from to match sort dir sort_report].freeze
+  # Match and Exclude are read for every report so they carry across them,
+  # but only the reports that filter on them (Report#matches?) use them.
+  # So do the context filter and Ignore untagged context; outliers ignores both.
+  COMMON_FIELDS = %i[project environment cluster role range from to match exclude context ignore_untagged
+                     sort dir sort_report].freeze
 
   FIELDS = {
     project: "Project", environment: "Environment", cluster: "Cluster", role: "Role", range: "Time range",
     from: "From", to: "To", sort: "Sort", dir: "Direction", primary_role: "Primary role",
     replica_role: "Replica role", fingerprint_id: "Fingerprint ID", bucket: "Bucket", sort_report: "Sort report",
-    match: "Match", context: "Context"
+    match: "Match", exclude: "Exclude", context: "Context", ignore_untagged: "Ignore untagged context"
   }.freeze
 
   attr_reader :report, :catalog, :now, *FIELDS.keys
@@ -72,10 +88,10 @@ class ReportQuery
   validate :source_exists
   validate :range_is_valid
   validate :sort_is_a_column
-  validate :match_is_short
+  validate :patterns_are_short
   validate :utilization_roles_are_valid, if: -> { report.utilization? }
   validate :timeseries_is_valid, if: -> { report.timeseries? }
-  validate :context_is_valid, if: -> { report.timeseries? }
+  validate :context_is_valid
 
   def initialize(report, params, catalog:, now: Time.current)
     @report = report
@@ -84,10 +100,14 @@ class ReportQuery
     read = COMMON_FIELDS + report.own_fields
     @raw = FIELDS.keys.to_h { |field| [field, read.include?(field) ? params[field] : nil] }
     @raw.each { |field, value| instance_variable_set(:"@#{field}", value.is_a?(String) ? value.strip : nil) }
-    # Spaces can matter in a regex, so match is kept as typed.
-    @match = @raw[:match] if @raw[:match].is_a?(String)
-    # A job tag can end in a space, so context is kept as typed too.
-    @context = @raw[:context] if @raw[:context].is_a?(String)
+    # A source field is a list, from repeated parameters (project[]=...) or,
+    # from older links, one value. Blanks, as the form's empty one, drop out.
+    SOURCE_FIELDS.each { |field| instance_variable_set(:"@#{field}", source_values(@raw[field])) }
+    # Spaces can matter in a regex, so patterns are kept as typed. A single
+    # match= from older links is one pattern.
+    PATTERN_FIELDS.each { |field| instance_variable_set(:"@#{field}", pattern_values(@raw[field])) }
+    # A job tag can end in a space, so contexts are kept as typed too.
+    @context = pattern_values(@raw[:context])
     @range = DEFAULT_RANGE if @range.blank? && @raw[:range].nil?
     @primary_role = DEFAULT_PRIMARY_ROLE if @primary_role.blank?
     @replica_role = DEFAULT_REPLICA_ROLE if @replica_role.blank?
@@ -95,8 +115,21 @@ class ReportQuery
     @sort = @dir = nil if Report.find(@sort_report) && @sort_report != report.key
   end
 
-  # The form has been sent. Until then the page shows the form only.
-  def submitted? = !@raw[:project].nil?
+  # The form has been sent. Until then the page shows the form only. Links
+  # always carry the range; with every source they carry no source field.
+  def submitted? = !@raw[:project].nil? || !@raw[:range].nil?
+
+  # The values of a source field that the run ignores, because no source
+  # has them under the fields before it, as { cluster: ["7"] }. Only set once
+  # the query is valid.
+  def stale_values = @stale_values || {}
+
+  # Some field's values are all ignored, so no source matches and every
+  # report is empty. Only set once the query is valid.
+  def sources_empty? = @sources_empty == true
+
+  # The values of a source field the run filters on, or [] for every value.
+  def effective_values(field) = (@effective_values || {}).fetch(field, [])
 
   # A time series opened without a fingerprint ID at all, as from an old
   # /reports/:id bookmark, waits for one instead of failing. A blank one from the form fails.
@@ -105,20 +138,28 @@ class ReportQuery
   # From or To came with a preset range, which ignores them.
   def ignored_custom_range? = !custom? && (@raw[:from].present? || @raw[:to].present?)
 
-  # The regex the report filters on, or nil for no filter. Only an empty
-  # match is no filter; one of only spaces filters on them.
-  def match_pattern = match.nil? || match.empty? ? nil : match
+  # The regexes the report keeps rows by, OR'd: [] for no filter. Only an
+  # empty pattern is dropped; one of only spaces filters on them.
+  def match_patterns = match || []
 
-  # A match on a report that doesn't filter on it, as the time series.
-  def ignored_match? = !report.matches? && !match_pattern.nil?
+  # The regexes the report drops rows by, before match applies.
+  def exclude_patterns = exclude || []
 
-  # Asks Postgres to compile the match pattern, through the report's runner
-  # so it counts against the same timeout. A pattern it can't compile adds
-  # an error and returns false. Reports that ignore match skip the check.
+  # Match or Exclude on a report that doesn't filter on them, as the time series.
+  def ignored_match? = !report.matches? && (match_patterns.any? || exclude_patterns.any?)
+
+  # Asks Postgres to compile each pattern, through the report's runner so it
+  # counts against the same timeout. Each pattern it can't compile adds an
+  # error naming it, and then this returns false. Reports that ignore match
+  # skip the check.
   def match_compiles?(runner)
-    return true unless report.matches? && match_pattern
+    return true unless report.matches?
 
-    runner.run(MATCH_CHECK_SQL, [match_pattern])
+    PATTERN_FIELDS.map { |field| public_send(:"#{field}_patterns").map { |pattern| pattern_compiles?(runner, field, pattern) }.all? }.all?
+  end
+
+  def pattern_compiles?(runner, field, pattern)
+    runner.run(MATCH_CHECK_SQL, [pattern])
     true
   rescue ActiveRecord::QueryCanceled
     raise
@@ -126,7 +167,7 @@ class ReportQuery
     raise unless e.cause.is_a?(PG::InvalidRegularExpression) || e.cause.is_a?(PG::ProgramLimitExceeded)
 
     detail = e.cause.result&.error_field(PG::PG_DIAG_MESSAGE_PRIMARY).to_s.delete_prefix(MATCH_ERROR_PREFIX)
-    errors.add(:match, "is not a valid regular expression: #{detail}")
+    errors.add(field, :invalid_pattern, message: "pattern #{pattern.inspect} is not a valid regular expression: #{detail}")
     false
   end
 
@@ -162,69 +203,118 @@ class ReportQuery
   # the internal reports (Report.internal). Only this query's report sorts.
   def run(runner = ReportRunner.new, report: self.report)
     own = report == self.report
-    # The time series restricted to a context is another query with the same columns.
-    report = Report.internal("fingerprint_context_timeseries") if own && context_filter
+    # The time series restricted to contexts is another query with the same columns.
+    report = Report.internal("fingerprint_context_timeseries") if own && report.timeseries? && context_filtered?
+    # Reports that bind the source fields have nothing to read; the
+    # all-sources one doesn't read them.
+    return [] if sources_empty? && report.kind != :fingerprint_all_sources
+
     result = runner.run(report.sql, binds(report))
-    rows = result.rows.map { |values| result.columns.zip(values).to_h }
+    rows = result.rows.map { |values| with_source(result.columns.zip(values).to_h) }
     own ? sort_rows(rows) : rows
   end
 
-  # The context the time series is restricted to, as the "controller",
-  # "action" and "job_tag" of a contexts row (nil for a part it doesn't have),
-  # or nil for all contexts. Only valid once the query is.
-  def context_filter
-    return nil unless report.timeseries? && context.present?
+  # The contexts the reports count calls in, as "controller#action#job_tag"
+  # strings ([] for every context).
+  def contexts = context || []
 
+  # Ignore untagged context is checked: untagged calls are left out.
+  def ignore_untagged? = @raw[:ignore_untagged] == "1"
+
+  # The reports count only some contexts' calls.
+  def context_filtered? = contexts.any? || ignore_untagged?
+
+  # The context filter on outliers, which scores whole fingerprints and
+  # ignores it.
+  def ignored_context? = report.kind == :outliers && context_filtered?
+
+  # A context as a contexts row's "controller", "action" and "job_tag" (nil
+  # for a part it doesn't have).
+  def self.context_parts(context)
     match = CONTEXT_FORMAT.match(context)
     match && %w[controller action job_tag].zip(match.captures.map(&:presence)).to_h
   end
 
   # The validated parameters, for links that keep the current choices.
   def link_params(**overrides)
-    params = { project: project, environment: environment, cluster: cluster, range: range }
-    params[:role] = role if role.present?
+    params = { project: project, environment: environment, cluster: cluster, role: role, range: range }
     params.merge!(from: from, to: to) if custom?
+    params.merge!(context_params)
     params.merge!(primary_role: primary_role, replica_role: replica_role) if report.utilization?
-    params.merge!(fingerprint_id: fingerprint_id, bucket: bucket.presence, context: context.presence) if report.timeseries?
+    params.merge!(fingerprint_id: fingerprint_id, bucket: bucket.presence) if report.timeseries?
     params.merge!(sort: sort, dir: dir) if sort.present?
     with_match(params.merge(overrides).compact_blank)
   end
 
   # The source fields only, for links to another report.
   def source_params
-    params = { project: project, environment: environment, cluster: cluster, range: range }
-    params[:role] = role if role.present?
+    params = { project: project, environment: environment, cluster: cluster, role: role, range: range }
     params.merge!(from: from, to: to) if custom?
-    with_match(params.compact_blank)
+    with_match(params.compact_blank.merge(context_params))
   end
 
   private
 
-  # Match goes in after compact_blank, which would drop an all-spaces pattern.
-  def with_match(params) = match_pattern ? params.merge(match: match_pattern) : params
+  # Contexts go in as typed, after compact_blank.
+  def context_params
+    params = {}
+    params[:context] = contexts if contexts.any?
+    params[:ignore_untagged] = "1" if ignore_untagged?
+    params
+  end
+
+  # The patterns go in after compact_blank, which would drop an all-spaces one.
+  def with_match(params)
+    params = params.merge(match: match_patterns) if match_patterns.any?
+    exclude_patterns.any? ? params.merge(exclude: exclude_patterns) : params
+  end
 
   def binds(report)
     start_at, end_at = window.map { |time| time.utc.iso8601(6) }
-    source = [project, environment, cluster]
-    role_or_nil = role.presence
+    source = %i[project environment cluster].map { |field| text_array(effective_values(field)) }
+    role_or_nil = text_array(effective_values(:role))
+    patterns = [text_array(match_patterns), text_array(exclude_patterns)]
+    context_binds = [text_array(contexts), ignore_untagged?]
     case report.kind
-    when :top then [*source, start_at, end_at, ROW_LIMIT, role_or_nil, match_pattern]
+    when :top then [*source, start_at, end_at, ROW_LIMIT, role_or_nil, *patterns, *context_binds]
     when :outliers
-      [*source, start_at, end_at, ROW_LIMIT, OUTLIER_SIGMA, OUTLIER_MIN_HISTORY, OUTLIER_RATIO, role_or_nil, match_pattern]
-    when :utilization then [*source, start_at, end_at, primary_role, replica_role, match_pattern]
+      [*source, start_at, end_at, ROW_LIMIT, OUTLIER_SIGMA, OUTLIER_MIN_HISTORY, OUTLIER_RATIO, role_or_nil, *patterns]
+    when :utilization then [*source, start_at, end_at, primary_role, replica_role, *patterns, *context_binds]
     when :timeseries
       [*source, fingerprint_id_value, start_at, end_at, "#{bucket_seconds} seconds", role_or_nil]
     when :fingerprint_context_timeseries
-      filter = context_filter
-      [*source, fingerprint_id_value, start_at, end_at, "#{bucket_seconds} seconds", role_or_nil,
-       filter["controller"], filter["action"], filter["job_tag"]]
+      [*source, fingerprint_id_value, start_at, end_at, "#{bucket_seconds} seconds", role_or_nil, *context_binds]
     when :fingerprint_contexts
-      [*source, fingerprint_id_value, start_at, end_at, CONTEXT_LIMIT, role_or_nil]
-    when :fingerprint_sources then [*source, fingerprint_id_value, start_at, end_at, role_or_nil]
+      [*source, fingerprint_id_value, start_at, end_at, CONTEXT_LIMIT, role_or_nil, ignore_untagged?]
+    when :fingerprint_sources then [*source, fingerprint_id_value, start_at, end_at, role_or_nil, *context_binds]
     when :fingerprint_all_sources then [fingerprint_id_value, start_at, end_at]
-    when :unparsed_summary then [*source, start_at, end_at, role_or_nil]
+    when :unparsed_summary then [*source, start_at, end_at, role_or_nil, *context_binds]
     else raise ArgumentError, "unknown report kind #{report.kind}"
     end
+  end
+
+  # Rows that name their source get it as one "project/environment/cluster"
+  # value, for the Source column.
+  def with_source(row)
+    parts = row.values_at("project", "environment", "cluster")
+    parts.all? ? row.merge("source" => parts.join("/")) : row
+  end
+
+  # A text[] bind for a list of values, or nil (every value) for none.
+  def text_array(values) = values.empty? ? nil : PG::TextEncoder::Array.new.encode(values)
+
+  def pattern_values(value)
+    values = value.is_a?(Array) ? value : [value]
+    return nil unless values.all? { |item| item.nil? || item.is_a?(String) }
+
+    values.compact.reject(&:empty?).uniq
+  end
+
+  def source_values(value)
+    values = value.is_a?(Array) ? value : [value]
+    return nil unless values.all? { |item| item.nil? || item.is_a?(String) }
+
+    values.compact.map(&:strip).reject(&:empty?).uniq
   end
 
   # The internal reports share the time series' validated fingerprint id.
@@ -271,23 +361,54 @@ class ReportQuery
     @raw.each do |field, value|
       next if value.nil?
 
-      unless value.is_a?(String) && value.length <= MAX_VALUE_LENGTH && value.valid_encoding? && !value.match?(/[[:cntrl:]]/)
-        errors.add(field, "is invalid")
-        instance_variable_set(:"@#{field}", nil)
-      end
+      listed = SOURCE_FIELDS.include?(field) || PATTERN_FIELDS.include?(field) || field == :context
+      list = listed && value.is_a?(Array)
+      # Pattern counts are checked with their lengths, for a clearer message.
+      next if (list ? value : [value]).all? { |item| plain_string?(item) } &&
+              (!list || !SOURCE_FIELDS.include?(field) || value.length <= MAX_SOURCE_VALUES)
+
+      errors.add(field, "is invalid")
+      instance_variable_set(:"@#{field}", listed ? [] : nil)
     end
   end
 
+  def plain_string?(value)
+    value.is_a?(String) && value.length <= MAX_VALUE_LENGTH && value.valid_encoding? && !value.match?(/[[:cntrl:]]/)
+  end
+
+  # Every value must be one some source has. Then each field, in order,
+  # narrows the sources to its values; a value no source under the earlier
+  # fields has is stale, and ignored. A field whose values are all stale
+  # filters on nothing.
   def source_exists
     return if errors.any?
+    return errors.add(:base, "No source matches that project, environment and cluster") if catalog.empty?
 
-    matching = catalog.select { |row| row.first(3) == [project, environment, cluster] }
-    if matching.empty?
-      errors.add(:base, "No source matches that project, environment and cluster")
-    elsif role.present? && matching.none? { |row| row.last == role }
-      # A report that doesn't filter by role doesn't fail on it, but doesn't carry it either.
-      report.role_filter? ? errors.add(:role, "is not a role of that source") : @role = nil
+    SOURCE_FIELDS.each_with_index do |field, index|
+      unknown = public_send(field) - catalog.map { |row| row[index] }
+      # A report that doesn't filter by role doesn't fail on one, but doesn't carry it either.
+      next @role -= unknown if field == :role && !report.role_filter?
+
+      unknown.each { |value| errors.add(field, :unknown, message: "#{value} is not a known #{FIELDS.fetch(field).downcase}") }
     end
+    return if errors.any?
+
+    rows = catalog
+    @sources_empty = false
+    @stale_values = {}
+    @effective_values = {}
+    SOURCE_FIELDS.each_with_index do |field, index|
+      # A report that doesn't filter by role carries it without narrowing on it.
+      next if field == :role && !report.role_filter?
+
+      present = rows.map { |row| row[index] }
+      live, stale = public_send(field).partition { |value| present.include?(value) }
+      @stale_values[field] = stale if stale.any?
+      @effective_values[field] = live
+      # A field with values filters on its live ones; with none live, on nothing.
+      rows = rows.select { |row| live.include?(row[index]) } if public_send(field).any?
+    end
+    @sources_empty = rows.empty?
   end
 
   def range_is_valid
@@ -312,8 +433,14 @@ class ReportQuery
     errors.add(:dir, "must be asc or desc") if dir.present? && !DIRECTIONS.include?(dir)
   end
 
-  def match_is_short
-    errors.add(:match, "is too long (at most #{MAX_MATCH_LENGTH} characters)") if match.to_s.length > MAX_MATCH_LENGTH
+  def patterns_are_short
+    PATTERN_FIELDS.each do |field|
+      patterns = public_send(:"#{field}_patterns")
+      errors.add(field, "has too many patterns (at most #{MAX_PATTERNS} patterns)") if patterns.length > MAX_PATTERNS
+      patterns.select { |pattern| pattern.length > MAX_MATCH_LENGTH }.each do |pattern|
+        errors.add(field, :too_long, message: "pattern #{pattern.truncate(40).inspect} is too long (at most #{MAX_MATCH_LENGTH} characters)")
+      end
+    end
   end
 
   def utilization_roles_are_valid
@@ -324,9 +451,9 @@ class ReportQuery
   end
 
   def context_is_valid
-    return if context.blank? || context.match?(CONTEXT_FORMAT)
-
-    errors.add(:context, "must look like controller#action#job_tag")
+    errors.add(:context, "has too many contexts (at most #{MAX_CONTEXTS})") if contexts.length > MAX_CONTEXTS
+    errors.add(:context, "must look like controller#action#job_tag") unless contexts.all? { |item| item.match?(CONTEXT_FORMAT) }
+    errors.add(:ignore_untagged, "must be 1 or left out") unless @raw[:ignore_untagged].nil? || @raw[:ignore_untagged] == "1"
   end
 
   def timeseries_is_valid

@@ -60,7 +60,7 @@ class Report
   # report reads.
   def own_fields
     if utilization? then %i[primary_role replica_role]
-    elsif timeseries? then %i[role fingerprint_id bucket context]
+    elsif timeseries? then %i[role fingerprint_id bucket]
     else %i[role]
     end
   end
@@ -81,6 +81,7 @@ class Report
   def self.utilization_columns(name_key, name_label)
     [
       [name_key, name_label, :text],
+      ["source", "Source", :text],
       ["primary_calls", "Primary calls", :count],
       ["replica_calls", "Replica calls", :count],
       ["total_calls", "Total calls", :count],
@@ -102,6 +103,7 @@ class Report
     new(key: "outliers", title: "Outliers", file: "outliers.sql", kind: :outliers,
         description: "Queries with a window much slower per call than their history.",
         columns: [
+          ["source", "Source", :text],
           ["role", "Role", :text],
           ["fingerprint_id", "Fingerprint", :fingerprint],
           ["example", "Query", :text],
@@ -153,6 +155,7 @@ class Report
     new(key: "fingerprint_sources", title: "Stats for each source", file: "fingerprint_sources.sql",
         kind: :fingerprint_sources, description: "One query's calls, time and history on each role.",
         columns: [
+          ["source", "Source", :text],
           ["role", "Role", :text],
           ["calls", "Calls", :count],
           ["total_ms", "Total ms", :ms],

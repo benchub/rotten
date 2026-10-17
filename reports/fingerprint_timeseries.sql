@@ -1,14 +1,14 @@
 -- Calls and total time for one fingerprint over time, for a source filter.
 --
 -- Parameters:
---   $1 project
---   $2 environment
---   $3 cluster
+--   $1 projects (text[]), or NULL for every project
+--   $2 environments (text[]), or NULL for every environment
+--   $3 clusters (text[]), or NULL for every cluster
 --   $4 fingerprint_id
 --   $5 window start, inclusive
 --   $6 window end, exclusive for starts; windows must also end at or before it
 --   $7 bucket width interval
---   $8 role, or NULL for every role
+--   $8 roles (text[]), or NULL for every role in the sources above
 --
 -- Source filter:
 --   Source means the same project/environment/cluster filter as the sibling
@@ -58,10 +58,10 @@ with input as (
 ), sources as (
   select id
   from rotten.logical_sources
-  where project = $1
-    and environment = $2
-    and cluster = $3
-    and ($8::text is null or role = $8::text)
+  where ($1::text[] is null or project = any($1::text[]))
+    and ($2::text[] is null or environment = any($2::text[]))
+    and ($3::text[] is null or cluster = any($3::text[]))
+    and ($8::text[] is null or role = any($8::text[]))
 ), buckets as (
   select
     gs.bucket_start,

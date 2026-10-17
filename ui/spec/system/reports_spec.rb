@@ -18,10 +18,10 @@ RSpec.describe "Reports", type: :system do
   end
 
   def pick_source(project:, cluster:, role: nil, range: "Last 3 hours")
-    select project, from: "Project"
-    select "production", from: "Environment"
-    select cluster, from: "Cluster"
-    select role, from: "Role" if role
+    pick_only project, from: "Project"
+    pick_only "production", from: "Environment"
+    pick_only cluster, from: "Cluster"
+    pick_only role, from: "Role" if role
     select range, from: "Time range"
   end
 
@@ -69,11 +69,11 @@ RSpec.describe "Reports", type: :system do
     expect(page).to have_current_path(/[?&]report=top_by_total_time(&|\z)/)
 
     expect(page).to have_css("h2.report-title", text: "Top queries by total time")
-    expect(page).to have_current_path(/[?&]role=replica(&|\z)/)
+    expect(page).to have_current_path(/[?&]role%5B%5D=replica(&|\z)/)
     expect(page).to have_current_path(/[?&]range=6h(&|\z)/)
-    expect(page).to have_select("Project", selected: "canvas")
-    expect(page).to have_select("Cluster", selected: "13")
-    expect(page).to have_select("Role", selected: "replica")
+    expect(source_chips("Project")).to eq(["canvas"])
+    expect(source_chips("Cluster")).to eq(["13"])
+    expect(source_chips("Role")).to eq(["replica"])
     expect(page).to have_select("Time range", selected: "Last 6 hours")
     expect(page).to have_checked_field("Top queries by total time")
     expect(page).to have_css(".report-window", text: "(last 6 hours)")
@@ -97,15 +97,15 @@ RSpec.describe "Reports", type: :system do
     expect(page).to have_css("h2.report-title", text: "Replica utilization by job")
     expect(page).to have_current_path(/[?&]primary_role=primary(&|\z)/)
     expect(page).to have_current_path(/[?&]replica_role=replica(&|\z)/)
-    expect(page).to have_current_path(/[?&]role=replica(&|\z)/)
+    expect(page).to have_current_path(/[?&]role%5B%5D=replica(&|\z)/)
     expect(page).to have_no_select("Role")
 
     choose "Top queries by calls"
     click_button "Run report"
     expect(page).to have_current_path(/[?&]report=top_by_calls(&|\z)/)
     expect(page).to have_css("h2.report-title", text: "Top queries by calls")
-    expect(page).to have_current_path(/[?&]role=replica(&|\z)/)
-    expect(page).to have_select("Role", selected: "replica")
+    expect(page).to have_current_path(/[?&]role%5B%5D=replica(&|\z)/)
+    expect(source_chips("Role")).to eq(["replica"])
     expect(report_rows("example", "calls")).to eq([
       ["select * from users where id = $1", "200"],
       ["update delayed_jobs set locked_by = $1 where id = $2", "25"]
@@ -202,8 +202,8 @@ RSpec.describe "Reports", type: :system do
 
     # The old page already shows replica picked and a report table, so wait
     # for the new page before reading rows.
-    expect(page).to have_current_path(/role=replica/)
-    expect(page).to have_select("Role", selected: "replica")
+    expect(page).to have_current_path(/role%5B%5D=replica/)
+    expect(source_chips("Role")).to eq(["replica"])
     expect(report_rows("example", "calls", "total_ms")).to eq([
       ["select * from users where id = $1", "200", "80.00"],
       ["update delayed_jobs set locked_by = $1 where id = $2", "25", "1,200.00"]
@@ -234,7 +234,7 @@ RSpec.describe "Reports", type: :system do
     within("table.report thead") { click_link "Calls" }
     expect(page).to have_css("th[data-column='calls'][aria-sort='ascending']")
     expect(report_rows("calls")).to eq([["85"], ["100"], ["1,100"]])
-    expect(page).to have_select("Cluster", selected: "13")
+    expect(source_chips("Cluster")).to eq(["13"])
   end
 
   it "shows the outliers for a source" do
@@ -365,7 +365,7 @@ RSpec.describe "Reports", type: :system do
 
     expect(page).to have_css("h2.report-title", text: "Fingerprint time series")
     expect(page).to have_field("Fingerprint ID", with: users_id.to_s)
-    expect(page).to have_select("Cluster", selected: "13")
+    expect(source_chips("Cluster")).to eq(["13"])
 
     anchor = @fixture.anchor
     select "Custom", from: "Time range"
@@ -391,14 +391,14 @@ RSpec.describe "Reports", type: :system do
   it "shows a friendly validation error for a source that doesn't exist" do
     visit "/reports?report=top_by_calls&project=canvas&environment=production&cluster=99&range=3h"
 
-    expect(page).to have_text("No source matches that project, environment and cluster")
+    expect(page).to have_text("Cluster 99 is not a known cluster")
     expect(page).not_to have_css("table.report")
   end
 
   it "shows a friendly message when a report times out" do
     original = Rails.configuration.x.report_timeout_ms
     Rails.configuration.x.report_timeout_ms = 100
-    slow = "select pg_sleep(2), $1::text, $2::text, $3::text, $4::timestamptz, $5::timestamptz, $6::integer, $7::text, $8::text"
+    slow = "select pg_sleep(2), $1::text, $2::text, $3::text, $4::timestamptz, $5::timestamptz, $6::integer, $7::text[], $8::text[], $9::text[], $10::text[], $11::boolean"
     allow(ReportSql).to receive(:read).and_call_original
     allow(ReportSql).to receive(:read).with("top_by_calls.sql").and_return(slow)
 

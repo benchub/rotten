@@ -31,14 +31,17 @@ func TestTopByCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := conn.Query(ctx, string(query),
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		3,
 		nil,
 		nil,
+		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -117,14 +120,17 @@ func TestTopByCallsHonorsLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := conn.Query(ctx, string(query),
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		2,
 		nil,
 		nil,
+		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -190,14 +196,17 @@ func TestTopByCallsContextCountsAreBigint(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := conn.Query(ctx, string(query),
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		1,
 		nil,
 		nil,
+		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -321,14 +330,17 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := conn.Query(ctx, string(query),
-		"canvas",
-		testdb.ReportEnvironment,
-		"13",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"13"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		1,
 		nil,
 		nil,
+		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("top_by_calls with large context sum: %v", err)
@@ -369,7 +381,7 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		args := []any{"canvas", testdb.ReportEnvironment, "13", fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 1, nil, nil}
+		args := []any{[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"}, fixture.Anchor.Add(-testdb.RecentRange), fixture.Anchor, 1, nil, nil, nil, nil, false}
 		reportRows, err := conn.Query(ctx, string(query), args...)
 		if err != nil {
 			t.Fatalf("%s with large context sum: %v", report, err)
@@ -407,15 +419,16 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 	}
 
 	outliers := readOutliers(t, conn,
-		"canvas",
-		testdb.ReportEnvironment,
-		"7",
+		[]string{"canvas"},
+		[]string{testdb.ReportEnvironment},
+		[]string{"7"},
 		fixture.Anchor.Add(-testdb.RecentRange),
 		fixture.Anchor,
 		1,
 		defaultSigma,
 		defaultMinHistory,
 		defaultRatio,
+		nil,
 		nil,
 		nil,
 	)
@@ -432,9 +445,9 @@ func TestReportsHandleContextSumsAboveBigint(t *testing.T) {
 
 	for _, report := range []string{"replica_utilization_by_controller_action.sql", "replica_utilization_by_job.sql"} {
 		got := readReplicaUtilization(t, conn, report,
-			"canvas",
-			testdb.ReportEnvironment,
-			"13",
+			[]string{"canvas"},
+			[]string{testdb.ReportEnvironment},
+			[]string{"13"},
 			fixture.Anchor.Add(-testdb.RecentRange),
 			fixture.Anchor,
 			testdb.ReportPrimaryRole,

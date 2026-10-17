@@ -71,14 +71,17 @@ RSpec.describe "Reports", type: :request do
 
     get "/reports", params: source_params.merge(report: "top_by_calls")
 
-    options = ->(name) { doc.css("select[name=#{name}] option").map { |o| o["value"] } }
+    options = ->(name) { doc.css("select[name='#{name}[]'][multiple] option").map { |o| o["value"] } }
+    chosen = ->(name) { doc.css("select[name='#{name}[]'] option[selected]").map { |o| o["value"] } }
     expect(options.("project")).to eq(%w[bridge canvas])
     expect(options.("environment")).to eq(%w[production])
     expect(options.("cluster")).to eq(%w[13 7])
-    expect(options.("role")).to eq(["", "primary", "replica"])
+    expect(options.("role")).to eq(%w[primary replica])
+    expect(%w[project environment cluster role].map(&chosen)).to eq([%w[canvas], %w[production], %w[13], []])
     picker = doc.at_css("[data-controller~=source-picker]")
     expect(JSON.parse(picker["data-source-picker-catalog-value"])).to eq(LogicalSource.catalog)
-    expect(picker.css("select").map { |s| s["data-source-picker-target"] }).to eq(%w[project environment cluster role])
+    expect(picker.css("select").map { |s| s["data-source-picker-target"] }).to eq(%w[values] * 4)
+    expect(picker.css("select").map { |s| s["data-noun"] }).to eq(%w[project environment cluster role])
   end
 
   it "renders every report's fields, tagged with the reports that use them, and none disabled, so the form works without JavaScript" do
@@ -86,14 +89,14 @@ RSpec.describe "Reports", type: :request do
 
     get "/reports", params: source_params.merge(report: "top_by_calls")
 
-    reports_for = ->(name) { doc.at_css("[name=#{name}]").ancestors("[data-report-chooser-target=field]").first["data-reports"].split }
+    reports_for = ->(name) { doc.at_css("[name='#{name}'], [name='#{name}[]']").ancestors("[data-report-chooser-target=field]").first["data-reports"].split }
     expect(reports_for.("role")).to eq(Report.all.select(&:role_filter?).map(&:key))
     expect(reports_for.("primary_role")).to eq(%w[replica_utilization_by_controller_action replica_utilization_by_job])
     expect(reports_for.("replica_role")).to eq(%w[replica_utilization_by_controller_action replica_utilization_by_job])
     expect(reports_for.("fingerprint_id")).to eq(%w[fingerprint_timeseries])
     expect(reports_for.("bucket")).to eq(%w[fingerprint_timeseries])
     expect(doc.css("form.report-form [disabled]")).to be_empty
-    expect(doc.css("form.report-form [hidden]")).to be_empty
+    expect(doc.css("form.report-form [hidden]:not([data-pattern-list-target=add])")).to be_empty
     %w[from to].each do |name|
       expect(doc.at_css("[name=#{name}]").ancestors(".custom-range").first.text).to include("Custom range only")
     end
@@ -258,7 +261,7 @@ RSpec.describe "Reports", type: :request do
       get "/reports", params: source_params.merge(report: "replica_utilization_by_job", role: "replica")
 
       expect(response).to have_http_status(:ok)
-      expect(doc.at_css("select[name=role] option[selected]")["value"]).to eq("replica")
+      expect(doc.css("select[name='role[]'] option[selected]").map { |o| o["value"] }).to eq(["replica"])
     end
 
     it "drops a role the source doesn't have, rather than failing or carrying it" do
@@ -268,7 +271,7 @@ RSpec.describe "Reports", type: :request do
 
       expect(response).to have_http_status(:ok)
       expect(doc.css(".report-errors")).to be_empty
-      expect(doc.css("select[name=role] option[selected]").map { |o| o["value"] }).to eq([""])
+      expect(doc.css("select[name='role[]'] option[selected]")).to be_empty
     end
 
     it "keeps the role field sent while hidden for the reports that don't filter by it" do
@@ -276,7 +279,7 @@ RSpec.describe "Reports", type: :request do
 
       get "/reports"
 
-      role = doc.at_css("[name=role]").ancestors("[data-report-chooser-target=field]").first
+      role = doc.at_css("[name='role[]']").ancestors("[data-report-chooser-target=field]").first
       expect(role["data-report-chooser-keep"]).to eq("true")
       %w[primary_role replica_role fingerprint_id bucket].each do |name|
         expect(doc.at_css("[name=#{name}]").ancestors("[data-report-chooser-target=field]").first["data-report-chooser-keep"]).to be_nil
@@ -405,7 +408,7 @@ RSpec.describe "Reports", type: :request do
     allow(ReportSql).to receive(:read).and_call_original
     allow(ReportSql).to receive(:read).with("outliers.sql")
                                       .and_return("select pg_sleep(1), $1::text, $2::text, $3::text, $4::timestamptz, " \
-                                                  "$5::timestamptz, $6::integer, $7::float8, $8::integer, $9::float8, $10::text, $11::text")
+                                                  "$5::timestamptz, $6::integer, $7::float8, $8::integer, $9::float8, $10::text[], $11::text[], $12::text[]")
 
     get "/reports", params: source_params.merge(report: "outliers")
 

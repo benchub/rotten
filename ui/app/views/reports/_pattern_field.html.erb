@@ -1,0 +1,19 @@
+<%# A list of regex patterns, field[] in the form: Match or Exclude. Each chosen pattern is an input of its own, so without JavaScript they can be edited or cleared; the last input adds one. pattern_list_controller.js shows the chosen ones as chips with remove buttons, and Enter or Add adds the typed one. %>
+<%= tag.div class: "field report-match report-patterns", data: { controller: "pattern-list", pattern_list_noun_value: label.downcase } do %>
+  <%= label_tag field, label %>
+  <ul class="pattern-chips" aria-label="<%= label %> patterns" data-pattern-list-target="list">
+    <% patterns.each_with_index do |pattern, index| %>
+      <li class="pattern-chip">
+        <%= text_field_tag "#{field}[]", pattern, id: nil, class: "pattern-value", maxlength: ReportQuery::MAX_MATCH_LENGTH,
+                           autocomplete: "off", spellcheck: false, aria: { label: "#{label} pattern #{index + 1}" } %>
+      </li>
+    <% end %>
+  </ul>
+  <div class="pattern-entry">
+    <%= text_field_tag "#{field}[]", "", id: field, maxlength: ReportQuery::MAX_MATCH_LENGTH, autocomplete: "off", spellcheck: false,
+                       placeholder: placeholder, aria: { describedby: "#{field}-hint" },
+                       data: { pattern_list_target: "input", action: "keydown->pattern-list#key" } %>
+    <button type="button" class="btn" hidden title="Add <%= label.downcase %> pattern" data-pattern-list-target="add" data-action="pattern-list#add">Add</button>
+  </div>
+  <p class="hint" id="<%= field %>-hint"><%= hint %></p>
+<% end %>

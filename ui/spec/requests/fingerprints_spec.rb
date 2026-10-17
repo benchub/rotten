@@ -126,8 +126,8 @@ RSpec.describe "Fingerprint detail", type: :request do
       doc = chart_doc(source_params.merge(bucket: "10m", role: "primary"))
 
       zoom = query_of(doc.at_css("[data-controller=chart]")["data-chart-zoom-url-value"])
-      expect(zoom).to include("project" => "canvas", "environment" => "production", "cluster" => "13",
-                              "role" => "primary", "bucket" => "10m", "reset_range" => "3h")
+      expect(zoom).to include("project[]" => "canvas", "environment[]" => "production", "cluster[]" => "13",
+                              "role[]" => "primary", "bucket" => "10m", "reset_range" => "3h")
       expect(zoom.keys).not_to include("range", "from", "to", "reset_from", "reset_to")
       expect(doc.at_css("a.chart-reset")).to be_nil
     end
@@ -145,7 +145,7 @@ RSpec.describe "Fingerprint detail", type: :request do
       zoom = query_of(doc.at_css("[data-controller=chart]")["data-chart-zoom-url-value"])
       expect(zoom).to include("reset_range" => "custom", "reset_from" => reset_from, "reset_to" => reset_to)
       reset = query_of(doc.at_css("a.chart-reset")["href"])
-      expect(reset).to eq("project" => "canvas", "environment" => "production", "cluster" => "13",
+      expect(reset).to eq("project[]" => "canvas", "environment[]" => "production", "cluster[]" => "13",
                           "range" => "custom", "from" => reset_from, "to" => reset_to)
       expect(doc.at_css("a.chart-reset").text).to eq("Reset zoom")
     end
@@ -157,7 +157,7 @@ RSpec.describe "Fingerprint detail", type: :request do
                                           reset_range: "24h", reset_from: "junk", reset_to: "junk"))
 
       expect(query_of(doc.at_css("a.chart-reset")["href"])).to eq(
-        "project" => "canvas", "environment" => "production", "cluster" => "13", "range" => "24h"
+        "project[]" => "canvas", "environment[]" => "production", "cluster[]" => "13", "range" => "24h"
       )
     end
 
@@ -215,7 +215,7 @@ RSpec.describe "Fingerprint detail", type: :request do
     allow(ReportSql).to receive(:read).and_call_original
     allow(ReportSql).to receive(:read).with("fingerprint_contexts.sql")
                                       .and_return("select pg_sleep(1), $1::text, $2::text, $3::text, $4::bigint, " \
-                                                  "$5::timestamptz, $6::timestamptz, $7::integer, $8::text")
+                                                  "$5::timestamptz, $6::timestamptz, $7::integer, $8::text, $9::boolean")
 
     get "/fingerprints/#{users_id}", params: source_params
 
@@ -297,7 +297,7 @@ RSpec.describe "Fingerprint detail", type: :request do
     page = Nokogiri::HTML(response.body)
     expect(page.css("svg.timeseries-chart").size).to eq(2)
     expect(page.css("table.fingerprint-contexts tbody tr").size).to eq(7)
-    expect(page.css("table.fingerprint-sources tbody tr").map { |row| row.css("td").first.text })
+    expect(page.css("table.fingerprint-sources tbody tr").map { |row| row.at_css("td[data-column=role]").text })
       .to eq(%w[primary replica])
     row = page.at_css("table.fingerprint-sources tfoot tr.all-sources.unavailable")
     expect(row.css("th, td").map { |cell| cell.text.strip }).to eq(["All sources", "Timed out"])
@@ -329,7 +329,7 @@ RSpec.describe "Fingerprint detail", type: :request do
     allow(ReportSql).to receive(:read).and_call_original
     allow(ReportSql).to receive(:read).with("fingerprint_sources.sql")
                                       .and_return("select pg_sleep(1), $1::text, $2::text, $3::text, $4::bigint, " \
-                                                  "$5::timestamptz, $6::timestamptz, $7::text")
+                                                  "$5::timestamptz, $6::timestamptz, $7::text, $8::text, $9::boolean")
 
     get "/fingerprints/#{users_id}", params: source_params
 
@@ -372,8 +372,8 @@ RSpec.describe "Fingerprint detail", type: :request do
                                        "login#new"])
       show = query_of(links.first["href"])
       expect(links.first["href"]).to start_with("/fingerprints/#{users_id}?")
-      expect(show).to include("context" => "users#show#", "project" => "canvas", "environment" => "production",
-                              "cluster" => "13", "range" => "3h", "bucket" => "10m", "role" => "primary")
+      expect(show).to include("context[]" => "users#show#", "project[]" => "canvas", "environment[]" => "production",
+                              "cluster[]" => "13", "range" => "3h", "bucket" => "10m", "role[]" => "primary")
       expect(show.keys).not_to include("fingerprint_id")
     end
 
@@ -382,7 +382,7 @@ RSpec.describe "Fingerprint detail", type: :request do
       doc = doc_for
 
       untagged = doc.at_css("table.fingerprint-contexts td a .context-untagged").ancestors("a").first
-      expect(query_of(untagged["href"])["context"]).to eq("##")
+      expect(query_of(untagged["href"])["context[]"]).to eq("##")
     end
 
     it "draws only that context's calls, and says which context is showing" do
@@ -399,9 +399,9 @@ RSpec.describe "Fingerprint detail", type: :request do
       expect(series_total(doc, "total_ms")).to be_within(0.01).of(150 + 50 + (250.0 * 200 / 491))
       active = doc.at_css(".context-filter")
       expect(active.text).to include("users#show")
-      expect(query_of(active.at_css("a")["href"]).keys).not_to include("context")
-      expect(active.at_css("a").text).to eq("Show all contexts")
-      expect(active.at_css("a")["href"]).to include("bucket=10m", "range=3h")
+      show_all = active.css("a").find { |a| a.text == "Show all contexts" }
+      expect(query_of(show_all["href"]).keys).not_to include("context[]")
+      expect(show_all["href"]).to include("bucket=10m", "range=3h")
       # The contexts list stays whole so another one can be picked.
       expect(doc.css("table.fingerprint-contexts tbody tr").size).to eq(7)
       expect(doc.css("table.fingerprint-contexts tbody tr[aria-current]").map(&:text).join).to include("users#show")
@@ -411,17 +411,19 @@ RSpec.describe "Fingerprint detail", type: :request do
       doc = doc_for(context: "users#show#", range: "custom", from: (Time.now.utc - 2.hours).strftime("%Y-%m-%dT%H:%M"),
                     to: (Time.now.utc - 1.hour).strftime("%Y-%m-%dT%H:%M"), reset_range: "3h")
 
-      expect(query_of(doc.at_css("[data-controller=chart]")["data-chart-zoom-url-value"])).to include("context" => "users#show#")
-      expect(query_of(doc.at_css("a.chart-reset")["href"])).to include("context" => "users#show#", "range" => "3h")
-      expect(doc.at_css("form.report-form input[type=hidden][name=context]")["value"]).to eq("users#show#")
-      expect(query_of(doc.at_css("a[href*='fingerprint_timeseries']")["href"])).to include("context" => "users#show#")
-      # A context link keeps the zoomed range and where to reset to.
-      link = query_of(doc.at_css("table.fingerprint-contexts tbody td a")["href"])
+      expect(query_of(doc.at_css("[data-controller=chart]")["data-chart-zoom-url-value"])).to include("context[]" => "users#show#")
+      expect(query_of(doc.at_css("a.chart-reset")["href"])).to include("context[]" => "users#show#", "range" => "3h")
+      expect(doc.at_css("form.report-form input[type=hidden][name='context[]']")["value"]).to eq("users#show#")
+      expect(query_of(doc.at_css("a[href*='fingerprint_timeseries']")["href"])).to include("context[]" => "users#show#")
+      # A link that changes the contexts keeps the zoomed range and where to
+      # reset to. users#show is the window's only context, so it's not a
+      # link in the table; its remove link is one.
+      link = query_of(doc.at_css(".context-filter a[aria-label='Remove context users#show']")["href"])
       expect(link).to include("range" => "custom", "reset_range" => "3h")
     end
 
     it "does not set a context field on the form when none is picked" do
-      expect(doc_for.at_css("form.report-form input[name=context]")).to be_nil
+      expect(doc_for.at_css("form.report-form input[name='context[]']")).to be_nil
     end
 
     it "draws zeros, not an error, for a context this fingerprint never ran in" do
@@ -466,14 +468,17 @@ RSpec.describe "Fingerprint detail", type: :request do
       end
     end
 
-    it "answers 422 for a context that isn't a plain string" do
+    it "answers 422 for a context that isn't a string or a list of them" do
       expect(ReportRunner).not_to receive(:new)
-
-      get "/fingerprints/#{users_id}?#{params.to_query}&context[]=users%23show%23"
-      expect(response).to have_http_status(:unprocessable_content)
 
       get "/fingerprints/#{users_id}?#{params.to_query}&context[a]=users%23show%23"
       expect(response).to have_http_status(:unprocessable_content)
+    end
+
+    it "takes a list of contexts, as context[]" do
+      get "/fingerprints/#{users_id}?#{params.to_query}&context[]=users%23show%23&context[]=users%23index%23"
+      expect(response).to have_http_status(:ok)
+      expect(series_total(Nokogiri::HTML5(response.body), "calls")).to eq(720)
     end
 
     it "round-trips a job tag that contains a #" do
@@ -481,7 +486,7 @@ RSpec.describe "Fingerprint detail", type: :request do
       doc = doc_for
 
       link = doc.css("table.fingerprint-contexts tbody td a").find { |a| a.text == "Sync#All" }
-      expect(query_of(link["href"])["context"]).to eq("##Sync#All")
+      expect(query_of(link["href"])["context[]"]).to eq("##Sync#All")
       follow = doc_for(context: "##Sync#All")
       expect(series_total(follow, "calls")).to eq(7)
       expect(follow.at_css(".context-filter").text).to include("Sync#All")

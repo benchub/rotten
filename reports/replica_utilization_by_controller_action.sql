@@ -1,18 +1,28 @@
 -- Primary/replica utilization by controller/action for a source filter and observed time range.
 --
 -- Parameters:
---   $1 project
---   $2 environment
---   $3 cluster
+--   $1 projects (text[]), or NULL for every project
+--   $2 environments (text[]), or NULL for every environment
+--   $3 clusters (text[]), or NULL for every cluster
 --   $4 window start, inclusive
 --   $5 window end, exclusive for starts; windows must also end at or before it
 --   $6 primary role name
 --   $7 replica role name
---   $8 match: a case-insensitive POSIX regex (~*) on the controller#action, or NULL
---      for every row. The untagged row never matches a pattern.
+--   $8 match: case-insensitive POSIX regexes (~*, text[]) on the controller#action, OR'd,
+--      or NULL for every row. The untagged row never matches a pattern.
+--   $9 exclude: regexes (text[]) on the controller#action, or NULL for none. A row any
+--      of them matches is dropped before match applies.
+--   $10 contexts (text[]): "controller#action#job_tag", empty parts for
+--      none, or NULL for every context. With it, the report counts only the
+--      calls (event_context.c) and time (attributed_time) in these contexts.
+--   $11 ignore untagged (boolean): leave out the untagged context's calls and
+--      time: the untagged row goes.
+--      With $10, match ($8) and exclude ($9) see only the rows left, so only
+--      the filtered contexts.
 --
 -- Rows:
---   One row per controller and action, from context rows with a controller
+--   One row per source (project, environment and cluster, returned as the
+--   last columns) and controller and action, from context rows with a controller
 --   or an action. Context rows with only a job tag aren't here (they're in the
 --   job report). Untagged calls, context rows with no controller, action or
 --   job tag, are one row of their own with controller_action NULL and
@@ -36,16 +46,37 @@
 --
 -- Ordering:
 --   Rows are ordered by total calls descending, then total time descending,
---   then controller/action name and cluster for deterministic output.
+--   then controller/action name project, environment and cluster for deterministic output.
 with sources as (
-  select id, cluster, role
+  select id, project, environment, cluster, role
   from rotten.logical_sources
-  where project = $1
-    and environment = $2
-    and cluster = $3
+  where ($1::text[] is null or project = any($1::text[]))
+    and ($2::text[] is null or environment = any($2::text[]))
+    and ($3::text[] is null or cluster = any($3::text[]))
     and role in ($6, $7)
+), wanted as (
+  -- $10's contexts as dimension ids. Each is "controller#action#job_tag" with
+  -- empty parts for none (so "##" is the untagged context); the job tag,
+  -- last, may hold a #. A context naming a controller, action or job tag no
+  -- row has can't match anything, so it's dropped.
+  select c.id as controller_id, ac.id as action_id, jt.id as job_tag_id
+  from unnest($10::text[]) as w(context)
+  cross join lateral (
+    select
+      nullif(split_part(w.context, '#', 1), '') as controller,
+      nullif(split_part(w.context, '#', 2), '') as action,
+      nullif(substring(w.context from '^[^#]*#[^#]*#(.*)$'), '') as job_tag
+  ) p
+  left join rotten.controllers c on c.controller = p.controller
+  left join rotten.actions ac on ac.action = p.action
+  left join rotten.job_tags jt on jt.job_tag = p.job_tag
+  where (p.controller is null) = (c.id is null)
+    and (p.action is null) = (ac.id is null)
+    and (p.job_tag is null) = (jt.id is null)
 ), aggregated_events as (
   select
+    s.project,
+    s.environment,
     s.cluster,
     s.role,
     ec.controller_id,
@@ -58,9 +89,15 @@ with sources as (
   where ec.observed_window_start >= $4::timestamptz
     and ec.observed_window_start < $5::timestamptz
     and ec.observed_window_end <= $5::timestamptz
+    and ($10::text[] is null or exists (
+      select 1 from wanted w
+      where w.controller_id is not distinct from ec.controller_id
+        and w.action_id is not distinct from ec.action_id
+        and w.job_tag_id is not distinct from ec.job_tag_id))
+    and not ($11::boolean and ec.controller_id is null and ec.action_id is null and ec.job_tag_id is null)
     and (ec.controller_id is not null or ec.action_id is not null
       or ec.job_tag_id is null)
-  group by s.cluster, s.role, ec.controller_id, ec.action_id
+  group by s.project, s.environment, s.cluster, s.role, ec.controller_id, ec.action_id
 ), primary_events as (
   select *
   from aggregated_events
@@ -71,6 +108,8 @@ with sources as (
   where role = $7
 ), combined as (
   select
+    coalesce(p.project, r.project) as project,
+    coalesce(p.environment, r.environment) as environment,
     coalesce(p.cluster, r.cluster) as cluster,
     coalesce(p.controller_id, r.controller_id) as controller_id,
     coalesce(p.action_id, r.action_id) as action_id,
@@ -79,7 +118,9 @@ with sources as (
     coalesce(p.total_ms, 0)::double precision as primary_total_ms,
     coalesce(r.total_ms, 0)::double precision as replica_total_ms
   from primary_events p
-  full outer join replica_events r on r.cluster = p.cluster
+  full outer join replica_events r on r.project = p.project
+    and r.environment = p.environment
+    and r.cluster = p.cluster
     and r.controller_id is not distinct from p.controller_id
     and r.action_id is not distinct from p.action_id
 ), totals as (
@@ -111,10 +152,15 @@ select
   t.total_ms,
   t.primary_time_percent::double precision as primary_time_percent,
   case when t.total_ms > 0 then (100::numeric - t.primary_time_percent)::double precision else 0::double precision end as replica_time_percent,
-  t.untagged
+  t.untagged,
+  t.project,
+  t.environment
 from totals t
 left join rotten.controllers ctrl on ctrl.id = t.controller_id
 left join rotten.actions act on act.id = t.action_id
-where $8::text is null
-  or (not t.untagged and coalesce(ctrl.controller, '') || '#' || coalesce(act.action, '') ~* $8::text)
-order by total_calls desc, total_ms desc, controller_action, t.cluster;
+-- $9 drops a row whose name an exclude pattern matches; then $8 keeps a row
+-- whose name a match pattern matches. The untagged row has no name, so
+-- neither matches it.
+where not coalesce(not t.untagged and coalesce(ctrl.controller, '') || '#' || coalesce(act.action, '') ~* any($9::text[]), false)
+  and ($8::text[] is null or (not t.untagged and coalesce(ctrl.controller, '') || '#' || coalesce(act.action, '') ~* any($8::text[])))
+order by total_calls desc, total_ms desc, controller_action, t.project, t.environment, t.cluster;

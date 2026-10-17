@@ -78,7 +78,17 @@ RSpec.describe "Report match escaping", type: :request do
 
     expect(response).to have_http_status(:unprocessable_content)
     expect(response.body).not_to include("<script>window.pwned = 2")
-    expect(doc.at_css("input[name=match]")["value"]).to eq(pattern)
-    expect(doc.at_css(".report-errors").text).to include("Match is not a valid regular expression")
+    expect(doc.at_css("input[name='match[]'].pattern-value")["value"]).to eq(pattern)
+    expect(doc.at_css(".report-errors").text).to include("Match pattern #{pattern.inspect} is not a valid regular expression")
+  end
+
+  it "escapes a hostile exclude pattern in the form and in its error" do
+    pattern = "\"><script>window.pwned = 3</script>("
+    get "/reports", params: source_params.merge(report: "top_by_calls", exclude: [pattern])
+
+    expect(response).to have_http_status(:unprocessable_content)
+    expect(response.body).not_to include("<script>window.pwned = 3")
+    expect(doc.at_css("input[name='exclude[]'].pattern-value")["value"]).to eq(pattern)
+    expect(doc.at_css(".report-errors").text).to include("Exclude pattern #{pattern.inspect} is not a valid regular expression")
   end
 end

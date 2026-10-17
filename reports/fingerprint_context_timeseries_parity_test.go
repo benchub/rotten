@@ -29,9 +29,9 @@ func TestFingerprintContextTimeseriesBucketsMatchTimeseries(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := func(query []byte, start, end time.Time, width any, scopedToContext bool) ([]fingerprintTimeseriesBucket, error) {
-		args := []any{"canvas", testdb.ReportEnvironment, "13", fixture.FingerprintID["users"], start, end, width, nil}
+		args := []any{[]string{"canvas"}, []string{testdb.ReportEnvironment}, []string{"13"}, fixture.FingerprintID["users"], start, end, width, nil}
 		if scopedToContext {
-			args = append(args, "users", "show", nil)
+			args = append(args, []string{"users#show#"}, false)
 		}
 		rows, err := conn.Query(context.Background(), string(query), args...)
 		if err != nil {
