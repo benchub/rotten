@@ -9,5 +9,5 @@
     <%= check_box_tag :ignore_untagged, "1", query.ignore_untagged?, aria: { describedby: "ignore_untagged-hint" } %>
     Ignore untagged context
   </label>
-  <p class="hint" id="ignore_untagged-hint">Leaves out calls pg_stat_statement_context didn't tag, and every call from a database without it, from the context lists and the totals. Totals then leave out untagged calls. Outliers ignores this.</p>
+  <p class="hint" id="ignore_untagged-hint">Leave out queries without context. Ignored by the outliers report.</p>
 </div>

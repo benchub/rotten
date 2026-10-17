@@ -16,9 +16,9 @@
       <legend>Dataset</legend>
       <%= render "reports/source_fields", query: @query, reports: Report.all %>
       <%= render "reports/pattern_field", field: :match, label: "Match", patterns: @query.match_patterns, placeholder: "e.g. users|#index",
-                 hint: "Optional, up to #{ReportQuery::MAX_PATTERNS} patterns, any of which keeps a row. Each is a case-insensitive Postgres regex on the query text and the contexts (controller#action, job). The time series ignores it. Untagged calls never match by context." %>
+                 hint: "Optional case-insensitive Postgres regex on the query text and context sources. Ignored in the time series." %>
       <%= render "reports/pattern_field", field: :exclude, label: "Exclude", patterns: @query.exclude_patterns, placeholder: "e.g. ^pg_catalog",
-                 hint: "Optional, up to #{ReportQuery::MAX_PATTERNS} patterns. A row any of them matches, the same way, is dropped before Match applies." %>
+                 hint: "Like Match, but the inverse." %>
       <%= render "reports/context_fields", query: @query %>
     </fieldset>
     <fieldset class="report-chooser">

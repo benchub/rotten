@@ -349,7 +349,6 @@ RSpec.describe "Reports", type: :system do
     it "doesn't say on the match hint that contexts come from query text" do
       visit "/reports"
       expect(find("#match-hint").text).not_to match(/query text Postgres kept|not from each call/)
-      expect(find("#match-hint").text).to include("Untagged calls never match by context")
     end
   end
 
