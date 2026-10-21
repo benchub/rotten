@@ -1,9 +1,9 @@
 /* The report workbench, the fingerprint page and their charts. */
 @layer components {
   /* The workbench form: a card of fieldsets. */
-  .report-form { @apply flex flex-wrap items-end gap-4; }
+  .report-form { @apply flex flex-wrap items-start gap-4; }
   .report-form.workbench { @apply grid grid-cols-[minmax(0,1fr)] gap-6; }
-  .report-form fieldset { @apply m-0 flex min-w-0 flex-wrap items-end gap-x-4 gap-y-3 border-0 p-0; }
+  .report-form fieldset { @apply m-0 flex min-w-0 flex-wrap items-start gap-x-4 gap-y-3 border-0 p-0; }
   .report-form legend { @apply mb-2 p-0 text-xs font-bold tracking-[0.06em] text-ink-muted uppercase; }
   .report-form .source-picker { @apply contents; }
   /* Time range tops the column like the source fields, and Custom's From and To open under it. */
@@ -42,8 +42,8 @@
   .report-form .custom-range {
     @apply flex flex-wrap items-end gap-3 rounded-md border border-dashed border-line-strong bg-surface-muted px-3 py-2;
   }
-  .report-form .report-options { @apply flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-line pt-4; }
-  .report-form .form-actions { @apply ml-auto flex items-center gap-3; }
+  .report-form .report-options { @apply flex flex-wrap items-start gap-x-4 gap-y-3 border-t border-line pt-4; }
+  .report-form .form-actions { @apply ml-auto flex self-end items-center gap-3; }
   .report-form .form-actions .btn-primary { @apply min-w-32; }
   .report-form .form-actions .btn-primary:disabled { @apply cursor-wait opacity-60 hover:border-primary hover:bg-primary; }
   /* Shown while a report runs: report_busy_controller.js sets aria-busy. */
