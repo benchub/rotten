@@ -332,7 +332,10 @@ repeated parameters, `project[]=canvas&cluster[]=13&cluster[]=7`, so links
 and the form round-trip; an old link's single `cluster=13` still works.
 Without JavaScript each field is a plain multi-select. The utilization
 reports need exactly one primary and one replica role, so they keep their
-own **Primary role** and **Replica role** fields. Outliers, the utilization
+own **Primary role** and **Replica role** fields. Each offers only roles
+some source reports. **Primary role** starts as `primary` and **Replica
+role** as `replica` when a source has that name; otherwise the field starts
+blank and the report asks for a choice. Outliers, the utilization
 reports and the fingerprint page's stats table have a **Source** column
 (`project/environment/cluster`), since their rows can come from several.
 

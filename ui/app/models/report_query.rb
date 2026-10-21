@@ -109,8 +109,11 @@ class ReportQuery
     # A job tag can end in a space, so contexts are kept as typed too.
     @context = pattern_values(@raw[:context])
     @range = DEFAULT_RANGE if @range.blank? && @raw[:range].nil?
-    @primary_role = DEFAULT_PRIMARY_ROLE if @primary_role.blank?
-    @replica_role = DEFAULT_REPLICA_ROLE if @replica_role.blank?
+    # With no role sent, the utilization roles start at the usual names, but
+    # only where some source has them; otherwise they stay unset and the
+    # report asks for a choice. A blank one sent from the form is kept blank.
+    @primary_role = DEFAULT_PRIMARY_ROLE if @raw[:primary_role].nil? && roles.include?(DEFAULT_PRIMARY_ROLE)
+    @replica_role = DEFAULT_REPLICA_ROLE if @raw[:replica_role].nil? && roles.include?(DEFAULT_REPLICA_ROLE)
     # The form's sort carries the report it came from; on another report it's dropped.
     @sort = @dir = nil if Report.find(@sort_report) && @sort_report != report.key
   end
@@ -444,10 +447,12 @@ class ReportQuery
   end
 
   def utilization_roles_are_valid
-    known = roles | [DEFAULT_PRIMARY_ROLE, DEFAULT_REPLICA_ROLE]
-    errors.add(:primary_role, "is not a known role") unless known.include?(primary_role)
-    errors.add(:replica_role, "is not a known role") unless known.include?(replica_role)
-    errors.add(:replica_role, "must differ from Primary role") if primary_role == replica_role
+    { primary_role: primary_role, replica_role: replica_role }.each do |field, value|
+      if value.blank? then errors.add(field, "must be chosen")
+      elsif !roles.include?(value) then errors.add(field, "is not a known role")
+      end
+    end
+    errors.add(:replica_role, "must differ from Primary role") if primary_role.present? && primary_role == replica_role
   end
 
   def context_is_valid
