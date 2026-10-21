@@ -1819,3 +1819,10 @@ Completed: 2026-10-12, 1bf6485
 - **Do:** Offer only roles that real logical sources report (`query.roles`). Don't add literal defaults to the options or to validation. Preselect a role only when it exists: `primary` for Primary, and `replica` for Replica if a source has that name. Otherwise leave the picker unselected and require a choice. Update the help text if it names the defaults.
 - **Red test:** A system spec where no source has a `replica` role: the Replica role dropdown doesn't list it, and a query naming it is rejected as an unknown role.
 - Completed: 2026-10-21, a1eed64
+
+### 20261021-120000-1: Filter fields misalign on the fingerprint page.
+- **Why:** On a fingerprint page (e.g. "Fingerprint 87485"), the Bucket field sits lower than Project, Environment, Cluster, Role, and Time range: its label is about 55px below theirs. The row seems to align items to the bottom, so the Cluster chip under "1 chosen" (the "60" chip) makes that row taller and pushes Bucket down. Seen 2026-10-21 in a screenshot at `/Users/bench/Desktop/Screenshot 2026-10-21 at 11.57.00 AM.png`.
+- **Do:** Top-align the filter row so every label and control starts at the same height, with or without chips under a field. Check the other report pages' filter rows for the same problem.
+- **Needs:** 20261021-090000-1, which edits the same `_report_fields.html.erb` partial.
+- **Red test:** A system spec that selects a cluster (so a chip shows) on a fingerprint page and asserts the Bucket label's top matches the Project label's top, using Capybara's `evaluate_script` on `getBoundingClientRect`.
+- Completed: 2026-10-21, 2c28cc4
