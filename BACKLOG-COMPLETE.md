@@ -1813,3 +1813,9 @@ Completed: 2026-10-12, 1bf6485
   - Update any specs that assert the old text.
 - **Red test:** a system spec asserts the three help strings. Another checks that Time range's label is on the same row as Role's (equal top offsets) and that the Custom fields render under Time range (their left offset is at or right of Time range's).
 - Completed: 2026-10-17, d75d1a8
+
+### 20261021-090000-1: Utilization role pickers offer and default to a "replica" role no source has.
+- **Why:** On "Replica utilization by controller and action" (and by job), `ReportQuery::DEFAULT_REPLICA_ROLE` and `DEFAULT_PRIMARY_ROLE` are always added to the Primary and Replica role dropdowns (`ui/app/views/reports/_report_fields.html.erb`) and accepted by `utilization_roles_are_valid`. They also fill in a blank role. A deployment whose servers use other role names sees a "replica" choice that matches nothing, and the report quietly returns empty or lopsided rows.
+- **Do:** Offer only roles that real logical sources report (`query.roles`). Don't add literal defaults to the options or to validation. Preselect a role only when it exists: `primary` for Primary, and `replica` for Replica if a source has that name. Otherwise leave the picker unselected and require a choice. Update the help text if it names the defaults.
+- **Red test:** A system spec where no source has a `replica` role: the Replica role dropdown doesn't list it, and a query naming it is rejected as an unknown role.
+- Completed: 2026-10-21, a1eed64

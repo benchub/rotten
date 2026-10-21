@@ -60,6 +60,12 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
+### 20261021-120000-1: Filter fields misalign on the fingerprint page.
+- **Why:** On a fingerprint page (e.g. "Fingerprint 87485"), the Bucket field sits lower than Project, Environment, Cluster, Role, and Time range: its label is about 55px below theirs. The row seems to align items to the bottom, so the Cluster chip under "1 chosen" (the "60" chip) makes that row taller and pushes Bucket down. Seen 2026-10-21 in a screenshot at `/Users/bench/Desktop/Screenshot 2026-10-21 at 11.57.00 AM.png`.
+- **Do:** Top-align the filter row so every label and control starts at the same height, with or without chips under a field. Check the other report pages' filter rows for the same problem.
+- **Needs:** 20261021-090000-1, which edits the same `_report_fields.html.erb` partial.
+- **Red test:** A system spec that selects a cluster (so a chip shows) on a fingerprint page and asserts the Bucket label's top matches the Project label's top, using Capybara's `evaluate_script` on `getBoundingClientRect`.
+
 ### 20261016-104605-1: Register stores the worker's FQDN unnormalized.
 - **Why (found in 20261016-102622-1 review):** `Register` (`internal/ingest/register.go:85-97`, upsert at `:133-137`) writes the raw `src.FQDN` into `rotten.physical_sources`. Pins match ignoring case and a trailing dot, so `DB1.example.com`, `db1.example.com.` and `db1.example.com` authenticate as the same host but become three physical sources, splitting that host's reports. Suffix pins widen this from one host's spellings to a whole domain's.
 - **Do:** Store the normalized FQDN (lowercase, no trailing dot) in `Register`, for every pin type. Decide what happens to existing rows with other spellings: a migration that merges them, or leave them and document it. Check whether the worker's own registration identity (`internal/state`, `cmd/rotten-worker`) compares FQDNs and would see a normalized value as a change of identity, which drops the outbox (`docs/worker.md`).
