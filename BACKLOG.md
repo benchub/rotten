@@ -60,10 +60,25 @@ Work top to bottom unless a task says otherwise. Background and reasoning live i
 
 ## Phase D: Rotten server (item 1).
 
-### 20261106-110438-1: Worker never reloads renewed observed-DB TLS client certs.
-- **Why (seen in production, 2026-11-06):** `observedConfig` (`cmd/rotten-worker/main.go`) calls `pgx.ParseConfig` once at startup, which reads `sslcert`/`sslkey`/`sslrootcert` into memory. `observedConnector` reconnects with `base.Copy()`, so after the cert on disk is renewed and the old one expires, every reconnect presents the expired cert and the worker logs connection failures until restarted. Verified with a throwaway test: after regenerating the cert files, `Copy().TLSConfig.Certificates` still holds the startup cert.
-- **Do:** Re-parse the observed connection string (including the `remakeSSLCertConfigFromTLS` chain rebuild) on each connect attempt in `observedConnector`. Keep the startup parse, so a bad config still fails fast. If a re-parse fails, log it and fall back to the last good config. Also look at `ServerCAFile` (`internal/serverclient/client.go`, read once in `newHTTPClient`): decide whether it needs the same treatment, and document the outcome in `docs/worker.md`.
-- **Red test:** generate certs with `internal/testcerts`, build the connector, regenerate the files, and assert that the next connect's TLS config presents the new cert. Ideally also an end-to-end test against `internal/testdb` that requires client certs.
+### 20261106-112900-1: bundler-audit fails on new Rails advisories.
+- **Why (found in 20261106-110438-1 gate, 2026-11-06):** `spec/security/static_analysis_spec.rb:55` fails because bundler-audit reports advisories published since the last gate run, including actionmailbox 8.1.4 (GHSA-5957-c7qm-m469) and rails-html-sanitizer (GHSA-h7wh-q2qr-458c). `make test-all` is red on `master` until this is fixed.
+- **Do:** Update the affected gems in `ui/Gemfile.lock` to patched versions. Run `bundle exec bundler-audit check --update` for the full list.
+- **Red test:** the existing bundler-audit spec, which fails now.
+
+### 20261106-112900-2: End-to-end test for observed-DB client-cert renewal.
+- **Why (follow-up to 20261106-110438-1):** The reload fix is covered only by unit tests that capture the per-attempt `pgx.ConnConfig`. `internal/testdb` runs Postgres with `sslmode=disable`, and `internal/testcerts` doesn't issue client-auth certs.
+- **Do:** Add client-auth cert generation to `testcerts`. Add a test that runs Postgres with SSL and a `cert` `pg_hba` rule, renews the client cert, forces a reconnect, and checks that the worker connects with the new cert.
+- **Red test:** with the reload removed from `observedConnector`, the test fails once the old cert expires or is revoked.
+
+### 20261106-112900-3: `make test` needs `rotten-dev-observed` built.
+- **Why (found in 20261106-110438-1):** On a fresh Docker, tests in `internal/devtraffic` and `internal/testdb` fail because `make image` doesn't build the `rotten-dev-observed:18` image. The builder had to run `docker compose -f dev/docker-compose.yaml build`.
+- **Do:** Make `make test` build or depend on that image.
+- **Red test:** a smoke check that `make test` passes after `docker image rm rotten-dev-observed:18`.
+
+### 20261106-112900-4: `-debug` cert lines repeat on every reconnect.
+- **Why (found in 20261106-110438-1):** Since `observedConfig` now runs on each connect attempt, `-debug` prints the root-cert and client-chain lines on every attempt, which floods the log during an outage.
+- **Do:** Print those lines only at startup or when the loaded certs change. Also mention in `docs/worker.md` that `.pgpass` and service-file changes now take effect on reconnect too.
+- **Red test:** two connect attempts with unchanged certs log the chain once.
 
 ### 20261016-104605-1: Register stores the worker's FQDN unnormalized.
 - **Why (found in 20261016-102622-1 review):** `Register` (`internal/ingest/register.go:85-97`, upsert at `:133-137`) writes the raw `src.FQDN` into `rotten.physical_sources`. Pins match ignoring case and a trailing dot, so `DB1.example.com`, `db1.example.com.` and `db1.example.com` authenticate as the same host but become three physical sources, splitting that host's reports. Suffix pins widen this from one host's spellings to a whole domain's.

@@ -1826,3 +1826,9 @@ Completed: 2026-10-12, 1bf6485
 - **Needs:** 20261021-090000-1, which edits the same `_report_fields.html.erb` partial.
 - **Red test:** A system spec that selects a cluster (so a chip shows) on a fingerprint page and asserts the Bucket label's top matches the Project label's top, using Capybara's `evaluate_script` on `getBoundingClientRect`.
 - Completed: 2026-10-21, 2c28cc4
+
+### 20261106-110438-1: Worker never reloads renewed observed-DB TLS client certs.
+- **Why (seen in production, 2026-11-06):** `observedConfig` (`cmd/rotten-worker/main.go`) calls `pgx.ParseConfig` once at startup, which reads `sslcert`/`sslkey`/`sslrootcert` into memory. `observedConnector` reconnects with `base.Copy()`, so after the cert on disk is renewed and the old one expires, every reconnect presents the expired cert and the worker logs connection failures until restarted. Verified with a throwaway test: after regenerating the cert files, `Copy().TLSConfig.Certificates` still holds the startup cert.
+- **Do:** Re-parse the observed connection string (including the `remakeSSLCertConfigFromTLS` chain rebuild) on each connect attempt in `observedConnector`. Keep the startup parse, so a bad config still fails fast. If a re-parse fails, log it and fall back to the last good config. Also look at `ServerCAFile` (`internal/serverclient/client.go`, read once in `newHTTPClient`): decide whether it needs the same treatment, and document the outcome in `docs/worker.md`.
+- **Red test:** generate certs with `internal/testcerts`, build the connector, regenerate the files, and assert that the next connect's TLS config presents the new cert. Ideally also an end-to-end test against `internal/testdb` that requires client certs.
+- Completed: 2026-11-06, 7f976aa
