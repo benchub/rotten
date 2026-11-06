@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -683,16 +684,35 @@ func observedConfig(configuration *Configuration) (*pgx.ConnConfig, error) {
 	return base, nil
 }
 
-func observedConnector(configuration *Configuration) (worker.ObservedConnector, error) {
-	base, err := observedConfig(configuration)
+type connectFunc func(context.Context, *pgx.ConnConfig) (*pgx.Conn, error)
+
+func observedConnector(configuration *Configuration, logger *slog.Logger) (worker.ObservedConnector, error) {
+	return observedConnectorWith(configuration, logger, pgx.ConnectConfig)
+}
+
+// observedConnectorWith parses the observed connection string at startup, so a
+// bad config fails fast, and again on every connect attempt, so renewed
+// sslcert/sslkey/sslrootcert files are picked up without a restart. If a
+// re-parse fails (say, a cert file mid-rewrite), it logs and reuses the last
+// config that parsed.
+func observedConnectorWith(configuration *Configuration, logger *slog.Logger, connect connectFunc) (worker.ObservedConnector, error) {
+	lastGood, err := observedConfig(configuration)
 	if err != nil {
 		return nil, err
 	}
+	var mu sync.Mutex
 	return func(ctx context.Context) (*pgx.Conn, error) {
-		cfg := base.Copy()
+		mu.Lock()
+		if fresh, err := observedConfig(configuration); err != nil {
+			logger.Warn("couldn't re-parse the observed database config; reusing the last good one", "err", err)
+		} else {
+			lastGood = fresh
+		}
+		cfg := lastGood.Copy()
+		mu.Unlock()
 		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		return pgx.ConnectConfig(connectCtx, cfg)
+		return connect(connectCtx, cfg)
 	}, nil
 }
 
@@ -906,7 +926,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg.ObservedDBConnect, err = observedConnector(configuration)
+	cfg.ObservedDBConnect, err = observedConnector(configuration, logger)
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)

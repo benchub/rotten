@@ -67,6 +67,24 @@ then a `sslrootcert` from a service in the service file (`PGSERVICE` and
 `~/.pg_service.conf` as the default file), then `PGSSLROOTCERT`, then
 `~/.postgresql/root.crt`.
 
+#### Renewing certificates
+
+The worker reads `ObservedDBConn` and its `sslcert`, `sslkey` and
+`sslrootcert` files at startup, and a bad config stops it there. It reads them
+again on every connection attempt to the observed database, so renewed files
+are picked up without a restart. A healthy connection keeps the TLS session it
+started with; the new certificate is used the next time the worker reconnects,
+for example after the server drops the connection. If a re-read fails, say
+because a file is mid-rewrite or missing, the worker logs a warning and uses
+the last settings that read cleanly. Replace the files atomically (write a new
+file, then rename it over the old one) to avoid that window.
+
+`PassKeyFile` and `ServerCAFile` are read once at startup; changing either
+needs a restart. The server's own certificate can be renewed freely, as long
+as the CA in `ServerCAFile` (or the system's trusted CAs) still signs it. To
+move the server to a new CA, put both the old and new CA in `ServerCAFile`,
+restart the workers, switch the server, and then drop the old CA.
+
 ### Timing
 
 | Key | Required | Meaning |

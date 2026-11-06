@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,11 +10,17 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/benchub/rotten/internal/testcerts"
+	"github.com/jackc/pgx/v5"
 )
 
 type testCert struct {
@@ -316,4 +323,124 @@ func TestObservedConfigQuotedPathsWithSpaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRemadeChain(t, cfg.TLSConfig, f)
+}
+
+func pemDER(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		t.Fatalf("%s has no PEM block", path)
+	}
+	return block.Bytes
+}
+
+// captureConnects returns a connect func that records each attempt's config
+// instead of dialing.
+func captureConnects(got *[]*pgx.ConnConfig) connectFunc {
+	return func(_ context.Context, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
+		*got = append(*got, cfg)
+		return nil, errors.New("captured, not dialed")
+	}
+}
+
+func renewableCertConnString(dir string) string {
+	return "host=db1.example,db2.example dbname=x sslmode=verify-full" +
+		" sslrootcert=" + filepath.Join(dir, "ca.pem") +
+		" sslcert=" + filepath.Join(dir, "server.pem") +
+		" sslkey=" + filepath.Join(dir, "server-key.pem")
+}
+
+func assertPresents(t *testing.T, cfg *pgx.ConnConfig, leaf, root []byte) {
+	t.Helper()
+	tlsConfigs := []*tls.Config{cfg.TLSConfig}
+	for _, fallback := range cfg.Fallbacks {
+		tlsConfigs = append(tlsConfigs, fallback.TLSConfig)
+	}
+	if len(tlsConfigs) != 2 {
+		t.Fatalf("got %d TLS configs, want primary + 1 fallback", len(tlsConfigs))
+	}
+	for i, tc := range tlsConfigs {
+		chain := chainDERs(t, tc)
+		if len(chain) != 2 {
+			t.Fatalf("config %d chain length %d, want leaf + root", i, len(chain))
+		}
+		if !bytes.Equal(chain[0], leaf) {
+			t.Errorf("config %d presents a different client cert than expected", i)
+		}
+		if !bytes.Equal(chain[1], root) {
+			t.Errorf("config %d chain has a different root than expected", i)
+		}
+	}
+}
+
+func TestObservedConnectorPicksUpRenewedCerts(t *testing.T) {
+	dir := t.TempDir()
+	if err := testcerts.Generate(dir, "db1.example"); err != nil {
+		t.Fatal(err)
+	}
+	oldLeaf := pemDER(t, filepath.Join(dir, "server.pem"))
+	var got []*pgx.ConnConfig
+	connector, err := observedConnectorWith(&Configuration{ObservedDBConn: []string{renewableCertConnString(dir)}},
+		slog.New(slog.DiscardHandler), captureConnects(&got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector(context.Background())
+
+	if err := testcerts.Generate(dir, "db1.example"); err != nil {
+		t.Fatal(err)
+	}
+	newLeaf, newRoot := pemDER(t, filepath.Join(dir, "server.pem")), pemDER(t, filepath.Join(dir, "ca.pem"))
+	if bytes.Equal(oldLeaf, newLeaf) {
+		t.Fatal("regenerated cert is identical to the original")
+	}
+	connector(context.Background())
+
+	if len(got) != 2 {
+		t.Fatalf("got %d connect attempts, want 2", len(got))
+	}
+	assertPresents(t, got[1], newLeaf, newRoot)
+	if got[1].DefaultQueryExecMode != pgx.QueryExecModeExec {
+		t.Errorf("DefaultQueryExecMode = %v, want QueryExecModeExec", got[1].DefaultQueryExecMode)
+	}
+}
+
+func TestObservedConnectorFallsBackToLastGoodConfigWhenReparseFails(t *testing.T) {
+	dir := t.TempDir()
+	conf := &Configuration{ObservedDBConn: []string{renewableCertConnString(dir)}}
+	var got []*pgx.ConnConfig
+	if _, err := observedConnectorWith(conf, slog.New(slog.DiscardHandler), captureConnects(&got)); err == nil {
+		t.Fatal("startup with missing cert files succeeded; want it to fail fast")
+	}
+
+	if err := testcerts.Generate(dir, "db1.example"); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	connector, err := observedConnectorWith(conf, slog.New(slog.NewTextHandler(&logs, nil)), captureConnects(&got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := testcerts.Generate(dir, "db1.example"); err != nil {
+		t.Fatal(err)
+	}
+	renewedLeaf, renewedRoot := pemDER(t, filepath.Join(dir, "server.pem")), pemDER(t, filepath.Join(dir, "ca.pem"))
+	connector(context.Background())
+
+	if err := os.Remove(filepath.Join(dir, "server-key.pem")); err != nil {
+		t.Fatal(err)
+	}
+	connector(context.Background())
+
+	if len(got) != 2 {
+		t.Fatalf("got %d connect attempts, want 2", len(got))
+	}
+	assertPresents(t, got[1], renewedLeaf, renewedRoot)
+	if !strings.Contains(logs.String(), "server-key.pem") {
+		t.Errorf("re-parse failure not logged; logs:\n%s", logs.String())
+	}
 }
