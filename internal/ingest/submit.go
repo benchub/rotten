@@ -342,15 +342,13 @@ func mergeFingerprintStats(ctx context.Context, tx pgx.Tx, msg *rottenv1.SubmitH
 	sort.Slice(ordered, func(i, j int) bool {
 		return ordered[i] < ordered[j]
 	})
-	for _, fingerprintID := range ordered {
-		accumulator := accumulators[fingerprintID]
-		for _, sourceID := range [2]uint32{0, msg.GetLogicalSourceId()} {
-			if err := mergeFingerprintStatsForSource(ctx, tx, accumulator, sourceID, windowEnd.Unix()); err != nil {
-				return err
-			}
-		}
+	if len(ordered) == 0 {
+		return nil
 	}
-	return nil
+	// Source 0 is the all-sources rollup; validation rejects a batch whose own
+	// source is 0, so these are always two distinct sources, in ascending order.
+	sources := []int32{0, int32(msg.GetLogicalSourceId())}
+	return mergeFingerprintStatsBulk(ctx, tx, accumulators, ordered, sources, windowEnd.Unix())
 }
 
 func newFingerprintStatsAccumulator(fingerprintID int64) *fingerprintStatsAccumulator {
@@ -393,74 +391,112 @@ func accumulateFingerprintStats(accumulator *fingerprintStatsAccumulator, aggreg
 	accumulator.stats["blk_write_time"].Push(metrics.GetBlkWriteTime())
 }
 
-func mergeFingerprintStatsForSource(ctx context.Context, tx pgx.Tx, accumulator *fingerprintStatsAccumulator, sourceID uint32, last int64) error {
-	if err := ensureFingerprintStatsRows(ctx, tx, accumulator.fingerprintID, sourceID, last); err != nil {
+// mergeFingerprintStatsBulk folds a batch's accumulated stats into
+// rotten.fingerprint_stats with three statements, however many fingerprints
+// the batch holds. The transaction holds these row locks until it commits, and
+// the source 0 rows are shared by every worker, so each statement we spare
+// here is time other submits spend waiting. The old code issued about 78
+// statements per fingerprint.
+//
+// Every fingerprint is paired with both sources, so the rows touched are the
+// cross product of fingerprints, sources and domains. The lock statement
+// takes them in (fingerprint_id, logical_source_id, type) order, which is the
+// order the per-row code used, so concurrent submits (including one from a
+// server still on the old code during a rollout) cannot deadlock.
+func mergeFingerprintStatsBulk(ctx context.Context, tx pgx.Tx, accumulators map[int64]*fingerprintStatsAccumulator, ordered []int64, sources []int32, last int64) error {
+	domains := fingerprintStatDomains[:]
+
+	// Create any missing rows. Sorted so concurrent inserts of the same keys
+	// wait on each other in a consistent order.
+	if _, err := tx.Exec(ctx, `insert into rotten.fingerprint_stats
+		(fingerprint_id, logical_source_id, type, last, count, mean, deviation)
+		select fp, src, t::rotten.fingerprint_stats_domain, $4, 0, 0, 0
+		from unnest($1::bigint[]) as f(fp)
+		cross join unnest($2::int[]) as s(src)
+		cross join unnest($3::text[]) as d(t)
+		order by fp, src, t::rotten.fingerprint_stats_domain
+		on conflict (fingerprint_id, logical_source_id, type) do nothing`,
+		ordered, sources, domains, last); err != nil {
 		return err
 	}
-	existing, err := lockedFingerprintStats(ctx, tx, accumulator.fingerprintID, sourceID)
-	if err != nil {
-		return err
-	}
-	if len(existing) != len(fingerprintStatDomains) {
-		return fmt.Errorf("fingerprint_stats has %d rows for fingerprint_id %d logical_source_id %d, want %d", len(existing), accumulator.fingerprintID, sourceID, len(fingerprintStatDomains))
-	}
-	for _, domain := range fingerprintStatDomains {
-		next := accumulator.stats[domain]
-		if next.RunningStatCount() == 0 {
-			continue
-		}
-		combined := runningstat.RunningStat{}
-		combined.Init(next.RunningStatCount(), next.RunningStatMean(), next.RunningStatDeviation())
-		combined.Merge(existing[domain])
-		if _, err := tx.Exec(ctx, `update rotten.fingerprint_stats
-			set last = $1, count = $2, mean = $3, deviation = $4
-			where fingerprint_id = $5 and logical_source_id = $6 and type = $7`,
-			last, combined.RunningStatCount(), combined.RunningStatMean(), combined.RunningStatDeviation(), accumulator.fingerprintID, sourceID, domain); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
-func ensureFingerprintStatsRows(ctx context.Context, tx pgx.Tx, fingerprintID int64, sourceID uint32, last int64) error {
-	for _, domain := range fingerprintStatDomains {
-		if _, err := tx.Exec(ctx, `insert into rotten.fingerprint_stats
-			(fingerprint_id, logical_source_id, type, last, count, mean, deviation)
-			values ($1, $2, $3, $4, 0, 0, 0)
-			on conflict (fingerprint_id, logical_source_id, type) do nothing`, fingerprintID, sourceID, domain, last); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func lockedFingerprintStats(ctx context.Context, tx pgx.Tx, fingerprintID int64, sourceID uint32) (map[string]runningstat.RunningStat, error) {
-	rows, err := tx.Query(ctx, `select type::text, count, mean, deviation
+	// Lock and read every row in one pass. LockRows sits above the sort, so
+	// rows are locked in the order of the order by.
+	rows, err := tx.Query(ctx, `select fingerprint_id, logical_source_id, type::text, count, mean, deviation
 		from rotten.fingerprint_stats
-		where fingerprint_id = $1 and logical_source_id = $2
-		order by type
-		for update`, fingerprintID, sourceID)
+		where fingerprint_id = any($1::bigint[]) and logical_source_id = any($2::int[])
+		order by fingerprint_id, logical_source_id, type
+		for update`, ordered, sources)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer rows.Close()
-	existing := map[string]runningstat.RunningStat{}
+	type statKey struct {
+		fingerprintID int64
+		sourceID      int32
+		domain        string
+	}
+	existing := make(map[statKey]runningstat.RunningStat, len(ordered)*len(sources)*len(domains))
 	for rows.Next() {
-		var domain string
+		var key statKey
 		var count int64
-		var mean float64
-		var deviation float64
-		if err := rows.Scan(&domain, &count, &mean, &deviation); err != nil {
-			return nil, err
+		var mean, deviation float64
+		if err := rows.Scan(&key.fingerprintID, &key.sourceID, &key.domain, &count, &mean, &deviation); err != nil {
+			rows.Close()
+			return err
 		}
 		stat := runningstat.RunningStat{}
 		stat.Init(count, mean, deviation)
-		existing[domain] = stat
+		existing[key] = stat
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	return existing, nil
+	if want := len(ordered) * len(sources) * len(domains); len(existing) != want {
+		return fmt.Errorf("fingerprint_stats has %d rows for %d fingerprints and %d sources, want %d", len(existing), len(ordered), len(sources), want)
+	}
+
+	// Merge in Go, then write every changed row back in one statement.
+	var (
+		fingerprintIDs []int64
+		sourceIDs      []int32
+		types          []string
+		counts         []int64
+		means          []float64
+		deviations     []float64
+	)
+	for _, fingerprintID := range ordered {
+		accumulator := accumulators[fingerprintID]
+		for _, sourceID := range sources {
+			for _, domain := range domains {
+				next := accumulator.stats[domain]
+				if next.RunningStatCount() == 0 {
+					continue
+				}
+				combined := runningstat.RunningStat{}
+				combined.Init(next.RunningStatCount(), next.RunningStatMean(), next.RunningStatDeviation())
+				combined.Merge(existing[statKey{fingerprintID, sourceID, domain}])
+				fingerprintIDs = append(fingerprintIDs, fingerprintID)
+				sourceIDs = append(sourceIDs, sourceID)
+				types = append(types, domain)
+				counts = append(counts, combined.RunningStatCount())
+				means = append(means, combined.RunningStatMean())
+				deviations = append(deviations, combined.RunningStatDeviation())
+			}
+		}
+	}
+	if len(fingerprintIDs) == 0 {
+		return nil
+	}
+	_, err = tx.Exec(ctx, `update rotten.fingerprint_stats fs
+		set last = $1, count = u.count, mean = u.mean, deviation = u.deviation
+		from unnest($2::bigint[], $3::int[], $4::text[], $5::bigint[], $6::float8[], $7::float8[])
+			as u(fingerprint_id, logical_source_id, type, count, mean, deviation)
+		where fs.fingerprint_id = u.fingerprint_id
+		  and fs.logical_source_id = u.logical_source_id
+		  and fs.type = u.type::rotten.fingerprint_stats_domain`,
+		last, fingerprintIDs, sourceIDs, types, counts, means, deviations)
+	return err
 }
 
 func optionalID(ids map[string]int64, value string) *int64 {

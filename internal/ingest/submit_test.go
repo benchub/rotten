@@ -778,6 +778,83 @@ func TestSubmitHarvestStatsSkipsAbsentStddev(t *testing.T) {
 	}
 }
 
+// A large batch from two workers whose fingerprints partly overlap: the
+// shared fingerprints must roll up into source 0 from both, and every
+// fingerprint must end up with a full set of stat rows at both sources.
+func TestSubmitHarvestStatsManyFingerprintsOverlapping(t *testing.T) {
+	f := setupSubmit(t)
+	second := registerExtraSource(t, f, "bulk-worker-2", "db-submit-bulk-2.example", "submitbulk2", "test", "cluster", "primary")
+	start := time.Now().UTC().Truncate(time.Second).Add(-4 * time.Hour)
+
+	const perWorker, overlap = 400, 200
+	build := func(fx *submitFixture, batch string, from int, value float64) *connect.Request[rottenv1.SubmitHarvestRequest] {
+		req := harvestRequest(fx.reg.GetLogicalSourceId(), fx.reg.GetPhysicalSourceId(), start, batch)
+		req.Msg.Aggregates = nil
+		for i := from; i < from+perWorker; i++ {
+			req.Msg.Aggregates = append(req.Msg.Aggregates, statsAggregate(fmt.Sprintf("fp-bulk-%d", i), value, fmt.Sprintf("select %d", i)))
+		}
+		return req
+	}
+	// First worker covers 0..399, second covers 200..599.
+	for i, step := range []struct {
+		fx    *submitFixture
+		batch string
+		from  int
+	}{{f, "bulk-1", 0}, {second, "bulk-2", perWorker - overlap}} {
+		began := time.Now()
+		resp, err := step.fx.handler.SubmitHarvest(step.fx.ctx, build(step.fx, step.batch, step.from, 1))
+		if err != nil {
+			t.Fatalf("SubmitHarvest %d: %v", i, err)
+		}
+		if resp.Msg.GetStatus() != rottenv1.SubmitHarvestResponse_STATUS_ACCEPTED {
+			t.Fatalf("status %d = %v, want ACCEPTED", i, resp.Msg.GetStatus())
+		}
+		t.Logf("submit %d of %d fingerprints took %s", i, perWorker, time.Since(began))
+	}
+
+	for i := 0; i < perWorker+perWorker-overlap; i++ {
+		fp := fmt.Sprintf("fp-bulk-%d", i)
+		inFirst := i < perWorker
+		inSecond := i >= perWorker-overlap
+		wantAll := int64(0)
+		if inFirst {
+			wantAll++
+		}
+		if inSecond {
+			wantAll++
+		}
+		for _, c := range []struct {
+			source uint32
+			want   int64
+		}{
+			{0, wantAll},
+			{f.reg.GetLogicalSourceId(), b2i(inFirst)},
+			{second.reg.GetLogicalSourceId(), b2i(inSecond)},
+		} {
+			rows := submitStatRows(t, f.owner, fp, c.source)
+			if c.want == 0 {
+				if len(rows) != 0 {
+					t.Fatalf("%s source %d has %d stat rows, want none", fp, c.source, len(rows))
+				}
+				continue
+			}
+			if len(rows) != len(statsDomains) {
+				t.Fatalf("%s source %d has %d stat rows, want %d", fp, c.source, len(rows), len(statsDomains))
+			}
+			if got := rows["calls"].count; got != c.want {
+				t.Fatalf("%s source %d calls count = %d, want %d", fp, c.source, got, c.want)
+			}
+		}
+	}
+}
+
+func b2i(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func TestSubmitHarvestConcurrentFingerprintStatsDoNotDeadlock(t *testing.T) {
 	f := setupSubmit(t)
 	fixtures := []*submitFixture{f}
